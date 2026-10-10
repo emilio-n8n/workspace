@@ -32,7 +32,11 @@ const serverEnvSchema = z.object({
   S3_SECRET_KEY: z.string().optional(),
 
   /** Longueur maximale d'upload acceptée (octets). */
-  MAX_UPLOAD_BYTES: z.coerce.number().int().positive().default(100 * 1024 * 1024),
+  MAX_UPLOAD_BYTES: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(100 * 1024 * 1024),
 });
 
 export type ServerEnv = z.infer<typeof serverEnvSchema>;
@@ -40,7 +44,9 @@ export type ServerEnv = z.infer<typeof serverEnvSchema>;
 let cached: ServerEnv | null = null;
 
 function formatIssues(issues: ReadonlyArray<{ path: PropertyKey[]; message: string }>): string {
-  return issues.map((issue) => ` - ${issue.path.join(".") || "(racine)"} : ${issue.message}`).join("\n");
+  return issues
+    .map((issue) => ` - ${issue.path.join(".") || "(racine)"} : ${issue.message}`)
+    .join("\n");
 }
 
 /**
@@ -67,13 +73,11 @@ export function getServerEnv(source: NodeJS.ProcessEnv = process.env): ServerEnv
   }
 
   if (env.STORAGE_DRIVER === "s3") {
-    const missing = (["S3_ENDPOINT", "S3_BUCKET", "S3_ACCESS_KEY", "S3_SECRET_KEY"] as const).filter(
-      (key) => !env[key],
-    );
+    const missing = (
+      ["S3_ENDPOINT", "S3_BUCKET", "S3_ACCESS_KEY", "S3_SECRET_KEY"] as const
+    ).filter((key) => !env[key]);
     if (missing.length > 0) {
-      throw new Error(
-        `Configuration invalide : STORAGE_DRIVER=s3 exige ${missing.join(", ")}.`,
-      );
+      throw new Error(`Configuration invalide : STORAGE_DRIVER=s3 exige ${missing.join(", ")}.`);
     }
   }
 
