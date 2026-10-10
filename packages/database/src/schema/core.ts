@@ -12,7 +12,7 @@ import {
   uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
-import { organization, user } from "./auth";
+import { organization, user } from "./auth.ts";
 
 /**
  * Schéma cœur de Workspace — voir docs/architecture/data-model.md.

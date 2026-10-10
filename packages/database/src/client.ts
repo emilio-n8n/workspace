@@ -1,7 +1,7 @@
 import { getServerEnv } from "@workspace/config";
 import { drizzle, type NodePgDatabase } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
-import * as schema from "./schema";
+import * as schema from "./schema/index.ts";
 
 /**
  * Connexion PostgreSQL paresseuse : le pool n'est créé qu'au premier accès,

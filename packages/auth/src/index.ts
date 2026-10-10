@@ -1,1 +1,9 @@
-export { type Auth, auth, createAuth } from "./auth";
+export {
+  type Auth,
+  auth,
+  ensurePersonalOrganization,
+  getSession,
+  listMyOrganizations,
+  NoOrganizationError,
+  UnauthorizedError,
+} from "./server.ts";

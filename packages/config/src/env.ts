@@ -1,3 +1,5 @@
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { z } from "zod";
 
 /**
@@ -47,6 +49,43 @@ function formatIssues(issues: ReadonlyArray<{ path: PropertyKey[]; message: stri
   return issues
     .map((issue) => ` - ${issue.path.join(".") || "(racine)"} : ${issue.message}`)
     .join("\n");
+}
+
+/**
+ * Charge le premier fichier `.env` trouvé en remontant depuis `fromDir`
+ * (la racine du dépôt en pratique), sans écraser les variables déjà
+ * définies dans l'environnement du processus.
+ */
+export function loadDotEnv(fromDir: string = process.cwd()): string | null {
+  let dir = resolve(fromDir);
+  for (;;) {
+    const candidate = join(dir, ".env");
+    if (existsSync(candidate)) {
+      applyDotEnv(readFileSync(candidate, "utf8"));
+      return candidate;
+    }
+    const parent = dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
+}
+
+function applyDotEnv(raw: string): void {
+  for (const line of raw.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const eq = trimmed.indexOf("=");
+    if (eq <= 0) continue;
+    const key = trimmed.slice(0, eq).trim();
+    let value = trimmed.slice(eq + 1).trim();
+    if (
+      (value.startsWith('"') && value.endsWith('"')) ||
+      (value.startsWith("'") && value.endsWith("'"))
+    ) {
+      value = value.slice(1, -1);
+    }
+    if (process.env[key] === undefined) process.env[key] = value;
+  }
 }
 
 /**
