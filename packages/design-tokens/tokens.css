@@ -36,6 +36,19 @@
   --destructive: oklch(0.55 0.19 25);
   --destructive-foreground: oklch(0.99 0 0);
 
+  /* Couleurs des types de fichiers (contenu, pas de l'interface). */
+  --file-folder: oklch(0.62 0.13 250);
+  --file-doc: oklch(0.55 0.17 255);
+  --file-sheet: oklch(0.58 0.15 150);
+  --file-slide: oklch(0.62 0.16 55);
+  --file-pdf: oklch(0.55 0.19 25);
+  --file-image: oklch(0.55 0.16 330);
+  --file-archive: oklch(0.55 0.03 250);
+  --file-audio: oklch(0.58 0.15 300);
+  --file-video: oklch(0.58 0.16 15);
+  --file-text: oklch(0.5 0.02 250);
+  --file-generic: oklch(0.55 0.03 250);
+
   --radius: 0.5rem;
 }
 
@@ -63,6 +76,19 @@
 
   --destructive: oklch(0.62 0.18 25);
   --destructive-foreground: oklch(0.16 0.02 25);
+
+  /* Couleurs des types de fichiers — variantes sombres plus lumineuses. */
+  --file-folder: oklch(0.75 0.12 250);
+  --file-doc: oklch(0.72 0.15 255);
+  --file-sheet: oklch(0.74 0.14 150);
+  --file-slide: oklch(0.76 0.15 55);
+  --file-pdf: oklch(0.72 0.17 25);
+  --file-image: oklch(0.72 0.14 330);
+  --file-archive: oklch(0.7 0.03 250);
+  --file-audio: oklch(0.73 0.13 300);
+  --file-video: oklch(0.73 0.15 15);
+  --file-text: oklch(0.72 0.02 250);
+  --file-generic: oklch(0.7 0.03 250);
 }
 
 @theme inline {
@@ -81,6 +107,18 @@
   --color-accent-foreground: var(--accent-foreground);
   --color-destructive: var(--destructive);
   --color-destructive-foreground: var(--destructive-foreground);
+
+  --color-file-folder: var(--file-folder);
+  --color-file-doc: var(--file-doc);
+  --color-file-sheet: var(--file-sheet);
+  --color-file-slide: var(--file-slide);
+  --color-file-pdf: var(--file-pdf);
+  --color-file-image: var(--file-image);
+  --color-file-archive: var(--file-archive);
+  --color-file-audio: var(--file-audio);
+  --color-file-video: var(--file-video);
+  --color-file-text: var(--file-text);
+  --color-file-generic: var(--file-generic);
 
   --radius-xs: calc(var(--radius) - 4px);
   --radius-sm: calc(var(--radius) - 2px);

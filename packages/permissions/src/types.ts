@@ -32,9 +32,11 @@ export const RESOURCE_TYPES = [
   "sheet",
   "presentation",
   "calendar_event",
+  "calendar",
   "mail_message",
   "form",
   "chat_channel",
+  "task_list",
 ] as const;
 export type ResourceType = (typeof RESOURCE_TYPES)[number];
 

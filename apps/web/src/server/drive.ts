@@ -7,10 +7,13 @@ import {
   createShareLink,
   type DriveEntry,
   DriveError,
+  driveFiles,
   getAncestors,
   getEntry,
   listEntries,
   listEntryGrants,
+  listRecent,
+  listSharedWithMe,
   listShareLinks,
   listTrash,
   listVersions,
@@ -22,7 +25,7 @@ import {
   trash,
   unshareEntry,
 } from "@workspace/drive";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import { requireActor } from "./actor.ts";
 
@@ -324,3 +327,49 @@ export const resolveShareFn = createServerFn({ method: "GET" })
       role: access.role,
     };
   });
+
+// ---------------------------------------------------------------------------
+// Vues agrégées (Récents, Partagés) et stockage
+// ---------------------------------------------------------------------------
+
+export const listRecentFn = createServerFn({ method: "GET" }).handler(
+  async (): Promise<DriveEntryView[]> => {
+    const { actor, userId } = await requireActor(getRequest().headers);
+    const rows = await listRecent(actor, { limit: 50 });
+    return rows.map((entry) => toView(entry, userId));
+  },
+);
+
+export const listSharedFn = createServerFn({ method: "GET" }).handler(
+  async (): Promise<{ entry: DriveEntryView; role: string }[]> => {
+    const { actor, userId } = await requireActor(getRequest().headers);
+    const rows = await listSharedWithMe(actor);
+    return rows.map((row) => ({ entry: toView(row.entry, userId), role: row.role }));
+  },
+);
+
+/** Consommation de stockage de l'organisation (tous statuts confondus). */
+export const storageUsageFn = createServerFn({ method: "GET" }).handler(async () => {
+  const { actor } = await requireActor(getRequest().headers);
+  const db = getDb();
+
+  const [usage] = await db
+    .select({
+      usedBytes: sql<number>`coalesce(sum(${driveFiles.sizeBytes}), 0)`.mapWith(Number),
+      fileCount: sql<number>`count(*)`.mapWith(Number),
+    })
+    .from(driveFiles)
+    .where(eq(driveFiles.orgId, actor.orgId));
+
+  const [settings] = await db
+    .select({ quotaBytes: coreSchema.orgSettings.storageQuotaBytes })
+    .from(coreSchema.orgSettings)
+    .where(eq(coreSchema.orgSettings.orgId, actor.orgId))
+    .limit(1);
+
+  return {
+    usedBytes: usage?.usedBytes ?? 0,
+    fileCount: usage?.fileCount ?? 0,
+    quotaBytes: settings?.quotaBytes ?? null,
+  };
+});

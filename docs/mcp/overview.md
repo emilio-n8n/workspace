@@ -22,7 +22,7 @@ Agent (stdio ou HTTP) ──► apps/mcp-server ──► modules/*/service.ts �
 ## Authentification et jetons
 
 - Jetons émis par l'utilisateur dans l'interface (**Agents & jetons**, `/app/settings/tokens`), liés à (utilisateur, organisation).
-- **Scopes** : `drive:read`, `drive:write`, `docs:read`, `docs:write`, `audit:read` (état actuel).
+- **Scopes** : `drive:read`, `drive:write`, `docs:read`, `docs:write`, `tasks:read`, `tasks:write`, `calendar:read`, `calendar:write`, `audit:read` (état actuel).
 - Stockage : empreinte SHA-256 uniquement ; le jeton en clair n'est montré qu'à la création ; révocation immédiate ; « dernier usage » visible.
 - Le jeton ne peut jamais voir plus que son propriétaire au moment de l'appel : l'`Actor` est construit par le serveur puis les mêmes contrôles que le web s'appliquent.
 
@@ -46,10 +46,13 @@ Agent (stdio ou HTTP) ──► apps/mcp-server ──► modules/*/service.ts �
 | `files.search` | `drive:read` | Recherche de fichiers accessibles (partages hérités compris) |
 | `files.read` | `drive:read` | Lecture d'un fichier texte (text/\*, JSON, Markdown, XML), tronquée à 60 k caractères |
 | `docs.read` | `docs:read` | Lecture du texte d'un document (extraction plain text) |
+| `tasks.lists` | `tasks:read` | Listes de tâches accessibles (personnelles et partagées) avec le rôle |
+| `tasks.list` | `tasks:read` | Tâches d'une liste (ou de toutes) : statut, priorité, échéance |
+| `tasks.create` | `tasks:write` | Création d'une tâche dans une liste accessible en écriture |
 
 ## Feuille de route des outils
 
-- Phase 3 : `docs.list`, `docs.create`, `docs.update`, `files.write`, `files.delete` (confirmation explicite), recherche plein texte.
+- Prochaines briques : `tasks.update` / `tasks.delete` (confirmation explicite pour la suppression), `docs.create`, `docs.update`, `files.write`, `files.delete` (confirmation), recherche plein texte.
 - Phases suivantes : Calendar, Tasks, Forms, administration selon permissions — toujours sous les mêmes règles.
 
 ## Sécurité et tests obligatoires

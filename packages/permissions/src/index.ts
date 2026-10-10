@@ -3,6 +3,7 @@ export { PolicyError, type PolicyErrorCode } from "./errors.ts";
 export {
   accessibleResourceIds,
   createGrant,
+  listGrantedResourceIds,
   listGrants,
   type ResourceGrantRow,
   resolveRole,

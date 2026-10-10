@@ -14,6 +14,7 @@ import { Route as AppRouteImport } from './routes/app'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as SignupRouteImport } from './routes/signup'
 import { Route as AppIndexRouteImport } from './routes/app/index'
+import { Route as AppTasksRouteImport } from './routes/app/tasks'
 import { Route as STokenRouteImport } from './routes/s/$token'
 import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
 import { Route as ApiDriveUploadRouteImport } from './routes/api/drive/upload'
@@ -21,6 +22,8 @@ import { Route as AppDocsIndexRouteImport } from './routes/app/docs/index'
 import { Route as AppDocsFileIdRouteImport } from './routes/app/docs/$fileId'
 import { Route as AppDriveIndexRouteImport } from './routes/app/drive/index'
 import { Route as AppDriveEntryIdRouteImport } from './routes/app/drive/$entryId'
+import { Route as AppDriveRecentRouteImport } from './routes/app/drive/recent'
+import { Route as AppDriveSharedRouteImport } from './routes/app/drive/shared'
 import { Route as AppDriveTrashRouteImport } from './routes/app/drive/trash'
 import { Route as AppSettingsTokensRouteImport } from './routes/app/settings/tokens'
 import { Route as ApiDocsExportFileIdRouteImport } from './routes/api/docs/export/$fileId'
@@ -50,6 +53,11 @@ const SignupRoute = SignupRouteImport.update({
 const AppIndexRoute = AppIndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppTasksRoute = AppTasksRouteImport.update({
+  id: '/tasks',
+  path: '/tasks',
   getParentRoute: () => AppRoute,
 } as any)
 const STokenRoute = STokenRouteImport.update({
@@ -87,6 +95,16 @@ const AppDriveEntryIdRoute = AppDriveEntryIdRouteImport.update({
   path: '/drive/$entryId',
   getParentRoute: () => AppRoute,
 } as any)
+const AppDriveRecentRoute = AppDriveRecentRouteImport.update({
+  id: '/drive/recent',
+  path: '/drive/recent',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppDriveSharedRoute = AppDriveSharedRouteImport.update({
+  id: '/drive/shared',
+  path: '/drive/shared',
+  getParentRoute: () => AppRoute,
+} as any)
 const AppDriveTrashRoute = AppDriveTrashRouteImport.update({
   id: '/drive/trash',
   path: '/drive/trash',
@@ -118,12 +136,15 @@ export interface FileRoutesByFullPath {
   '/app': typeof AppRouteWithChildren
   '/login': typeof LoginRoute
   '/signup': typeof SignupRoute
+  '/app/tasks': typeof AppTasksRoute
   '/s/$token': typeof STokenRoute
   '/app/': typeof AppIndexRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/drive/upload': typeof ApiDriveUploadRoute
   '/app/docs/$fileId': typeof AppDocsFileIdRoute
   '/app/drive/$entryId': typeof AppDriveEntryIdRoute
+  '/app/drive/recent': typeof AppDriveRecentRoute
+  '/app/drive/shared': typeof AppDriveSharedRoute
   '/app/drive/trash': typeof AppDriveTrashRoute
   '/app/settings/tokens': typeof AppSettingsTokensRoute
   '/app/docs/': typeof AppDocsIndexRoute
@@ -136,12 +157,15 @@ export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/login': typeof LoginRoute
   '/signup': typeof SignupRoute
+  '/app/tasks': typeof AppTasksRoute
   '/s/$token': typeof STokenRoute
   '/app': typeof AppIndexRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/drive/upload': typeof ApiDriveUploadRoute
   '/app/docs/$fileId': typeof AppDocsFileIdRoute
   '/app/drive/$entryId': typeof AppDriveEntryIdRoute
+  '/app/drive/recent': typeof AppDriveRecentRoute
+  '/app/drive/shared': typeof AppDriveSharedRoute
   '/app/drive/trash': typeof AppDriveTrashRoute
   '/app/settings/tokens': typeof AppSettingsTokensRoute
   '/app/docs': typeof AppDocsIndexRoute
@@ -156,12 +180,15 @@ export interface FileRoutesById {
   '/app': typeof AppRouteWithChildren
   '/login': typeof LoginRoute
   '/signup': typeof SignupRoute
+  '/app/tasks': typeof AppTasksRoute
   '/s/$token': typeof STokenRoute
   '/app/': typeof AppIndexRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/drive/upload': typeof ApiDriveUploadRoute
   '/app/docs/$fileId': typeof AppDocsFileIdRoute
   '/app/drive/$entryId': typeof AppDriveEntryIdRoute
+  '/app/drive/recent': typeof AppDriveRecentRoute
+  '/app/drive/shared': typeof AppDriveSharedRoute
   '/app/drive/trash': typeof AppDriveTrashRoute
   '/app/settings/tokens': typeof AppSettingsTokensRoute
   '/app/docs/': typeof AppDocsIndexRoute
@@ -177,12 +204,15 @@ export interface FileRouteTypes {
     | '/app'
     | '/login'
     | '/signup'
+    | '/app/tasks'
     | '/s/$token'
     | '/app/'
     | '/api/auth/$'
     | '/api/drive/upload'
     | '/app/docs/$fileId'
     | '/app/drive/$entryId'
+    | '/app/drive/recent'
+    | '/app/drive/shared'
     | '/app/drive/trash'
     | '/app/settings/tokens'
     | '/app/docs/'
@@ -195,12 +225,15 @@ export interface FileRouteTypes {
     | '/'
     | '/login'
     | '/signup'
+    | '/app/tasks'
     | '/s/$token'
     | '/app'
     | '/api/auth/$'
     | '/api/drive/upload'
     | '/app/docs/$fileId'
     | '/app/drive/$entryId'
+    | '/app/drive/recent'
+    | '/app/drive/shared'
     | '/app/drive/trash'
     | '/app/settings/tokens'
     | '/app/docs'
@@ -214,12 +247,15 @@ export interface FileRouteTypes {
     | '/app'
     | '/login'
     | '/signup'
+    | '/app/tasks'
     | '/s/$token'
     | '/app/'
     | '/api/auth/$'
     | '/api/drive/upload'
     | '/app/docs/$fileId'
     | '/app/drive/$entryId'
+    | '/app/drive/recent'
+    | '/app/drive/shared'
     | '/app/drive/trash'
     | '/app/settings/tokens'
     | '/app/docs/'
@@ -279,6 +315,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppIndexRouteImport
       parentRoute: typeof AppRoute
     }
+    '/app/tasks': {
+      id: '/app/tasks'
+      path: '/tasks'
+      fullPath: '/app/tasks'
+      preLoaderRoute: typeof AppTasksRouteImport
+      parentRoute: typeof AppRoute
+    }
     '/s/$token': {
       id: '/s/$token'
       path: '/s/$token'
@@ -328,6 +371,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppDriveEntryIdRouteImport
       parentRoute: typeof AppRoute
     }
+    '/app/drive/recent': {
+      id: '/app/drive/recent'
+      path: '/drive/recent'
+      fullPath: '/app/drive/recent'
+      preLoaderRoute: typeof AppDriveRecentRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/app/drive/shared': {
+      id: '/app/drive/shared'
+      path: '/drive/shared'
+      fullPath: '/app/drive/shared'
+      preLoaderRoute: typeof AppDriveSharedRouteImport
+      parentRoute: typeof AppRoute
+    }
     '/app/drive/trash': {
       id: '/app/drive/trash'
       path: '/drive/trash'
@@ -367,9 +424,12 @@ declare module '@tanstack/react-router' {
 }
 
 interface AppRouteChildren {
+  AppTasksRoute: typeof AppTasksRoute
   AppIndexRoute: typeof AppIndexRoute
   AppDocsFileIdRoute: typeof AppDocsFileIdRoute
   AppDriveEntryIdRoute: typeof AppDriveEntryIdRoute
+  AppDriveRecentRoute: typeof AppDriveRecentRoute
+  AppDriveSharedRoute: typeof AppDriveSharedRoute
   AppDriveTrashRoute: typeof AppDriveTrashRoute
   AppSettingsTokensRoute: typeof AppSettingsTokensRoute
   AppDocsIndexRoute: typeof AppDocsIndexRoute
@@ -377,9 +437,12 @@ interface AppRouteChildren {
 }
 
 const AppRouteChildren: AppRouteChildren = {
+  AppTasksRoute: AppTasksRoute,
   AppIndexRoute: AppIndexRoute,
   AppDocsFileIdRoute: AppDocsFileIdRoute,
   AppDriveEntryIdRoute: AppDriveEntryIdRoute,
+  AppDriveRecentRoute: AppDriveRecentRoute,
+  AppDriveSharedRoute: AppDriveSharedRoute,
   AppDriveTrashRoute: AppDriveTrashRoute,
   AppSettingsTokensRoute: AppSettingsTokensRoute,
   AppDocsIndexRoute: AppDocsIndexRoute,

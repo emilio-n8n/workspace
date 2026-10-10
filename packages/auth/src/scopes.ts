@@ -7,6 +7,10 @@ export const WORKSPACE_SCOPES = [
   "drive:write",
   "docs:read",
   "docs:write",
+  "tasks:read",
+  "tasks:write",
+  "calendar:read",
+  "calendar:write",
   "audit:read",
 ] as const;
 

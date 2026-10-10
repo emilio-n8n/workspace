@@ -1,7 +1,16 @@
 import { Link, useRouter } from "@tanstack/react-router";
 import { Badge, Button, Card, cn, Dialog, Input, Label } from "@workspace/ui";
-import { type DragEvent, type FormEvent, useCallback, useEffect, useRef, useState } from "react";
-import { IconFileText, IconFolder, IconTrash } from "../../components/icons";
+import {
+  type DragEvent,
+  type FormEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import { DOCS_MIME, FileIcon } from "../../components/file-icon";
+import { IconChevronDown, IconFolder, IconTrash } from "../../components/icons";
 import { createDocumentFn } from "../../server/docs";
 import {
   type BreadcrumbItem,
@@ -10,18 +19,32 @@ import {
   type DriveEntryView,
   entryDetailsFn,
   listDriveFn,
+  listRecentFn,
+  listSharedFn,
   renameEntryFn,
   trashEntryFn,
 } from "../../server/drive";
 import { ShareDialog } from "./share-dialog";
 
-export const DOCS_MIME = "application/vnd.workspace.docs+json";
+type View = "drive" | "recent" | "shared";
 
-type Props = { folderId: string | null };
+type Props = {
+  view?: View;
+  folderId?: string | null;
+};
 
 type DetailsState = {
   entry: DriveEntryView;
   versions: { id: string; version: number; sizeBytes: number; createdAt: string }[];
+};
+
+type TypeFilter = "all" | "folders" | "files";
+
+const ROLE_LABELS: Record<string, string> = {
+  viewer: "Lecture",
+  commenter: "Commentaire",
+  editor: "Édition",
+  owner: "Propriétaire",
 };
 
 function formatBytes(size: number | null): string {
@@ -35,18 +58,35 @@ function formatDate(iso: string): string {
   return new Date(iso).toLocaleString("fr-FR", { dateStyle: "medium", timeStyle: "short" });
 }
 
+/** Date compacte pour les tableaux (sans l'heure). */
+function formatDateShort(iso: string): string {
+  return new Date(iso).toLocaleDateString("fr-FR", { dateStyle: "medium" });
+}
+
+const TABS: { id: string; label: string; to: string }[] = [
+  { id: "drive", label: "Mon Drive", to: "/app/drive" },
+  { id: "recent", label: "Récents", to: "/app/drive/recent" },
+  { id: "shared", label: "Partagés avec moi", to: "/app/drive/shared" },
+  { id: "trash", label: "Corbeille", to: "/app/drive/trash" },
+];
+
 /**
  * Navigateur de fichiers Drive : dossiers, upload (bouton ou glisser-déposer),
- * renommage, corbeille, aperçu des versions et partage.
+ * recherche dans la vue, tri, renommage, corbeille, aperçu des versions et partage.
  */
-export function DriveBrowser({ folderId }: Props) {
+export function DriveBrowser({ view = "drive", folderId = null }: Props) {
   const router = useRouter();
 
   const [entries, setEntries] = useState<DriveEntryView[] | null>(null);
+  const [sharedRoles, setSharedRoles] = useState<Map<string, string>>(new Map());
   const [crumbs, setCrumbs] = useState<BreadcrumbItem[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const [dragOver, setDragOver] = useState(false);
+
+  const [query, setQuery] = useState("");
+  const [typeFilter, setTypeFilter] = useState<TypeFilter>("all");
+  const [sortAsc, setSortAsc] = useState(true);
 
   const [folderDialogOpen, setFolderDialogOpen] = useState(false);
   const [folderName, setFolderName] = useState("");
@@ -68,21 +108,56 @@ export function DriveBrowser({ folderId }: Props) {
   const refresh = useCallback(async () => {
     setError(null);
     try {
-      const [list, crumb] = await Promise.all([
-        listDriveFn({ data: { parentId: folderId } }),
-        folderId ? breadcrumbFn({ data: { entryId: folderId } }) : Promise.resolve([]),
-      ]);
-      setEntries(list);
-      setCrumbs(crumb);
+      if (view === "drive") {
+        const [list, crumb] = await Promise.all([
+          listDriveFn({ data: { parentId: folderId } }),
+          folderId ? breadcrumbFn({ data: { entryId: folderId } }) : Promise.resolve([]),
+        ]);
+        setEntries(list);
+        setCrumbs(crumb);
+        return;
+      }
+
+      if (view === "recent") {
+        setEntries(await listRecentFn());
+        setCrumbs([]);
+        return;
+      }
+
+      const rows = await listSharedFn();
+      setEntries(rows.map((row) => row.entry));
+      setSharedRoles(new Map(rows.map((row) => [row.entry.id, row.role])));
+      setCrumbs([]);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Impossible de charger ce dossier.");
+      setError(caught instanceof Error ? caught.message : "Impossible de charger le contenu.");
       setEntries([]);
     }
-  }, [folderId]);
+  }, [view, folderId]);
 
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  const visibleEntries = useMemo(() => {
+    if (!entries) return null;
+
+    let rows = entries;
+    if (query.trim().length > 0) {
+      const needle = query.trim().toLowerCase();
+      rows = rows.filter((entry) => entry.name.toLowerCase().includes(needle));
+    }
+    if (typeFilter === "folders") rows = rows.filter((entry) => entry.kind === "folder");
+    if (typeFilter === "files") rows = rows.filter((entry) => entry.kind === "file");
+
+    if (!sortAsc || query.trim().length > 0) {
+      rows = [...rows].sort((a, b) => {
+        if (a.kind !== b.kind) return a.kind === "folder" ? -1 : 1;
+        return a.name.localeCompare(b.name, "fr", { sensitivity: "base" }) * (sortAsc ? 1 : -1);
+      });
+    }
+
+    return rows;
+  }, [entries, query, typeFilter, sortAsc]);
 
   async function onUpload(files: FileList | File[]) {
     const list = Array.from(files);
@@ -103,6 +178,7 @@ export function DriveBrowser({ folderId }: Props) {
         }
       }
       await refresh();
+      window.dispatchEvent(new Event("workspace:storage-changed"));
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Échec de l'envoi.");
     } finally {
@@ -119,7 +195,11 @@ export function DriveBrowser({ folderId }: Props) {
 
   async function onOpen(entry: DriveEntryView) {
     if (entry.kind === "folder") {
-      void router.navigate({ to: "/app/drive/$entryId", params: { entryId: entry.id } });
+      if (view === "drive") {
+        void router.navigate({ to: "/app/drive/$entryId", params: { entryId: entry.id } });
+      } else {
+        void router.navigate({ to: "/app/drive/$entryId", params: { entryId: entry.id } });
+      }
       return;
     }
     if (entry.mimeType === DOCS_MIME) {
@@ -187,9 +267,17 @@ export function DriveBrowser({ folderId }: Props) {
   }
 
   async function onTrash(entry: DriveEntryView) {
-    await trashEntryFn({ data: { entryId: entry.id } });
-    await refresh();
+    try {
+      await trashEntryFn({ data: { entryId: entry.id } });
+      await refresh();
+      window.dispatchEvent(new Event("workspace:storage-changed"));
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Mise à la corbeille impossible.");
+    }
   }
+
+  const title =
+    view === "recent" ? "Récents" : view === "shared" ? "Partagés avec moi" : "Mon Drive";
 
   return (
     // biome-ignore lint/a11y/noStaticElementInteractions: la zone de dépôt est une amélioration souris ; le chemin clavier reste le bouton « Téléverser ».
@@ -202,58 +290,73 @@ export function DriveBrowser({ folderId }: Props) {
       onDragLeave={() => setDragOver(false)}
       onDrop={onDrop}
     >
-      <header className="flex flex-wrap items-center gap-3">
-        <nav aria-label="Fil d'Ariane" className="flex min-w-0 flex-1 items-center gap-1 text-sm">
-          <Link to="/app/drive" className="font-medium hover:underline">
-            Drive
-          </Link>
-          {crumbs.map((crumb, index) => {
-            const isLast = index === crumbs.length - 1;
-            return (
-              <span key={crumb.id} className="flex min-w-0 items-center gap-1">
-                <span className="text-muted-foreground">/</span>
-                {isLast ? (
-                  <span className="truncate font-medium">{crumb.name}</span>
-                ) : (
-                  <Link
-                    to="/app/drive/$entryId"
-                    params={{ entryId: crumb.id }}
-                    className="truncate hover:underline"
-                  >
-                    {crumb.name}
-                  </Link>
-                )}
-              </span>
-            );
-          })}
-        </nav>
-
-        <div className="flex flex-wrap items-center gap-2">
-          <Button variant="outline" size="sm" onClick={() => setFolderDialogOpen(true)}>
-            <IconFolder /> Nouveau dossier
-          </Button>
-          <Button variant="outline" size="sm" onClick={() => setDocDialogOpen(true)}>
-            <IconFileText /> Nouveau document
-          </Button>
-          <Button size="sm" loading={uploading} onClick={() => fileInputRef.current?.click()}>
-            {uploading ? "Envoi…" : "Téléverser"}
-          </Button>
-          <input
-            ref={fileInputRef}
-            type="file"
-            multiple
-            className="hidden"
-            onChange={(event) => {
-              if (event.target.files) void onUpload(event.target.files);
-            }}
-          />
+      {/* Onglets de vues */}
+      <nav aria-label="Vues du Drive" className="flex items-center gap-1 border-b border-border">
+        {TABS.map((tab) => (
           <Link
-            to="/app/drive/trash"
-            className="rounded-md px-3 py-2 text-sm text-muted-foreground hover:bg-muted hover:text-foreground"
+            key={tab.id}
+            to={tab.to}
+            className={cn(
+              "-mb-px border-b-2 px-3 py-2 text-sm font-medium transition-colors",
+              view === tab.id
+                ? "border-primary text-foreground"
+                : "border-transparent text-muted-foreground hover:text-foreground",
+            )}
           >
-            Corbeille
+            {tab.label}
           </Link>
-        </div>
+        ))}
+      </nav>
+
+      <header className="flex flex-wrap items-center gap-3">
+        {view === "drive" ? (
+          <nav aria-label="Fil d'Ariane" className="flex min-w-0 flex-1 items-center gap-1 text-sm">
+            <Link to="/app/drive" className="font-medium hover:underline">
+              Mon Drive
+            </Link>
+            {crumbs.map((crumb, index) => {
+              const isLast = index === crumbs.length - 1;
+              return (
+                <span key={crumb.id} className="flex min-w-0 items-center gap-1">
+                  <span className="text-muted-foreground">/</span>
+                  {isLast ? (
+                    <span className="truncate font-medium">{crumb.name}</span>
+                  ) : (
+                    <Link
+                      to="/app/drive/$entryId"
+                      params={{ entryId: crumb.id }}
+                      className="truncate hover:underline"
+                    >
+                      {crumb.name}
+                    </Link>
+                  )}
+                </span>
+              );
+            })}
+          </nav>
+        ) : (
+          <h1 className="min-w-0 flex-1 truncate text-lg font-semibold tracking-tight">{title}</h1>
+        )}
+
+        {view === "drive" ? (
+          <div className="flex flex-wrap items-center gap-2">
+            <NewMenu
+              onFolder={() => setFolderDialogOpen(true)}
+              onDoc={() => setDocDialogOpen(true)}
+              onUpload={() => fileInputRef.current?.click()}
+              uploading={uploading}
+            />
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              className="hidden"
+              onChange={(event) => {
+                if (event.target.files) void onUpload(event.target.files);
+              }}
+            />
+          </div>
+        ) : null}
       </header>
 
       {error ? (
@@ -265,24 +368,60 @@ export function DriveBrowser({ folderId }: Props) {
         </p>
       ) : null}
 
-      {entries === null ? (
+      {/* Recherche locale + filtres */}
+      <div className="flex flex-wrap items-center gap-2">
+        <Input
+          aria-label="Rechercher dans cette vue"
+          placeholder="Rechercher dans cette vue…"
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+          className="h-8 max-w-xs"
+        />
+        <select
+          aria-label="Filtrer par type"
+          value={typeFilter}
+          onChange={(event) => setTypeFilter(event.target.value as TypeFilter)}
+          className="h-8 rounded-md border border-input bg-background px-2 text-sm"
+        >
+          <option value="all">Tous les types</option>
+          <option value="folders">Dossiers</option>
+          <option value="files">Fichiers</option>
+        </select>
+        <span className="ml-auto text-xs text-muted-foreground">
+          {visibleEntries ? `${visibleEntries.length} élément(s)` : ""}
+        </span>
+      </div>
+
+      {visibleEntries === null ? (
         <p className="text-sm text-muted-foreground">Chargement…</p>
-      ) : entries.length === 0 ? (
+      ) : visibleEntries.length === 0 ? (
         <Card>
           <div className="flex flex-col items-center gap-3 px-6 py-14 text-center">
             <IconFolder />
-            <p className="font-medium">Ce dossier est vide</p>
-            <p className="max-w-sm text-sm text-muted-foreground">
-              Créez un dossier, un document, ou glissez des fichiers ici pour les téléverser.
+            <p className="font-medium">
+              {view === "recent"
+                ? "Aucun élément récent"
+                : view === "shared"
+                  ? "Rien ne vous a été partagé pour le moment"
+                  : query.trim().length > 0 || typeFilter !== "all"
+                    ? "Aucun résultat pour ces critères"
+                    : "Ce dossier est vide"}
             </p>
-            <div className="flex gap-2">
-              <Button size="sm" variant="outline" onClick={() => setFolderDialogOpen(true)}>
-                Nouveau dossier
-              </Button>
-              <Button size="sm" onClick={() => fileInputRef.current?.click()}>
-                Téléverser un fichier
-              </Button>
-            </div>
+            <p className="max-w-sm text-sm text-muted-foreground">
+              {view === "drive"
+                ? "Créez un dossier, un document, ou glissez des fichiers ici pour les téléverser."
+                : "Les éléments apparaîtront ici automatiquement."}
+            </p>
+            {view === "drive" ? (
+              <div className="flex gap-2">
+                <Button size="sm" variant="outline" onClick={() => setFolderDialogOpen(true)}>
+                  Nouveau dossier
+                </Button>
+                <Button size="sm" onClick={() => fileInputRef.current?.click()}>
+                  Téléverser un fichier
+                </Button>
+              </div>
+            ) : null}
           </div>
         </Card>
       ) : (
@@ -290,14 +429,26 @@ export function DriveBrowser({ folderId }: Props) {
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-border bg-muted/40 text-left text-xs uppercase tracking-wider text-muted-foreground">
-                <th className="w-full px-4 py-2 font-medium">Nom</th>
-                <th className="hidden px-4 py-2 font-medium sm:table-cell">Taille</th>
+                <th className="w-full px-4 py-2 font-medium">
+                  <button
+                    type="button"
+                    className="inline-flex items-center gap-1 hover:text-foreground"
+                    onClick={() => setSortAsc((current) => !current)}
+                    title="Trier par nom"
+                  >
+                    Nom <span aria-hidden>{sortAsc ? "↑" : "↓"}</span>
+                  </button>
+                </th>
+                <th className="hidden px-4 py-2 font-medium sm:table-cell">
+                  {view === "shared" ? "Droit" : "Propriétaire"}
+                </th>
                 <th className="hidden px-4 py-2 font-medium md:table-cell">Modifié</th>
-                <th className="px-4 py-2 text-right font-medium">Actions</th>
+                <th className="hidden px-4 py-2 font-medium sm:table-cell">Taille</th>
+                <th className="px-2 py-2 font-medium sr-only">Actions</th>
               </tr>
             </thead>
             <tbody>
-              {entries.map((entry) => (
+              {visibleEntries.map((entry) => (
                 <tr
                   key={entry.id}
                   className="border-b border-border/60 last:border-b-0 hover:bg-muted/30"
@@ -308,9 +459,12 @@ export function DriveBrowser({ folderId }: Props) {
                       onClick={() => void onOpen(entry)}
                       className="flex w-full min-w-0 items-center gap-2 text-left"
                     >
-                      <span className="text-muted-foreground">
-                        {entry.kind === "folder" ? <IconFolder /> : <IconFileText />}
-                      </span>
+                      <FileIcon
+                        kind={entry.kind}
+                        mimeType={entry.mimeType}
+                        name={entry.name}
+                        className="size-4 shrink-0"
+                      />
                       <span className="truncate font-medium">{entry.name}</span>
                       {entry.mimeType === DOCS_MIME ? (
                         <Badge variant="accent" className="hidden sm:inline-flex">
@@ -320,45 +474,30 @@ export function DriveBrowser({ folderId }: Props) {
                     </button>
                   </td>
                   <td className="hidden px-4 py-2 text-muted-foreground sm:table-cell">
+                    {view === "shared"
+                      ? (ROLE_LABELS[sharedRoles.get(entry.id) ?? "viewer"] ?? "Partagé")
+                      : entry.isOwner
+                        ? "moi"
+                        : "Partagé"}
+                  </td>
+                  <td className="hidden whitespace-nowrap px-4 py-2 text-muted-foreground md:table-cell">
+                    {formatDateShort(entry.updatedAt)}
+                  </td>
+                  <td className="hidden px-4 py-2 text-muted-foreground sm:table-cell">
                     {entry.kind === "folder" ? "—" : formatBytes(entry.sizeBytes)}
                   </td>
-                  <td className="hidden px-4 py-2 text-muted-foreground md:table-cell">
-                    {formatDate(entry.updatedAt)}
-                  </td>
-                  <td className="px-4 py-2">
-                    <div className="flex items-center justify-end gap-1">
-                      {entry.kind === "file" && entry.mimeType !== DOCS_MIME ? (
-                        <a
-                          href={`/api/drive/download/${entry.id}`}
-                          download
-                          className="rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
-                        >
-                          Télécharger
-                        </a>
-                      ) : null}
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => {
-                          setRenameTarget(entry);
-                          setRenameValue(entry.name);
-                        }}
-                      >
-                        Renommer
-                      </Button>
-                      <Button variant="ghost" size="sm" onClick={() => setShareTarget(entry)}>
-                        Partager
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        aria-label={`Mettre « ${entry.name} » à la corbeille`}
-                        title="Mettre à la corbeille"
-                        onClick={() => void onTrash(entry)}
-                      >
-                        <IconTrash />
-                      </Button>
-                    </div>
+                  <td className="px-2 py-2 text-right">
+                    <RowMenu
+                      entry={entry}
+                      showDownload={entry.kind === "file" && entry.mimeType !== DOCS_MIME}
+                      onOpen={() => void onOpen(entry)}
+                      onRename={() => {
+                        setRenameTarget(entry);
+                        setRenameValue(entry.name);
+                      }}
+                      onShare={() => setShareTarget(entry)}
+                      onTrash={() => void onTrash(entry)}
+                    />
                   </td>
                 </tr>
               ))}
@@ -379,6 +518,8 @@ export function DriveBrowser({ folderId }: Props) {
           </p>
         </div>
       ) : null}
+
+      {/* --- Dialogues --------------------------------------------------------- */}
 
       <Dialog
         open={folderDialogOpen}
@@ -425,7 +566,7 @@ export function DriveBrowser({ folderId }: Props) {
               autoFocus
             />
             <p className="text-xs text-muted-foreground">
-              Le document sera créé dans ce dossier avec les mêmes permissions.
+              Le document sera créé ici avec les mêmes permissions.
             </p>
           </div>
           <div className="flex justify-end gap-2">
@@ -525,6 +666,176 @@ export function DriveBrowser({ folderId }: Props) {
           </div>
         ) : null}
       </Dialog>
+    </div>
+  );
+}
+
+/** Menu « Nouveau » : dossier, document ou téléversement. */
+function NewMenu({
+  onFolder,
+  onDoc,
+  onUpload,
+  uploading,
+}: {
+  onFolder: () => void;
+  onDoc: () => void;
+  onUpload: () => void;
+  uploading: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+
+  function choose(action: () => void) {
+    setOpen(false);
+    action();
+  }
+
+  return (
+    <div className="relative">
+      <Button
+        size="sm"
+        onClick={() => setOpen((current) => !current)}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        loading={uploading}
+      >
+        Nouveau <IconChevronDown className="size-3.5" />
+      </Button>
+      {open ? (
+        <>
+          <button
+            type="button"
+            aria-label="Fermer le menu"
+            className="fixed inset-0 z-10 cursor-default"
+            onClick={() => setOpen(false)}
+          />
+          <div
+            role="menu"
+            className="absolute right-0 z-20 mt-1 w-56 rounded-md border border-border bg-card p-1 shadow-lg"
+          >
+            <button
+              type="button"
+              role="menuitem"
+              className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-sm hover:bg-muted"
+              onClick={() => choose(onFolder)}
+            >
+              <IconFolder /> Nouveau dossier
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-sm hover:bg-muted"
+              onClick={() => choose(onDoc)}
+            >
+              <FileIcon kind="file" mimeType={DOCS_MIME} name="doc" /> Nouveau document
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-sm hover:bg-muted"
+              onClick={() => choose(onUpload)}
+            >
+              Téléverser un fichier
+            </button>
+          </div>
+        </>
+      ) : null}
+    </div>
+  );
+}
+
+/** Menu contextuel « ⋮ » d'une ligne. */
+function RowMenu({
+  entry,
+  showDownload,
+  onOpen,
+  onRename,
+  onShare,
+  onTrash,
+}: {
+  entry: DriveEntryView;
+  showDownload: boolean;
+  onOpen: () => void;
+  onRename: () => void;
+  onShare: () => void;
+  onTrash: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+
+  function choose(action: () => void) {
+    setOpen(false);
+    action();
+  }
+
+  return (
+    <div className="relative inline-block text-left">
+      <Button
+        variant="ghost"
+        size="sm"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-label={`Actions pour « ${entry.name} »`}
+        title="Actions"
+        onClick={() => setOpen((current) => !current)}
+      >
+        ⋮
+      </Button>
+      {open ? (
+        <>
+          <button
+            type="button"
+            aria-label="Fermer le menu"
+            className="fixed inset-0 z-10 cursor-default"
+            onClick={() => setOpen(false)}
+          />
+          <div
+            role="menu"
+            className="absolute right-0 z-20 mt-1 w-52 rounded-md border border-border bg-card p-1 text-left shadow-lg"
+          >
+            <button
+              type="button"
+              role="menuitem"
+              className="block w-full rounded-sm px-2 py-1.5 text-left text-sm hover:bg-muted"
+              onClick={() => choose(onOpen)}
+            >
+              Ouvrir
+            </button>
+            {showDownload ? (
+              <a
+                role="menuitem"
+                href={`/api/drive/download/${entry.id}`}
+                download
+                className="block w-full rounded-sm px-2 py-1.5 text-left text-sm hover:bg-muted"
+              >
+                Télécharger
+              </a>
+            ) : null}
+            <button
+              type="button"
+              role="menuitem"
+              className="block w-full rounded-sm px-2 py-1.5 text-left text-sm hover:bg-muted"
+              onClick={() => choose(onRename)}
+            >
+              Renommer
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              className="block w-full rounded-sm px-2 py-1.5 text-left text-sm hover:bg-muted"
+              onClick={() => choose(onShare)}
+            >
+              Partager
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-sm text-destructive hover:bg-muted"
+              onClick={() => choose(onTrash)}
+            >
+              <IconTrash /> Mettre à la corbeille
+            </button>
+          </div>
+        </>
+      ) : null}
     </div>
   );
 }

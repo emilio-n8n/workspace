@@ -32,9 +32,11 @@ export const grantResourceType = pgEnum("grant_resource_type", [
   "sheet",
   "presentation",
   "calendar_event",
+  "calendar",
   "mail_message",
   "form",
   "chat_channel",
+  "task_list",
 ]);
 
 /** Autorisations explicites par ressource (ADR-0004 — refus par défaut). */

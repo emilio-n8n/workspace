@@ -29,6 +29,7 @@
     "@workspace/drive": "workspace:*",
     "@workspace/permissions": "workspace:*",
     "@workspace/storage": "workspace:*",
+    "@workspace/tasks": "workspace:*",
     "@workspace/ui": "workspace:*",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",

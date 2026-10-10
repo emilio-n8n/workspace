@@ -6,6 +6,7 @@ import {
   createGrant,
   type GrantRole,
   type GrantSubject,
+  listGrantedResourceIds,
   listGrants,
   type ResourceGrantRow,
   resolveRole,
@@ -232,6 +233,57 @@ export async function listTrash(actor: Actor): Promise<DriveEntry[]> {
       ),
     )
     .orderBy(desc(driveFiles.trashedAt));
+}
+
+/** Éléments modifiés récemment (accessibles), du plus récent au plus ancien. */
+export async function listRecent(
+  actor: Actor,
+  options: { limit?: number } = {},
+): Promise<DriveEntry[]> {
+  const limit = Math.min(Math.max(options.limit ?? 50, 1), 100);
+
+  const rows = await db()
+    .select()
+    .from(driveFiles)
+    .where(and(eq(driveFiles.orgId, actor.orgId), eq(driveFiles.status, "active")))
+    .orderBy(desc(driveFiles.updatedAt))
+    .limit(200);
+
+  const visible: DriveEntry[] = [];
+  for (const row of rows) {
+    if (visible.length >= limit) break;
+    if (row.ownerId === actor.userId) {
+      visible.push(row);
+      continue;
+    }
+    const role = await effectiveRole(actor, row.id);
+    if (roleSatisfies(role, "read")) visible.push(row);
+  }
+  return visible;
+}
+
+/** Éléments partagés avec l'acteur (hors fichiers qu'il possède), avec son rôle. */
+export async function listSharedWithMe(
+  actor: Actor,
+): Promise<{ entry: DriveEntry; role: GrantRole }[]> {
+  const granted = await listGrantedResourceIds(actor, "file");
+  if (granted.size === 0) return [];
+
+  const rows = await db()
+    .select()
+    .from(driveFiles)
+    .where(
+      and(
+        eq(driveFiles.orgId, actor.orgId),
+        eq(driveFiles.status, "active"),
+        inArray(driveFiles.id, [...granted.keys()]),
+      ),
+    )
+    .orderBy(desc(driveFiles.updatedAt));
+
+  return rows
+    .filter((row) => row.ownerId !== actor.userId)
+    .map((row) => ({ entry: row, role: granted.get(row.id) ?? "viewer" }));
 }
 
 /** Recherche littérale par nom parmi les fichiers accessibles (agents, UI). */

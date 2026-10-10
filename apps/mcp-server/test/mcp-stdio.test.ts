@@ -5,6 +5,7 @@ import { issueApiToken, type WorkspaceScope } from "@workspace/auth";
 import { closeDb, getDb, schema } from "@workspace/database";
 import { createDocument, saveDocument } from "@workspace/docs";
 import { uploadFile } from "@workspace/drive";
+import { createList as createTaskList } from "@workspace/tasks";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
 
@@ -102,7 +103,7 @@ afterAll(async () => {
 });
 
 describe("serveur MCP — intégration réelle (stdio)", () => {
-  it("liste les cinq outils et répond à me.whoami avec le bon principal", async () => {
+  it("liste les huit outils et répond à me.whoami avec le bon principal", async () => {
     const f = await fixtures(["drive:read"]);
     const { client, transport } = await connectClient(f.token);
     try {
@@ -114,6 +115,9 @@ describe("serveur MCP — intégration réelle (stdio)", () => {
         "files.read",
         "files.search",
         "me.whoami",
+        "tasks.create",
+        "tasks.list",
+        "tasks.lists",
       ]);
 
       const whoami = await client.callTool({ name: "me.whoami", arguments: {} });
@@ -296,6 +300,55 @@ describe("serveur MCP — intégration réelle (stdio)", () => {
         arguments: { fileId: entry.id },
       });
       expect(read.isError).toBe(true);
+    } finally {
+      await client.close();
+      await transport.close();
+    }
+  });
+});
+
+describe("serveur MCP — tâches (lecture et création par un agent)", () => {
+  it("tasks.lists + tasks.create + tasks.list bout en bout", async () => {
+    const f = await fixtures(["tasks:read", "tasks:write"]);
+    const actor = { userId: f.userId, orgId: f.orgId };
+    const list = await createTaskList(actor, { name: "Agent" });
+
+    const { client, transport } = await connectClient(f.token);
+    try {
+      const lists = await client.callTool({ name: "tasks.lists", arguments: {} });
+      expect(lists.isError).toBeFalsy();
+      const listRows = payloadOf(lists) as unknown as { id: string; name: string }[];
+      expect(listRows[0]?.name).toBe("Agent");
+
+      const created = await client.callTool({
+        name: "tasks.create",
+        arguments: { listId: list.id, title: "Préparer le rapport" },
+      });
+      expect(created.isError).toBeFalsy();
+
+      const all = await client.callTool({ name: "tasks.list", arguments: {} });
+      const rows = payloadOf(all) as unknown as { title: string; listName: string }[];
+      expect(
+        rows.some((row) => row.title === "Préparer le rapport" && row.listName === "Agent"),
+      ).toBe(true);
+    } finally {
+      await client.close();
+      await transport.close();
+    }
+  });
+
+  it("tasks.create refusé sans scope d'écriture (tasks:read seul)", async () => {
+    const f = await fixtures(["tasks:read"]);
+    const actor = { userId: f.userId, orgId: f.orgId };
+    const list = await createTaskList(actor, { name: "Lecture seule" });
+
+    const { client, transport } = await connectClient(f.token);
+    try {
+      const created = await client.callTool({
+        name: "tasks.create",
+        arguments: { listId: list.id, title: "Interdit" },
+      });
+      expect(created.isError).toBe(true);
     } finally {
       await client.close();
       await transport.close();

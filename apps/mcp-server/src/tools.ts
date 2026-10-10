@@ -3,6 +3,7 @@ import type { TokenPrincipal } from "@workspace/auth";
 import { getDb, schema } from "@workspace/database";
 import { getDocumentByFileId, toPlainText } from "@workspace/docs";
 import { download, searchEntries } from "@workspace/drive";
+import { createTask, listLists, listTasks } from "@workspace/tasks";
 import { desc, eq } from "drizzle-orm";
 import { z } from "zod";
 import { errorResult, requireScope, withAudit } from "./audit.ts";
@@ -219,6 +220,126 @@ export function registerTools(server: McpServer, principal: TokenPrincipal): voi
                   currentVersion: document.currentVersion,
                   truncated,
                   text,
+                },
+                null,
+                2,
+              ),
+            },
+          ],
+        };
+      }),
+  );
+
+  server.registerTool(
+    "tasks.lists",
+    {
+      title: "Lister les listes de tâches",
+      description:
+        "Liste les listes de tâches accessibles (personnelles et partagées) avec le rôle du propriétaire du jeton. Scope requis : tasks:read.",
+      inputSchema: {},
+    },
+    async () =>
+      withAudit(principal, "tasks.lists", async () => {
+        requireScope(principal, "tasks:read");
+
+        const rows = await listLists(actor);
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify(
+                rows.map((row) => ({
+                  id: row.list.id,
+                  name: row.list.name,
+                  role: row.role,
+                })),
+                null,
+                2,
+              ),
+            },
+          ],
+        };
+      }),
+  );
+
+  server.registerTool(
+    "tasks.list",
+    {
+      title: "Lister les tâches",
+      description:
+        "Liste les tâches accessibles — d'une liste donnée, ou de toutes les listes si `listId` est omis. Scope requis : tasks:read.",
+      inputSchema: {
+        listId: z.string().uuid().optional(),
+      },
+    },
+    async ({ listId }) =>
+      withAudit(principal, "tasks.list", async () => {
+        requireScope(principal, "tasks:read");
+
+        const lists = await listLists(actor);
+        const targets = listId ? lists.filter((row) => row.list.id === listId) : lists;
+
+        const output: {
+          id: string;
+          listId: string;
+          listName: string;
+          title: string;
+          status: string;
+          priority: string;
+          dueAt: string | null;
+        }[] = [];
+
+        for (const target of targets) {
+          const rows = await listTasks(actor, { listId: target.list.id });
+          for (const task of rows) {
+            output.push({
+              id: task.id,
+              listId: target.list.id,
+              listName: target.list.name,
+              title: task.title,
+              status: task.status,
+              priority: task.priority,
+              dueAt: task.dueAt?.toISOString() ?? null,
+            });
+          }
+        }
+
+        return {
+          content: [{ type: "text" as const, text: JSON.stringify(output, null, 2) }],
+        };
+      }),
+  );
+
+  server.registerTool(
+    "tasks.create",
+    {
+      title: "Créer une tâche",
+      description:
+        "Crée une tâche dans une liste accessible en écriture. Scope requis : tasks:write.",
+      inputSchema: {
+        listId: z.string().uuid(),
+        title: z.string().min(1).max(500),
+        priority: z.enum(["low", "medium", "high"]).optional(),
+        dueAt: z.string().optional(),
+      },
+    },
+    async ({ listId, title, priority, dueAt }) =>
+      withAudit(principal, "tasks.create", async () => {
+        requireScope(principal, "tasks:write");
+
+        const task = await createTask(actor, { listId, title, priority, dueAt: dueAt ?? null });
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify(
+                {
+                  id: task.id,
+                  listId: task.listId,
+                  title: task.title,
+                  status: task.status,
+                  priority: task.priority,
+                  dueAt: task.dueAt?.toISOString() ?? null,
                 },
                 null,
                 2,

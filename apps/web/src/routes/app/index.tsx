@@ -20,13 +20,13 @@ const modules: { label: string; icon: React.ReactNode; phase: string; summary: s
   {
     label: "Drive",
     icon: <IconFolder />,
-    phase: "Phase 2",
+    phase: "Disponible",
     summary: "Fichiers, dossiers, partages, versions et corbeille.",
   },
   {
     label: "Docs",
     icon: <IconFileText />,
-    phase: "Phase 2",
+    phase: "Disponible",
     summary: "Édition riche, autosave, versions, export — fondé sur Tiptap 3.",
   },
   {
@@ -50,8 +50,8 @@ const modules: { label: string; icon: React.ReactNode; phase: string; summary: s
   {
     label: "Tasks",
     icon: <IconGrid />,
-    phase: "Phase 3",
-    summary: "Tâches, listes et échéances partagées.",
+    phase: "Disponible",
+    summary: "Tâches, listes partagées et échéances.",
   },
   {
     label: "Mail",

@@ -168,3 +168,48 @@ export async function listGrants(resource: Resource): Promise<ResourceGrantRow[]
     )
     .orderBy(sql`${resourceGrants.createdAt} asc`);
 }
+
+/**
+ * Ressources d'un type données à l'acteur par des grants (sans la propriété).
+ * Utilisé pour « Partagés avec moi » et les vues d'agrégation.
+ */
+export async function listGrantedResourceIds(
+  actor: Actor,
+  resourceType: ResourceType,
+): Promise<Map<string, GrantRole>> {
+  const db = getDb();
+  const now = new Date();
+
+  const rows = await db
+    .select({
+      resourceId: resourceGrants.resourceId,
+      subjectType: resourceGrants.subjectType,
+      subjectId: resourceGrants.subjectId,
+      role: resourceGrants.role,
+    })
+    .from(resourceGrants)
+    .where(
+      and(
+        eq(resourceGrants.resourceType, resourceType),
+        eq(resourceGrants.orgId, actor.orgId),
+        or(isNull(resourceGrants.expiresAt), gt(resourceGrants.expiresAt, now)),
+      ),
+    );
+
+  if (rows.length === 0) return new Map();
+
+  const groups = await loadGroupIds(actor);
+  const granted = new Map<string, GrantRole>();
+
+  for (const row of rows) {
+    const applies =
+      (row.subjectType === "org" && row.subjectId === actor.orgId) ||
+      (row.subjectType === "user" && row.subjectId === actor.userId) ||
+      (row.subjectType === "group" && groups.has(row.subjectId));
+    if (applies) {
+      granted.set(row.resourceId, highestRole(granted.get(row.resourceId), row.role) ?? "viewer");
+    }
+  }
+
+  return granted;
+}

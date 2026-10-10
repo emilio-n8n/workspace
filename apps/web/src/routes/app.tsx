@@ -21,6 +21,7 @@ import {
 } from "../components/icons";
 import type { Theme } from "../lib/theme";
 import { currentTheme, toggleTheme } from "../lib/theme";
+import { storageUsageFn } from "../server/drive";
 import { getSessionFn, getWorkspaceFn, type WorkspaceInfo } from "../server/session";
 
 export const Route = createFileRoute("/app")({
@@ -46,7 +47,7 @@ const navItems: NavItem[] = [
   { label: "Sheets", to: "/app", status: "soon", phase: "Phase 3", icon: <IconGrid /> },
   { label: "Slides", to: "/app", status: "soon", phase: "Phase 3", icon: <IconPresentation /> },
   { label: "Calendar", to: "/app", status: "soon", phase: "Phase 3", icon: <IconCalendar /> },
-  { label: "Tasks", to: "/app", status: "soon", phase: "Phase 3", icon: <IconGrid /> },
+  { label: "Tasks", to: "/app/tasks", status: "active", icon: <IconGrid /> },
   { label: "Forms", to: "/app", status: "soon", phase: "Phase 3", icon: <IconFileText /> },
   { label: "Mail", to: "/app", status: "soon", phase: "Phase 4", icon: <IconMail /> },
   { label: "Meet", to: "/app", status: "soon", phase: "Phase 4", icon: <IconVideo /> },
@@ -56,6 +57,11 @@ const navItems: NavItem[] = [
 function AppLayout() {
   const router = useRouter();
   const [workspace, setWorkspace] = useState<WorkspaceInfo>(null);
+  const [storage, setStorage] = useState<{
+    usedBytes: number;
+    fileCount: number;
+    quotaBytes: number | null;
+  } | null>(null);
   const [loadingWorkspace, setLoadingWorkspace] = useState(true);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [theme, setTheme] = useState<Theme>("light");
@@ -63,10 +69,22 @@ function AppLayout() {
   useEffect(() => {
     setTheme(currentTheme());
     void (async () => {
-      const data = await getWorkspaceFn();
+      const [data, usage] = await Promise.all([getWorkspaceFn(), storageUsageFn()]);
       setWorkspace(data);
+      setStorage(usage);
       setLoadingWorkspace(false);
     })();
+  }, []);
+
+  // Le stockage peut changer depuis n'importe quelle vue (upload, corbeille, purge).
+  useEffect(() => {
+    const onStorageChanged = () => {
+      void (async () => {
+        setStorage(await storageUsageFn());
+      })();
+    };
+    window.addEventListener("workspace:storage-changed", onStorageChanged);
+    return () => window.removeEventListener("workspace:storage-changed", onStorageChanged);
   }, []);
 
   async function onSignOut() {
@@ -96,6 +114,33 @@ function AppLayout() {
         <SidebarNav />
 
         <div className="border-t border-border p-3">
+          <div className="mb-3 border-b border-border pb-3">
+            <p className="px-1 text-xs font-medium text-muted-foreground">Stockage</p>
+            {storage ? (
+              <>
+                <p className="mt-0.5 px-1 text-sm font-medium">
+                  {formatBytes(storage.usedBytes)} utilisés
+                </p>
+                {storage.quotaBytes ? (
+                  <div className="mx-1 mt-1.5 h-1.5 overflow-hidden rounded-full bg-muted">
+                    <div
+                      className="h-full rounded-full bg-primary"
+                      style={{
+                        width: `${Math.min(100, (storage.usedBytes / storage.quotaBytes) * 100)}%`,
+                      }}
+                    />
+                  </div>
+                ) : (
+                  <p className="mt-0.5 px-1 text-xs text-muted-foreground">Quota non configuré</p>
+                )}
+                <p className="mt-0.5 px-1 text-xs text-muted-foreground">
+                  {storage.fileCount} fichier(s)
+                </p>
+              </>
+            ) : (
+              <p className="px-1 text-xs text-muted-foreground">…</p>
+            )}
+          </div>
           {loadingWorkspace ? (
             <p className="px-1 text-xs text-muted-foreground">Chargement…</p>
           ) : (
@@ -204,6 +249,13 @@ function AppLayout() {
       </div>
     </div>
   );
+}
+
+function formatBytes(size: number): string {
+  if (size < 1024) return `${size} o`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} Ko`;
+  if (size < 1024 * 1024 * 1024) return `${(size / (1024 * 1024)).toFixed(1)} Mo`;
+  return `${(size / (1024 * 1024 * 1024)).toFixed(2)} Go`;
 }
 
 function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {

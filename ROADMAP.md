@@ -37,9 +37,15 @@ Prouver de bout en bout : authentification → stockage → permissions → édi
 - [x] MCP v1 : `files.search`, `files.read`, `docs.read` — refus sans scope et isolation inter-organisations testés
 - [▶] E2E des critères de preuve MVP : parcours Drive/Docs + partage réel entre deux comptes avec révocation (vérification en cours)
 
-## Phase 3 — Suite de productivité ○
+## Phase 3 — Suite de productivité ▶
 
-Sheets (Univer + pont xlsx maison — ADR-0008), Slides (scène maison hybride — ADR-0009) → Calendar (CalDAV), Tasks, Forms. Intégration navigation, recherche et permissions communes. Collaboration temps réel Docs (Yjs/Hocuspocus). MCP étendu (`docs.create/update`, `files.write/delete`, recherche plein texte).
+- [x] Tasks : listes partagées, tâches (échéances, priorités, statuts, assignation), filtres, ajout rapide, partage par membre — 8 tests + E2E navigateur ; MCP `tasks.lists` / `tasks.list` / `tasks.create` (2 tests d'intégration)
+- [ ] Calendar (vues jour/semaine/mois, invitations, CalDAV) — prochaine brique
+- [ ] Forms (création, réponses, partage public)
+- [ ] Sheets (Univer + pont xlsx maison — ADR-0008) — démarre par les POC exigés
+- [ ] Slides (scène maison hybride — ADR-0009) — démarre par les POC exigés
+- [ ] Collaboration temps réel Docs (Yjs/Hocuspocus)
+- [ ] MCP étendu (`tasks.update/delete`, `docs.create/update`, `files.write/delete`, recherche plein texte)
 
 ## Phase 4 — Communication ○
 

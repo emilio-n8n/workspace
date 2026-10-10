@@ -206,6 +206,14 @@ test("drive : dossiers, téléversement, corbeille et document avec autosave", a
   });
   await expect(page.getByRole("button", { name: "notes.txt", exact: true })).toBeVisible();
 
+  // Vues agrégées
+  await page.getByRole("link", { name: "Récents" }).click();
+  await expect(page.getByText("notes.txt")).toBeVisible();
+  await page.getByRole("link", { name: "Partagés avec moi" }).click();
+  await expect(page.getByText("Rien ne vous a été partagé pour le moment")).toBeVisible();
+  await page.getByRole("link", { name: "Mon Drive" }).click();
+  await expect(page.getByRole("button", { name: "notes.txt", exact: true })).toBeVisible();
+
   await page.screenshot({ path: "e2e/screenshots/drive.png", fullPage: true });
 
   // Navigation dans le dossier puis retour par le fil d'Ariane
@@ -215,7 +223,8 @@ test("drive : dossiers, téléversement, corbeille et document avec autosave", a
   await expect(page).toHaveURL(/\/app\/drive$/);
 
   // Corbeille puis restauration
-  await page.getByRole("button", { name: "Mettre « notes.txt » à la corbeille" }).click();
+  await page.getByRole("button", { name: /Actions pour « notes.txt »/ }).click();
+  await page.getByRole("menuitem", { name: "Mettre à la corbeille" }).click();
   await expect(page.getByRole("button", { name: "notes.txt", exact: true })).toHaveCount(0);
 
   await page.getByRole("link", { name: "Corbeille" }).click();
@@ -225,7 +234,8 @@ test("drive : dossiers, téléversement, corbeille et document avec autosave", a
 
   // Document : création depuis le Drive puis édition avec autosave
   await page.getByRole("link", { name: "Drive", exact: true }).first().click();
-  await page.getByRole("button", { name: "Nouveau document" }).click();
+  await page.getByRole("button", { name: "Nouveau", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Nouveau document" }).click();
   await page.getByLabel("Titre du document").fill("Rapport E2E");
   await page.getByRole("button", { name: "Créer et ouvrir" }).click();
 
@@ -267,7 +277,8 @@ test("partage : deuxième membre, accès réel via l'interface, révocation", as
   await logout(page);
   await login(page, ownerEmail);
   await page.getByRole("link", { name: "Drive" }).click();
-  await page.getByRole("button", { name: "Partager" }).first().click();
+  await page.getByRole("button", { name: /Actions pour « Commun »/ }).click();
+  await page.getByRole("menuitem", { name: "Partager" }).click();
   await page.getByLabel("E-mail du membre").fill(memberEmail);
   await page.locator("dialog[open]").getByRole("button", { name: "Partager", exact: true }).click();
   await expect(page.getByText(`Bruno Partage (${memberEmail})`)).toBeVisible();
@@ -285,7 +296,8 @@ test("partage : deuxième membre, accès réel via l'interface, révocation", as
   await logout(page);
   await login(page, ownerEmail);
   await page.getByRole("link", { name: "Drive" }).click();
-  await page.getByRole("button", { name: "Partager" }).first().click();
+  await page.getByRole("button", { name: /Actions pour « Commun »/ }).click();
+  await page.getByRole("menuitem", { name: "Partager" }).click();
   await page.getByRole("button", { name: /Retirer l'accès de Bruno/ }).click();
   await expect(page.getByText("Personne d'autre n'a accès pour le moment.")).toBeVisible();
   await page.keyboard.press("Escape");
@@ -297,4 +309,36 @@ test("partage : deuxième membre, accès réel via l'interface, révocation", as
   await switchActiveOrg(page, orgId);
   await page.getByRole("link", { name: "Drive" }).click();
   await expect(page.getByText("Ce dossier est vide")).toBeVisible();
+});
+
+test("tâches : liste, ajout rapide, terminer, filtres et édition", async ({ page }) => {
+  const email = uniqueEmail("taches");
+  await signupNewUser(page, "Tâches E2E", email);
+
+  await page.getByRole("link", { name: "Tasks" }).click();
+  await expect(page.getByText("Aucune liste pour le moment")).toBeVisible();
+
+  // Création de liste
+  await page.getByRole("button", { name: "Nouvelle liste" }).first().click();
+  await page.getByLabel("Nom de la liste").fill("Projet E2E");
+  await page.getByRole("button", { name: "Créer la liste" }).click();
+  await expect(page.getByRole("button", { name: "Projet E2E" })).toBeVisible();
+
+  // Ajout rapide
+  await page.getByLabel("Ajouter une tâche").fill("Relire la roadmap");
+  await page.keyboard.press("Enter");
+  await expect(page.getByText("Relire la roadmap")).toBeVisible();
+
+  // Terminer puis filtrer sur Terminées
+  await page.getByRole("checkbox", { name: /Marquer « Relire la roadmap »/ }).check();
+  await page.getByRole("button", { name: "Terminées" }).click();
+  await expect(page.getByText("Relire la roadmap")).toBeVisible();
+
+  // Édition : priorité haute puis enregistrement
+  await page.getByText("Relire la roadmap").click();
+  await page.getByLabel("Priorité", { exact: true }).selectOption("high");
+  await page.getByRole("button", { name: "Enregistrer" }).click();
+
+  await page.getByRole("button", { name: "Toutes" }).click();
+  await expect(page.getByLabel("Priorité Haute").first()).toBeVisible();
 });
