@@ -1,0 +1,127 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    name: Typecheck, lint, tests, build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: workspace
+          POSTGRES_PASSWORD: workspace
+          POSTGRES_DB: workspace_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U workspace"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+
+    env:
+      DATABASE_URL: postgres://workspace:workspace@127.0.0.1:5432/workspace_test
+      TEST_DATABASE_URL: postgres://workspace:workspace@127.0.0.1:5432/workspace_test
+      SESSION_SECRET: ci-session-secret-with-enough-length-0000
+      PUBLIC_URL: http://localhost:3000
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Apply migrations (base de test)
+        run: pnpm --filter @workspace/database db:migrate
+
+      - name: Lint & format (Biome)
+        run: pnpm exec biome check .
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Tests unitaires & intégration
+        run: pnpm test
+
+      - name: Build web
+        run: pnpm --filter @workspace/web build
+
+  e2e:
+    name: E2E navigateur (Playwright)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: checks
+
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: workspace
+          POSTGRES_PASSWORD: workspace
+          POSTGRES_DB: workspace_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U workspace"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+
+    env:
+      DATABASE_URL: postgres://workspace:workspace@127.0.0.1:5432/workspace_test
+      TEST_DATABASE_URL: postgres://workspace:workspace@127.0.0.1:5432/workspace_test
+      SESSION_SECRET: ci-session-secret-with-enough-length-0000
+      PUBLIC_URL: http://localhost:3000
+      CI: "true"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Apply migrations (base de test)
+        run: pnpm --filter @workspace/database db:migrate
+
+      - name: Installer Chromium (Playwright)
+        run: npx playwright install --with-deps chromium
+
+      - name: Tests E2E
+        run: pnpm --filter @workspace/web test:e2e
+
+      - name: Rapport d'échec
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: apps/web/test-results
+          retention-days: 7

@@ -95,3 +95,40 @@ test("mot de passe trop court refusé par le navigateur", async ({ page }) => {
   // Toujours sur /signup : le formulaire HTML bloque l'envoi.
   await expect(page).toHaveURL(/\/signup$/);
 });
+
+test("jetons d'API : création (affiché une seule fois), liste, révocation", async ({ page }) => {
+  const email = uniqueEmail();
+
+  await gotoHydrated(page, "/signup");
+  await page.getByLabel("Nom complet").fill("Jeton E2E");
+  await page.getByLabel("Adresse e-mail").fill(email);
+  await page.getByLabel("Mot de passe").fill(PASSWORD);
+  await page.getByRole("button", { name: "Créer mon compte" }).click();
+  await expect(page).toHaveURL(/\/app/, { timeout: 25_000 });
+  await expect(page.getByRole("heading", { name: /Bonjour/ })).toBeVisible();
+
+  // Navigation réaliste par la barre latérale
+  await page.getByRole("link", { name: "Agents & jetons" }).click();
+  await expect(page.getByRole("heading", { name: /Agents & jetons/ })).toBeVisible();
+  await expect(page.getByText("Aucun jeton pour le moment.")).toBeVisible();
+
+  // Création
+  await page.getByLabel("Nom").fill("Jeton E2E");
+  await page.getByLabel(/docs:read/).check();
+  await page.getByRole("button", { name: "Créer le jeton" }).click();
+
+  // Affichage unique (ici : visible, avec le préfixe réel)
+  await expect(page.getByText("Votre nouveau jeton — affiché une seule fois")).toBeVisible();
+  const shownToken = await page.locator("code", { hasText: "wsk_" }).first().innerText();
+  expect(shownToken.startsWith("wsk_")).toBe(true);
+
+  // Ligne de tableau, état actif
+  const row = page.getByRole("row", { name: /Jeton E2E/ });
+  await expect(row).toBeVisible();
+  await expect(row.getByText("Actif")).toBeVisible();
+  await expect(row.getByText("docs:read")).toBeVisible();
+
+  // Révocation immédiate
+  await row.getByRole("button", { name: /Révoquer/ }).click();
+  await expect(page.getByRole("row", { name: /Jeton E2E/ }).getByText("Révoqué")).toBeVisible();
+});

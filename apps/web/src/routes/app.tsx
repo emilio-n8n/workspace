@@ -9,6 +9,7 @@ import {
   IconFolder,
   IconGrid,
   IconHome,
+  IconKey,
   IconLogout,
   IconMail,
   IconMenu,
@@ -49,6 +50,7 @@ const navItems: NavItem[] = [
   { label: "Forms", to: "/app", status: "soon", phase: "Phase 3", icon: <IconFileText /> },
   { label: "Mail", to: "/app", status: "soon", phase: "Phase 4", icon: <IconMail /> },
   { label: "Meet", to: "/app", status: "soon", phase: "Phase 4", icon: <IconVideo /> },
+  { label: "Agents & jetons", to: "/app/settings/tokens", status: "active", icon: <IconKey /> },
 ];
 
 function AppLayout() {

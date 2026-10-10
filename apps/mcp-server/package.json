@@ -1,0 +1,27 @@
+{
+  "name": "@workspace/mcp-server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/main.ts",
+  "scripts": {
+    "dev": "tsx watch src/main.ts",
+    "start": "tsx src/main.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "@workspace/auth": "workspace:*",
+    "@workspace/config": "workspace:*",
+    "@workspace/database": "workspace:*",
+    "drizzle-orm": "^0.45.4",
+    "zod": "^4.1.12"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "tsx": "^4.19.0",
+    "typescript": "^6.0.2",
+    "vitest": "^3.2.4"
+  }
+}

@@ -138,3 +138,30 @@ export function IconClose(props: SVGProps<SVGSVGElement>) {
     </Svg>
   );
 }
+
+export function IconKey(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Svg {...props}>
+      <circle cx="5" cy="8" r="2.6" />
+      <path d="m7 8h7M11.5 8v2M13.2 8v1.5" />
+    </Svg>
+  );
+}
+
+export function IconCopy(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Svg {...props}>
+      <rect x="5.5" y="5.5" width="8" height="8" rx="1.2" />
+      <path d="M3 10.5V3.7A1.2 1.2 0 0 1 4.2 2.5H11" />
+    </Svg>
+  );
+}
+
+export function IconTrash(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Svg {...props}>
+      <path d="M3 4.5h10M6.5 4.5v-2h3v2M4.5 4.5l.6 9h5.8l.6-9" />
+      <path d="M6.8 7v4M9.2 7v4" />
+    </Svg>
+  );
+}
