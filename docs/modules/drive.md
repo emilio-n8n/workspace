@@ -1,6 +1,6 @@
 # Contrat — Drive
 
-- **Statut** : spécifié (développement en Phase 2)
+- **Statut** : en développement — cœur service vérifié (11 tests) ; UI Phase 2 en cours
 - **Propriétaire** : à désigner au lancement de la Phase 2
 - **Package** : `modules/drive` (`@workspace/drive`)
 - **Dépendances autorisées** : `packages/database`, `packages/permissions`, `packages/storage`, `packages/api`, `packages/ui`. Interface publique de `modules/docs` uniquement pour « créer un document depuis Drive ».

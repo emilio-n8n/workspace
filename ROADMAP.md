@@ -14,28 +14,30 @@
 - [x] ADR moteurs 0007–0011 issus des études (acceptés sous réserve des POC listés dans chaque ADR)
 - [x] Critères de preuve du MVP définis (contrats modules + `docs/architecture/`)
 
-## Phase 1 — Fondations ▶
+## Phase 1 — Fondations ✅ (terminée le 2026-10-10)
 
 Objectif : une fondation vérifiée (auth, données, permissions, stockage, UI de base) sur laquelle les modules s'appuient sans la modifier.
 
 - [x] Monorepo : pnpm workspaces + Turborepo + TypeScript strict + Biome (typecheck/lint/build verts)
-- [▶] `apps/web` : TanStack Start en place (build SSR vérifié, dev sur :3000) — shell de navigation global à venir
-- [▶] `packages/design-tokens` ✅ (tokens clair/sombre) — `packages/ui` (composants de base) à venir
-- [x] `packages/database` : Drizzle, schéma better-auth généré + schéma cœur, première migration appliquée sur PostgreSQL 18 (14 tables)
-- [▶] `packages/auth` : better-auth 1.7.7 (organisations + équipes) configuré, tables en base — intégration serveur (middlewares, routes) à venir
-- [ ] `packages/permissions` : rôles, `resource_grants`, refus par défaut, tests
-- [ ] `packages/storage` : abstraction + LocalFS + S3-compatible
-- [x] `packages/config` : validation d'environnement (zod), échec rapide documenté
-- [ ] Journalisation + audit de base (table `audit_events` en place)
-- [ ] `infrastructure/docker` : compose dev + squelette self-host, `.env.example` ✅
-- [ ] CI : typecheck / lint / tests (aucun déploiement)
-- [ ] `apps/mcp-server` : squelette (jetons scopés et révocables, audit)
+- [x] `apps/web` : TanStack Start + shell de navigation (sidebar, topbar, thème clair/sombre persistant)
+- [x] `packages/design-tokens` + `packages/ui` : tokens sémantiques, composants de base, 404/erreurs stylées
+- [x] `packages/database` : Drizzle, schéma better-auth + cœur, migrations appliquées (14 tables)
+- [x] `packages/auth` : better-auth 1.7.7 (organisations, équipes, sessions) + jetons d'API scopés/révocables (6 tests)
+- [x] `packages/permissions` : `resource_grants`, refus par défaut, héritage par module (11 tests)
+- [x] `packages/storage` : interface + LocalFS atomique + S3-compatible (7 tests)
+- [x] `packages/config` : validation d'environnement (zod) + charger `.env` partagé
+- [x] Audit de base : table + journalisation MCP (succès/refus/erreurs) et UI « Agents & jetons »
+- [x] `infrastructure/docker` : compose PostgreSQL dev + `init-test-db` ; `.env.example`
+- [x] CI GitHub Actions : lint, typecheck, tests (dont intégration MCP sur vrai serveur), build, E2E Playwright
+- [x] `apps/mcp-server` : transports stdio + HTTP, outils v0 réels (`me.whoami`, `audit.recent`), 3 tests d'intégration
 
-## Phase 2 — Premier flux complet (MVP) ○
+**Preuves** : typecheck 8/8 · 27 tests unitaires/intégration · 6 tests E2E navigateur · build client 109 ko gzip.
+
+## Phase 2 — Premier flux complet (MVP) ▶
 
 Prouver de bout en bout : authentification → stockage → permissions → édition → sauvegarde → partage → agent.
 
-- [ ] Drive : fichiers/dossiers, upload/download, aperçu, partage utilisateur/groupe, liens révocables, corbeille, versions v1, recherche, quotas
+- [▶] Drive : **cœur serveur vérifié** — dossiers, upload/download (checksum, limite de taille), corbeille/restauration/purge avec nettoyage du stockage, versions, partages utilisateur/groupe + héritage, liens révocables (11 tests) ; UI navigateur, aperçu et quotas à venir
 - [ ] Docs : Tiptap 3 + Yjs (ADR-0007), autosave, versions + restauration, export/import, partage, intégration Drive
 - [ ] MCP v0 : `files.search`, `files.read`, `docs.read` — tests de refus inter-organisations
 - [ ] E2E Playwright des critères de preuve MVP (2 organisations, partages, révocations, zéro secret)
