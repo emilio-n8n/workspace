@@ -1,0 +1,17 @@
+@import "tailwindcss";
+@import "@workspace/design-tokens/tokens.css";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+}

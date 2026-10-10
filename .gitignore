@@ -1,0 +1,22 @@
+# Dépendances
+node_modules/
+.pnpm-store/
+
+# Build
+dist/
+.output/
+.turbo/
+*.tsbuildinfo
+
+# Environnement & secrets (local uniquement — jamais de secret versionné)
+.env
+.env.*
+!.env.example
+
+# Todo live locale (jamais versionnée)
+TODO.html
+
+# Divers
+.DS_Store
+*.log
+coverage/
