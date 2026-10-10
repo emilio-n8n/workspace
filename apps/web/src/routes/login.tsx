@@ -31,7 +31,13 @@ function LoginPage() {
     setLoading(false);
 
     if (signInError) {
-      setError(signInError.message ?? "Connexion impossible. Vérifiez vos identifiants.");
+      const messages: Record<string, string> = {
+        INVALID_EMAIL_OR_PASSWORD: "Adresse e-mail ou mot de passe incorrect.",
+        INVALID_EMAIL: "Adresse e-mail ou mot de passe incorrect.",
+        INVALID_PASSWORD: "Adresse e-mail ou mot de passe incorrect.",
+      };
+      const code = signInError.code ?? "";
+      setError(messages[code] ?? "Connexion impossible. Vérifiez vos identifiants.");
       return;
     }
 
@@ -49,7 +55,7 @@ function LoginPage() {
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <form onSubmit={onSubmit} className="flex flex-col gap-4" noValidate>
+          <form onSubmit={onSubmit} method="post" className="flex flex-col gap-4" noValidate>
             <div className="flex flex-col gap-2">
               <Label htmlFor="email">Adresse e-mail</Label>
               <Input

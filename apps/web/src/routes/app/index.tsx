@@ -1,4 +1,4 @@
-import { createFileRoute, useRouter } from "@tanstack/react-router";
+import { createFileRoute } from "@tanstack/react-router";
 import { Badge, Card, CardContent, CardDescription, CardHeader, CardTitle } from "@workspace/ui";
 import { useEffect, useState } from "react";
 import {
@@ -70,7 +70,6 @@ const modules: { label: string; icon: React.ReactNode; phase: string; summary: s
 function DashboardPage() {
   const [workspace, setWorkspace] = useState<WorkspaceInfo>(null);
   const [loading, setLoading] = useState(true);
-  const router = useRouter();
 
   useEffect(() => {
     void (async () => {
@@ -152,17 +151,12 @@ function DashboardPage() {
             <CardTitle className="text-base">Sécurité</CardTitle>
             <CardDescription>
               Les sessions sont révocables et l'autorisation est vérifiée côté serveur à chaque
-              opération. Le serveur MCP autorisé utilisera les mêmes règles.
+              opération. L'agent MCP autorisé utilisera les mêmes règles de permission.
             </CardDescription>
           </CardHeader>
-          <CardContent>
-            <button
-              type="button"
-              className="text-sm font-medium text-primary underline-offset-4 hover:underline"
-              onClick={() => void router.navigate({ to: "/" })}
-            >
-              Se déconnecter depuis le menu de gauche
-            </button>
+          <CardContent className="text-sm text-muted-foreground">
+            Pour fermer votre session, utilisez le bouton de déconnexion en bas de la colonne de
+            gauche.
           </CardContent>
         </Card>
       </section>

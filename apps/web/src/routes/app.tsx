@@ -69,8 +69,8 @@ function AppLayout() {
 
   async function onSignOut() {
     await authClient.signOut();
+    await router.navigate({ to: "/" });
     await router.invalidate();
-    void router.navigate({ to: "/" });
   }
 
   const initials =

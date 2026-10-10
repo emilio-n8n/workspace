@@ -16,6 +16,11 @@ dist/
 # Todo live locale (jamais versionnée)
 TODO.html
 
+# Tests (artefacts régénérables)
+test-results/
+playwright-report/
+apps/web/e2e/screenshots/
+
 # Divers
 .DS_Store
 *.log
