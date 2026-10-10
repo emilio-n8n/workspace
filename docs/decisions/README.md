@@ -12,7 +12,11 @@ Format : titre, statut (`proposé` | `accepté` | `remplacé` | `rejeté`), cont
 | [0004](0004-multi-tenant-permissions.md) | Multi-tenant et modèle de permissions | accepté |
 | [0005](0005-stockage.md) | Abstraction de stockage des fichiers | accepté |
 | [0006](0006-mcp.md) | Serveur MCP officiel | accepté |
-| 0007+ | Moteurs Docs / Sheets / Slides / Mail / Meet | **en attente des études S1–S5** (`docs/studies/`) |
+| [0007](0007-moteur-docs.md) | Moteur de documents (Docs) : Tiptap 3 + Yjs/Hocuspocus | accepté sous réserve des POC |
+| [0008](0008-moteur-sheets.md) | Moteur de tableur (Sheets) : Univer OSS + pont xlsx maison | accepté sous réserve des POC |
+| [0009](0009-moteur-slides.md) | Moteur de présentations (Slides) : scène maison hybride | accepté sous réserve des POC |
+| [0010](0010-socle-mail.md) | Socle messagerie (Mail) : Stalwart en sidecar, UI maison JMAP | accepté sous réserve du POC délivrabilité |
+| [0011](0011-moteur-meet.md) | Visioconférence (Meet) : LiveKit + coturn, UI maison | accepté sous réserve des POC réseau et charge |
 
 ## Modèle
 

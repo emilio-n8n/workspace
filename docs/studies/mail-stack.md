@@ -58,8 +58,8 @@ mise à jour de sécurité, procédure d'abus.
   commerciale du projet (support managé, hébergement). CVE-2026-40874 (contournement d'auth API) corrigée en
   version 2026-03b ; la même version impose la 2FA admin.
 - **docker-mailserver** : conteneur unique, Postfix/Dovecot/Rspamd/ClamAV/Amavis/SpamAssassin/OpenDKIM/
-  OpenDMARC/Postgrey/Fail2ban/Postscreen. Pas d'UI d'administration ni de webmail/CalDAV/JMAP. Passage
-  Debian 12 → 13 dans la v15/16 (changements cassants signalés).
+  OpenDMARC/Postgrey/Fail2ban/Postscreen. Pas d'UI d'administration ni de webmail/CalDAV/JMAP. La v16
+  passe la base Debian 12 → 13, avec des changements cassants signalés (voir aussi presse spécialisée).
 - **Mailu** : suite Docker avec UI d'admin, Roundcube/SnappyMail, Rspamd. Ligne majeure **figée depuis
   2024.06** (correctifs uniquement, 61e patch le 30/09/2026). CVE-2026-85751 (contournement d'auth par
   spoofing d'identité proxy) corrigée en 2024.06.55 ; impact critique, correction rapide.

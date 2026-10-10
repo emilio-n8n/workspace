@@ -22,9 +22,9 @@ Chaque étude évalue les candidats selon :
 | Étude | Fichier | Statut | ADR attendu |
 |---|---|---|---|
 | S1 — Moteur de documents (Docs) | [`docs-engine.md`](docs-engine.md) | ✅ livrée — Tiptap 3 + Yjs/Hocuspocus recommandés | ADR moteur Docs |
-| S2 — Moteur de tableur (Sheets) | [`sheets-engine.md`](sheets-engine.md) | ▶ en cours | ADR moteur Sheets |
+| S2 — Moteur de tableur (Sheets) | [`sheets-engine.md`](sheets-engine.md) | ✅ livrée — Univer OSS + pont xlsx maison ; FortuneSheet en repli | ADR moteur Sheets |
 | S3 — Moteur de présentations (Slides) | [`slides-engine.md`](slides-engine.md) | ✅ livrée — éditeur maison (react-konva) + pptxgenjs/pptxtojson ; sidecar optionnel | ADR moteur Slides |
-| S4 — Socle messagerie (Mail) | [`mail-stack.md`](mail-stack.md) | ▶ en cours | ADR socle Mail |
+| S4 — Socle messagerie (Mail) | [`mail-stack.md`](mail-stack.md) | ✅ livrée — Stalwart en sidecar + UI maison JMAP | ADR socle Mail |
 | S5 — Moteur de visioconférence (Meet) | [`meet-engine.md`](meet-engine.md) | ✅ livrée — LiveKit + coturn, UI maison | ADR moteur Meet |
 
 ## Règle de décision
