@@ -13,7 +13,7 @@ import {
   roleSatisfies,
 } from "@workspace/permissions";
 import { getStorage, orgKey } from "@workspace/storage";
-import { and, asc, desc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, asc, desc, eq, ilike, inArray, isNull, sql } from "drizzle-orm";
 import {
   type DriveEntry,
   type DriveVersion,
@@ -61,6 +61,11 @@ function assertValidName(name: string): string {
 
 function sha256(body: Buffer): string {
   return createHash("sha256").update(body).digest("hex");
+}
+
+/** Échappe les caractères spéciaux LIKE (%, _) pour une recherche littérale. */
+function escapeLike(query: string): string {
+  return query.replace(/[\\%_]/g, (match) => `\\${match}`);
 }
 
 /**
@@ -214,6 +219,58 @@ export async function getEntry(
   return assertDrive(actor, "read", entryId, options);
 }
 
+/** Corbeille personnelle : éléments dont l'acteur est propriétaire (MVP). */
+export async function listTrash(actor: Actor): Promise<DriveEntry[]> {
+  return db()
+    .select()
+    .from(driveFiles)
+    .where(
+      and(
+        eq(driveFiles.orgId, actor.orgId),
+        eq(driveFiles.ownerId, actor.userId),
+        eq(driveFiles.status, "trashed"),
+      ),
+    )
+    .orderBy(desc(driveFiles.trashedAt));
+}
+
+/** Recherche littérale par nom parmi les fichiers accessibles (agents, UI). */
+export async function searchEntries(
+  actor: Actor,
+  input: { query: string; limit?: number },
+): Promise<DriveEntry[]> {
+  const query = input.query.trim();
+  if (query.length === 0) return [];
+
+  const limit = Math.min(Math.max(input.limit ?? 25, 1), 100);
+
+  const rows = await db()
+    .select()
+    .from(driveFiles)
+    .where(
+      and(
+        eq(driveFiles.orgId, actor.orgId),
+        eq(driveFiles.status, "active"),
+        eq(driveFiles.kind, "file"),
+        ilike(driveFiles.name, `%${escapeLike(query)}%`),
+      ),
+    )
+    .orderBy(desc(driveFiles.updatedAt))
+    .limit(100);
+
+  const visible: DriveEntry[] = [];
+  for (const row of rows) {
+    if (visible.length >= limit) break;
+    if (row.ownerId === actor.userId) {
+      visible.push(row);
+      continue;
+    }
+    const role = await effectiveRole(actor, row.id);
+    if (roleSatisfies(role, "read")) visible.push(row);
+  }
+  return visible;
+}
+
 export async function uploadFile(
   actor: Actor,
   input: { parentId?: string | null; name: string; contentType?: string; body: Buffer },
@@ -278,6 +335,47 @@ export async function uploadFile(
     }
     throw error;
   }
+}
+
+/**
+ * Crée une entrée fichier « pointeur » : le contenu appartient à un autre module
+ * (Docs, etc.) et vit dans ses propres tables. Aucun binaire n'est stocké ici.
+ */
+export async function createLinkedFile(
+  actor: Actor,
+  input: { parentId?: string | null; name: string; mimeType: string; sizeBytes?: number | null },
+): Promise<DriveEntry> {
+  const name = assertValidName(input.name);
+  const parentId = input.parentId ?? null;
+  await assertWritableParent(actor, parentId);
+
+  try {
+    const [row] = await db()
+      .insert(driveFiles)
+      .values({
+        orgId: actor.orgId,
+        ownerId: actor.userId,
+        parentId,
+        kind: "file",
+        name,
+        mimeType: input.mimeType,
+        sizeBytes: input.sizeBytes ?? null,
+      })
+      .returning();
+    if (!row) throw new DriveError("conflict", "Création impossible.");
+    return row;
+  } catch (error) {
+    if (isUniqueViolation(error)) {
+      throw new DriveError("conflict", "Un élément portant ce nom existe déjà ici.");
+    }
+    throw error;
+  }
+}
+
+/** Met à jour l'horodatage d'un élément (aperçu « modifié récemment »). */
+export async function touchEntry(actor: Actor, entryId: string): Promise<void> {
+  await assertDrive(actor, "write", entryId);
+  await db().update(driveFiles).set({ updatedAt: new Date() }).where(eq(driveFiles.id, entryId));
 }
 
 export async function download(
@@ -444,6 +542,28 @@ export async function listVersions(actor: Actor, fileId: string): Promise<DriveV
     .orderBy(desc(driveFileVersions.version));
 }
 
+/** Chaîne d'ancêtres (du plus haut au plus proche) — affichage du fil d'Ariane. */
+export async function getAncestors(actor: Actor, entryId: string): Promise<DriveEntry[]> {
+  const chain: DriveEntry[] = [];
+  let current: string | null = entryId;
+  let depth = 0;
+
+  while (current && depth < MAX_DEPTH) {
+    const [row] = await db()
+      .select()
+      .from(driveFiles)
+      .where(and(eq(driveFiles.id, current), eq(driveFiles.orgId, actor.orgId)))
+      .limit(1);
+    if (!row) break;
+
+    chain.unshift(row);
+    current = row.parentId;
+    depth += 1;
+  }
+
+  return chain;
+}
+
 // ---------------------------------------------------------------------------
 // Partage (utilisateurs, groupes, liens)
 // ---------------------------------------------------------------------------
@@ -474,6 +594,32 @@ export async function unshareEntry(
 export async function listEntryGrants(actor: Actor, entryId: string): Promise<ResourceGrantRow[]> {
   await assertDrive(actor, "share", entryId);
   return listGrants({ type: "file", id: entryId, orgId: actor.orgId });
+}
+
+export type ShareLinkRow = {
+  id: string;
+  role: GrantRole;
+  createdAt: Date;
+  lastUsedAt: Date | null;
+  expiresAt: Date | null;
+  revokedAt: Date | null;
+};
+
+/** Liens de partage d'un élément (actifs et révoqués — jamais le jeton en clair). */
+export async function listShareLinks(actor: Actor, entryId: string): Promise<ShareLinkRow[]> {
+  await assertDrive(actor, "share", entryId);
+  return db()
+    .select({
+      id: driveShareLinks.id,
+      role: driveShareLinks.role,
+      createdAt: driveShareLinks.createdAt,
+      lastUsedAt: driveShareLinks.lastUsedAt,
+      expiresAt: driveShareLinks.expiresAt,
+      revokedAt: driveShareLinks.revokedAt,
+    })
+    .from(driveShareLinks)
+    .where(eq(driveShareLinks.fileId, entryId))
+    .orderBy(desc(driveShareLinks.createdAt));
 }
 
 export async function createShareLink(

@@ -41,8 +41,8 @@ type NavItem = {
 
 const navItems: NavItem[] = [
   { label: "Accueil", to: "/app", status: "active", icon: <IconHome /> },
-  { label: "Drive", to: "/app", status: "soon", phase: "Phase 2", icon: <IconFolder /> },
-  { label: "Docs", to: "/app", status: "soon", phase: "Phase 2", icon: <IconFileText /> },
+  { label: "Drive", to: "/app/drive", status: "active", icon: <IconFolder /> },
+  { label: "Docs", to: "/app/docs", status: "active", icon: <IconFileText /> },
   { label: "Sheets", to: "/app", status: "soon", phase: "Phase 3", icon: <IconGrid /> },
   { label: "Slides", to: "/app", status: "soon", phase: "Phase 3", icon: <IconPresentation /> },
   { label: "Calendar", to: "/app", status: "soon", phase: "Phase 3", icon: <IconCalendar /> },
@@ -119,7 +119,7 @@ function AppLayout() {
             <Button
               variant="ghost"
               size="sm"
-              onClick={onSignOut}
+              onClick={() => void onSignOut()}
               aria-label="Se déconnecter"
               title="Se déconnecter"
             >
@@ -150,7 +150,7 @@ function AppLayout() {
                 <IconClose />
               </Button>
             </div>
-            <SidebarNav />
+            <SidebarNav onNavigate={() => setMobileOpen(false)} />
           </aside>
         </div>
       ) : null}
@@ -206,7 +206,7 @@ function AppLayout() {
   );
 }
 
-function SidebarNav() {
+function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
   const router = useRouter();
   const currentPath = router.state.location.pathname;
 
@@ -214,7 +214,10 @@ function SidebarNav() {
     <nav className="flex-1 overflow-y-auto p-2" aria-label="Navigation principale">
       <ul className="flex flex-col gap-0.5">
         {navItems.map((item) => {
-          const isCurrent = item.status === "active" && currentPath === item.to;
+          const isCurrent =
+            item.status === "active" &&
+            (currentPath === item.to ||
+              (item.to !== "/app" && currentPath.startsWith(item.to + "/")));
           const disabled = item.status !== "active";
           return (
             <li key={item.label}>
@@ -229,6 +232,7 @@ function SidebarNav() {
               ) : (
                 <Link
                   to={item.to}
+                  onClick={onNavigate}
                   className={`flex h-8 items-center gap-2 rounded-md px-2 text-sm font-medium transition-colors ${
                     isCurrent ? "bg-accent text-accent-foreground" : "hover:bg-muted"
                   }`}

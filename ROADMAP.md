@@ -7,44 +7,39 @@
 
 ## Phase 0 — Découverte et conception ✅ (terminée le 2026-10-10)
 
-- [x] Inspection du dépôt et de l'environnement (PostgreSQL 18 local, Docker, pnpm, dépôt vide initialisé)
-- [x] Documents de référence : README, architecture (vue d'ensemble, monorepo, données, frontières), design system, sécurité, contrats de modules (fondations, Drive, Docs), MCP, déploiement
+- [x] Inspection du dépôt et de l'environnement
+- [x] Documents de référence : README, architecture (vue d'ensemble, monorepo, données, frontières), design system, sécurité, contrats de modules, MCP, déploiement
 - [x] ADR 0001–0006 : licence, stack/monorepo, authentification, multi-tenant/permissions, stockage, MCP
-- [x] Études moteurs livrées (5/5) : S1 Docs, S2 Sheets, S3 Slides, S4 Mail, S5 Meet (`docs/studies/`)
-- [x] ADR moteurs 0007–0011 issus des études (acceptés sous réserve des POC listés dans chaque ADR)
-- [x] Critères de preuve du MVP définis (contrats modules + `docs/architecture/`)
+- [x] Études moteurs livrées (5/5) : S1 Docs, S2 Sheets, S3 Slides, S4 Mail, S5 Meet
+- [x] ADR moteurs 0007–0011 issus des études (acceptés sous réserve des POC listés)
 
 ## Phase 1 — Fondations ✅ (terminée le 2026-10-10)
 
-Objectif : une fondation vérifiée (auth, données, permissions, stockage, UI de base) sur laquelle les modules s'appuient sans la modifier.
-
-- [x] Monorepo : pnpm workspaces + Turborepo + TypeScript strict + Biome (typecheck/lint/build verts)
-- [x] `apps/web` : TanStack Start + shell de navigation (sidebar, topbar, thème clair/sombre persistant)
-- [x] `packages/design-tokens` + `packages/ui` : tokens sémantiques, composants de base, 404/erreurs stylées
-- [x] `packages/database` : Drizzle, schéma better-auth + cœur, migrations appliquées (14 tables)
-- [x] `packages/auth` : better-auth 1.7.7 (organisations, équipes, sessions) + jetons d'API scopés/révocables (6 tests)
-- [x] `packages/permissions` : `resource_grants`, refus par défaut, héritage par module (11 tests)
-- [x] `packages/storage` : interface + LocalFS atomique + S3-compatible (7 tests)
-- [x] `packages/config` : validation d'environnement (zod) + charger `.env` partagé
-- [x] Audit de base : table + journalisation MCP (succès/refus/erreurs) et UI « Agents & jetons »
-- [x] `infrastructure/docker` : compose PostgreSQL dev + `init-test-db` ; `.env.example`
-- [x] CI GitHub Actions : lint, typecheck, tests (dont intégration MCP sur vrai serveur), build, E2E Playwright
-- [x] `apps/mcp-server` : transports stdio + HTTP, outils v0 réels (`me.whoami`, `audit.recent`), 3 tests d'intégration
-
-**Preuves** : typecheck 8/8 · 27 tests unitaires/intégration · 6 tests E2E navigateur · build client 109 ko gzip.
+- [x] Monorepo pnpm + Turborepo + TypeScript strict + Biome
+- [x] `apps/web` : TanStack Start + shell de navigation + thème clair/sombre
+- [x] `packages/design-tokens` + `packages/ui` (boutons, champs, dialogues, cartes — tokens uniquement)
+- [x] `packages/database` : schéma better-auth + cœur, migrations appliquées
+- [x] `packages/auth` : sessions, organisations, équipes, jetons d'API scopés
+- [x] `packages/permissions` : `resource_grants`, refus par défaut, héritage (11 tests)
+- [x] `packages/storage` : LocalFS atomique + S3-compatible (7 tests)
+- [x] `packages/config` : validation d'environnement (zod) + chargement `.env`
+- [x] CI GitHub Actions (lint, typecheck, tests, build, E2E) + compose PostgreSQL dev
+- [x] `apps/mcp-server` : stdio + HTTP, audit, outils v0
 
 ## Phase 2 — Premier flux complet (MVP) ▶
 
 Prouver de bout en bout : authentification → stockage → permissions → édition → sauvegarde → partage → agent.
 
-- [▶] Drive : **cœur serveur vérifié** — dossiers, upload/download (checksum, limite de taille), corbeille/restauration/purge avec nettoyage du stockage, versions, partages utilisateur/groupe + héritage, liens révocables (11 tests) ; UI navigateur, aperçu et quotas à venir
-- [ ] Docs : Tiptap 3 + Yjs (ADR-0007), autosave, versions + restauration, export/import, partage, intégration Drive
-- [ ] MCP v0 : `files.search`, `files.read`, `docs.read` — tests de refus inter-organisations
-- [ ] E2E Playwright des critères de preuve MVP (2 organisations, partages, révocations, zéro secret)
+- [x] Drive — cœur : dossiers, upload/download (checksum, limite), corbeille/restauration/purge avec nettoyage du stockage, versions, partages + héritage, liens révocables (11 tests)
+- [x] Drive — interface : navigateur, glisser-déposer, dialogues (dossier/document/renommage/partage/détails), corbeille, page publique `/s/$token`
+- [x] Docs — cœur : autosave (`replace-latest`) + instantanés (`append`), permissions mappées sur Drive, exports Markdown/HTML, conversions testées
+- [x] Docs — éditeur Tiptap 3 (StarterKit) : barre d'outils, statut d'enregistrement, historique des versions, lecture seule pour les viewers
+- [x] MCP v1 : `files.search`, `files.read`, `docs.read` — refus sans scope et isolation inter-organisations testés
+- [▶] E2E des critères de preuve MVP : parcours Drive/Docs + partage réel entre deux comptes avec révocation (vérification en cours)
 
 ## Phase 3 — Suite de productivité ○
 
-Sheets (Univer + pont xlsx maison — ADR-0008), Slides (scène maison hybride — ADR-0009) → Calendar (CalDAV), Tasks, Forms. Intégration navigation, recherche et permissions communes.
+Sheets (Univer + pont xlsx maison — ADR-0008), Slides (scène maison hybride — ADR-0009) → Calendar (CalDAV), Tasks, Forms. Intégration navigation, recherche et permissions communes. Collaboration temps réel Docs (Yjs/Hocuspocus). MCP étendu (`docs.create/update`, `files.write/delete`, recherche plein texte).
 
 ## Phase 4 — Communication ○
 
@@ -52,21 +47,20 @@ Mail (Stalwart en sidecar + UI maison JMAP — ADR-0010), Chat, Meet (LiveKit + 
 
 ## Phase 5 — Éducation et administration avancée ○
 
-Classroom (classes, devoirs, remises, rôles établissement, confidentialité des mineurs), politiques organisationnelles, outils d'administration avancés.
+Classroom (classes, devoirs, remises, confidentialité des mineurs), politiques organisationnelles, administration avancée, fédération OIDC/MFA.
 
 ## Phase 6 — MCP, intégrations et maturité ○
 
-Élargissement progressif des outils MCP, API publique documentée, observabilité, sauvegardes testées, préparation à la production.
+Élargissement des outils MCP, API publique documentée, observabilité, sauvegardes testées, image Docker de production, préparation à la production.
 
 ## Dépendances structurantes
 
-- Les contrats des packages communs doivent être **gelés** avant toute parallélisation de modules fonctionnels (P1 → P2).
-- Chaque ADR moteur conditionne son module : S1→Docs, S2→Sheets, S3→Slides, S4→Mail, S5→Meet (POC listés dans les ADR avant développement).
-- Le serveur MCP est conçu dès la Phase 1 (contrats) et prototypé en Phase 2 pour influencer les interfaces.
+- Les contrats des packages communs sont gelés (P1 ✅) ; les modules Phase 3 s'y appuient sans les modifier.
+- Chaque ADR moteur conditionne son module (POC listés avant développement).
+- Le serveur MCP utilise exclusivement les services de modules — toute nouvelle capacité passe par eux.
 
 ## Risques majeurs suivis
 
-- **Moteurs bureautiques** : fidélité OOXML partielle assumée (Docs/Sheets/Slides) ; POC de conversion exigés avant développement.
-- **Mail** : complexité opérationnelle (délivrabilité, spam, DNS) — POC de délivrabilité réelle obligatoire (ADR-0010).
-- **Meet** : exigences réseau (TURN) et charge — POC NAT + charge sur 4 cœurs requis (ADR-0011).
-- **Performance** : budget de dépendances côté client pour un usage sur machines modestes.
+- **Moteurs bureautiques** : fidélité OOXML partielle assumée ; POC de conversion exigés avant développement (Docs/Sheets/Slides).
+- **Mail / Meet** : complexité opérationnelle — POC de délivrabilité et NAT/charge obligatoires (ADR-0010/0011).
+- **Performance** : budget de dépendances côté client (Tiptap ajouté en Phase 2 — à mesurer sur le bundle).

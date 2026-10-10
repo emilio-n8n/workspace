@@ -14,8 +14,18 @@ import { Route as AppRouteImport } from './routes/app'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as SignupRouteImport } from './routes/signup'
 import { Route as AppIndexRouteImport } from './routes/app/index'
+import { Route as STokenRouteImport } from './routes/s/$token'
 import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
+import { Route as ApiDriveUploadRouteImport } from './routes/api/drive/upload'
+import { Route as AppDocsIndexRouteImport } from './routes/app/docs/index'
+import { Route as AppDocsFileIdRouteImport } from './routes/app/docs/$fileId'
+import { Route as AppDriveIndexRouteImport } from './routes/app/drive/index'
+import { Route as AppDriveEntryIdRouteImport } from './routes/app/drive/$entryId'
+import { Route as AppDriveTrashRouteImport } from './routes/app/drive/trash'
 import { Route as AppSettingsTokensRouteImport } from './routes/app/settings/tokens'
+import { Route as ApiDocsExportFileIdRouteImport } from './routes/api/docs/export/$fileId'
+import { Route as ApiDriveDownloadFileIdRouteImport } from './routes/api/drive/download/$fileId'
+import { Route as ApiDriveSharedTokenRouteImport } from './routes/api/drive/shared/$token'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -42,15 +52,65 @@ const AppIndexRoute = AppIndexRouteImport.update({
   path: '/',
   getParentRoute: () => AppRoute,
 } as any)
+const STokenRoute = STokenRouteImport.update({
+  id: '/s/$token',
+  path: '/s/$token',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiAuthSplatRoute = ApiAuthSplatRouteImport.update({
   id: '/api/auth/$',
   path: '/api/auth/$',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiDriveUploadRoute = ApiDriveUploadRouteImport.update({
+  id: '/api/drive/upload',
+  path: '/api/drive/upload',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AppDocsIndexRoute = AppDocsIndexRouteImport.update({
+  id: '/docs/',
+  path: '/docs/',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppDocsFileIdRoute = AppDocsFileIdRouteImport.update({
+  id: '/docs/$fileId',
+  path: '/docs/$fileId',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppDriveIndexRoute = AppDriveIndexRouteImport.update({
+  id: '/drive/',
+  path: '/drive/',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppDriveEntryIdRoute = AppDriveEntryIdRouteImport.update({
+  id: '/drive/$entryId',
+  path: '/drive/$entryId',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppDriveTrashRoute = AppDriveTrashRouteImport.update({
+  id: '/drive/trash',
+  path: '/drive/trash',
+  getParentRoute: () => AppRoute,
+} as any)
 const AppSettingsTokensRoute = AppSettingsTokensRouteImport.update({
   id: '/settings/tokens',
   path: '/settings/tokens',
   getParentRoute: () => AppRoute,
+} as any)
+const ApiDocsExportFileIdRoute = ApiDocsExportFileIdRouteImport.update({
+  id: '/api/docs/export/$fileId',
+  path: '/api/docs/export/$fileId',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiDriveDownloadFileIdRoute = ApiDriveDownloadFileIdRouteImport.update({
+  id: '/api/drive/download/$fileId',
+  path: '/api/drive/download/$fileId',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiDriveSharedTokenRoute = ApiDriveSharedTokenRouteImport.update({
+  id: '/api/drive/shared/$token',
+  path: '/api/drive/shared/$token',
+  getParentRoute: () => rootRouteImport,
 } as any)
 
 export interface FileRoutesByFullPath {
@@ -58,17 +118,37 @@ export interface FileRoutesByFullPath {
   '/app': typeof AppRouteWithChildren
   '/login': typeof LoginRoute
   '/signup': typeof SignupRoute
+  '/s/$token': typeof STokenRoute
   '/app/': typeof AppIndexRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
+  '/api/drive/upload': typeof ApiDriveUploadRoute
+  '/app/docs/$fileId': typeof AppDocsFileIdRoute
+  '/app/drive/$entryId': typeof AppDriveEntryIdRoute
+  '/app/drive/trash': typeof AppDriveTrashRoute
   '/app/settings/tokens': typeof AppSettingsTokensRoute
+  '/app/docs/': typeof AppDocsIndexRoute
+  '/app/drive/': typeof AppDriveIndexRoute
+  '/api/docs/export/$fileId': typeof ApiDocsExportFileIdRoute
+  '/api/drive/download/$fileId': typeof ApiDriveDownloadFileIdRoute
+  '/api/drive/shared/$token': typeof ApiDriveSharedTokenRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/login': typeof LoginRoute
   '/signup': typeof SignupRoute
+  '/s/$token': typeof STokenRoute
   '/app': typeof AppIndexRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
+  '/api/drive/upload': typeof ApiDriveUploadRoute
+  '/app/docs/$fileId': typeof AppDocsFileIdRoute
+  '/app/drive/$entryId': typeof AppDriveEntryIdRoute
+  '/app/drive/trash': typeof AppDriveTrashRoute
   '/app/settings/tokens': typeof AppSettingsTokensRoute
+  '/app/docs': typeof AppDocsIndexRoute
+  '/app/drive': typeof AppDriveIndexRoute
+  '/api/docs/export/$fileId': typeof ApiDocsExportFileIdRoute
+  '/api/drive/download/$fileId': typeof ApiDriveDownloadFileIdRoute
+  '/api/drive/shared/$token': typeof ApiDriveSharedTokenRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -76,9 +156,19 @@ export interface FileRoutesById {
   '/app': typeof AppRouteWithChildren
   '/login': typeof LoginRoute
   '/signup': typeof SignupRoute
+  '/s/$token': typeof STokenRoute
   '/app/': typeof AppIndexRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
+  '/api/drive/upload': typeof ApiDriveUploadRoute
+  '/app/docs/$fileId': typeof AppDocsFileIdRoute
+  '/app/drive/$entryId': typeof AppDriveEntryIdRoute
+  '/app/drive/trash': typeof AppDriveTrashRoute
   '/app/settings/tokens': typeof AppSettingsTokensRoute
+  '/app/docs/': typeof AppDocsIndexRoute
+  '/app/drive/': typeof AppDriveIndexRoute
+  '/api/docs/export/$fileId': typeof ApiDocsExportFileIdRoute
+  '/api/drive/download/$fileId': typeof ApiDriveDownloadFileIdRoute
+  '/api/drive/shared/$token': typeof ApiDriveSharedTokenRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -87,21 +177,56 @@ export interface FileRouteTypes {
     | '/app'
     | '/login'
     | '/signup'
+    | '/s/$token'
     | '/app/'
     | '/api/auth/$'
+    | '/api/drive/upload'
+    | '/app/docs/$fileId'
+    | '/app/drive/$entryId'
+    | '/app/drive/trash'
     | '/app/settings/tokens'
+    | '/app/docs/'
+    | '/app/drive/'
+    | '/api/docs/export/$fileId'
+    | '/api/drive/download/$fileId'
+    | '/api/drive/shared/$token'
   fileRoutesByTo: FileRoutesByTo
   to:
-    '/' | '/login' | '/signup' | '/app' | '/api/auth/$' | '/app/settings/tokens'
+    | '/'
+    | '/login'
+    | '/signup'
+    | '/s/$token'
+    | '/app'
+    | '/api/auth/$'
+    | '/api/drive/upload'
+    | '/app/docs/$fileId'
+    | '/app/drive/$entryId'
+    | '/app/drive/trash'
+    | '/app/settings/tokens'
+    | '/app/docs'
+    | '/app/drive'
+    | '/api/docs/export/$fileId'
+    | '/api/drive/download/$fileId'
+    | '/api/drive/shared/$token'
   id:
     | '__root__'
     | '/'
     | '/app'
     | '/login'
     | '/signup'
+    | '/s/$token'
     | '/app/'
     | '/api/auth/$'
+    | '/api/drive/upload'
+    | '/app/docs/$fileId'
+    | '/app/drive/$entryId'
+    | '/app/drive/trash'
     | '/app/settings/tokens'
+    | '/app/docs/'
+    | '/app/drive/'
+    | '/api/docs/export/$fileId'
+    | '/api/drive/download/$fileId'
+    | '/api/drive/shared/$token'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -109,7 +234,12 @@ export interface RootRouteChildren {
   AppRoute: typeof AppRouteWithChildren
   LoginRoute: typeof LoginRoute
   SignupRoute: typeof SignupRoute
+  STokenRoute: typeof STokenRoute
   ApiAuthSplatRoute: typeof ApiAuthSplatRoute
+  ApiDriveUploadRoute: typeof ApiDriveUploadRoute
+  ApiDocsExportFileIdRoute: typeof ApiDocsExportFileIdRoute
+  ApiDriveDownloadFileIdRoute: typeof ApiDriveDownloadFileIdRoute
+  ApiDriveSharedTokenRoute: typeof ApiDriveSharedTokenRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -149,12 +279,61 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppIndexRouteImport
       parentRoute: typeof AppRoute
     }
+    '/s/$token': {
+      id: '/s/$token'
+      path: '/s/$token'
+      fullPath: '/s/$token'
+      preLoaderRoute: typeof STokenRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/auth/$': {
       id: '/api/auth/$'
       path: '/api/auth/$'
       fullPath: '/api/auth/$'
       preLoaderRoute: typeof ApiAuthSplatRouteImport
       parentRoute: typeof rootRouteImport
+    }
+    '/api/drive/upload': {
+      id: '/api/drive/upload'
+      path: '/api/drive/upload'
+      fullPath: '/api/drive/upload'
+      preLoaderRoute: typeof ApiDriveUploadRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/app/docs/': {
+      id: '/app/docs/'
+      path: '/docs'
+      fullPath: '/app/docs/'
+      preLoaderRoute: typeof AppDocsIndexRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/app/docs/$fileId': {
+      id: '/app/docs/$fileId'
+      path: '/docs/$fileId'
+      fullPath: '/app/docs/$fileId'
+      preLoaderRoute: typeof AppDocsFileIdRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/app/drive/': {
+      id: '/app/drive/'
+      path: '/drive'
+      fullPath: '/app/drive/'
+      preLoaderRoute: typeof AppDriveIndexRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/app/drive/$entryId': {
+      id: '/app/drive/$entryId'
+      path: '/drive/$entryId'
+      fullPath: '/app/drive/$entryId'
+      preLoaderRoute: typeof AppDriveEntryIdRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/app/drive/trash': {
+      id: '/app/drive/trash'
+      path: '/drive/trash'
+      fullPath: '/app/drive/trash'
+      preLoaderRoute: typeof AppDriveTrashRouteImport
+      parentRoute: typeof AppRoute
     }
     '/app/settings/tokens': {
       id: '/app/settings/tokens'
@@ -163,17 +342,48 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppSettingsTokensRouteImport
       parentRoute: typeof AppRoute
     }
+    '/api/docs/export/$fileId': {
+      id: '/api/docs/export/$fileId'
+      path: '/api/docs/export/$fileId'
+      fullPath: '/api/docs/export/$fileId'
+      preLoaderRoute: typeof ApiDocsExportFileIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/drive/download/$fileId': {
+      id: '/api/drive/download/$fileId'
+      path: '/api/drive/download/$fileId'
+      fullPath: '/api/drive/download/$fileId'
+      preLoaderRoute: typeof ApiDriveDownloadFileIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/drive/shared/$token': {
+      id: '/api/drive/shared/$token'
+      path: '/api/drive/shared/$token'
+      fullPath: '/api/drive/shared/$token'
+      preLoaderRoute: typeof ApiDriveSharedTokenRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
 interface AppRouteChildren {
   AppIndexRoute: typeof AppIndexRoute
+  AppDocsFileIdRoute: typeof AppDocsFileIdRoute
+  AppDriveEntryIdRoute: typeof AppDriveEntryIdRoute
+  AppDriveTrashRoute: typeof AppDriveTrashRoute
   AppSettingsTokensRoute: typeof AppSettingsTokensRoute
+  AppDocsIndexRoute: typeof AppDocsIndexRoute
+  AppDriveIndexRoute: typeof AppDriveIndexRoute
 }
 
 const AppRouteChildren: AppRouteChildren = {
   AppIndexRoute: AppIndexRoute,
+  AppDocsFileIdRoute: AppDocsFileIdRoute,
+  AppDriveEntryIdRoute: AppDriveEntryIdRoute,
+  AppDriveTrashRoute: AppDriveTrashRoute,
   AppSettingsTokensRoute: AppSettingsTokensRoute,
+  AppDocsIndexRoute: AppDocsIndexRoute,
+  AppDriveIndexRoute: AppDriveIndexRoute,
 }
 
 const AppRouteWithChildren = AppRoute._addFileChildren(AppRouteChildren)
@@ -183,7 +393,12 @@ const rootRouteChildren: RootRouteChildren = {
   AppRoute: AppRouteWithChildren,
   LoginRoute: LoginRoute,
   SignupRoute: SignupRoute,
+  STokenRoute: STokenRoute,
   ApiAuthSplatRoute: ApiAuthSplatRoute,
+  ApiDriveUploadRoute: ApiDriveUploadRoute,
+  ApiDocsExportFileIdRoute: ApiDocsExportFileIdRoute,
+  ApiDriveDownloadFileIdRoute: ApiDriveDownloadFileIdRoute,
+  ApiDriveSharedTokenRoute: ApiDriveSharedTokenRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

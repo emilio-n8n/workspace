@@ -21,6 +21,9 @@ test-results/
 playwright-report/
 apps/web/e2e/screenshots/
 
+# Données locales (stockage dev)
+data/
+
 # Divers
 .DS_Store
 *.log

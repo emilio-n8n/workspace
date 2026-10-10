@@ -9,5 +9,6 @@ export {
   CardHeader,
   CardTitle,
 } from "./components/card";
+export { Dialog, type DialogProps } from "./components/dialog";
 export { Input, type InputProps } from "./components/input";
 export { Label, type LabelProps } from "./components/label";

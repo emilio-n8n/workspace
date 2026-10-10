@@ -5,7 +5,7 @@ import type { StorageAdapter } from "./adapter.ts";
 import { LocalFsStorage } from "./local.ts";
 import { S3Storage } from "./s3";
 
-const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 
 let cached: StorageAdapter | undefined;
 

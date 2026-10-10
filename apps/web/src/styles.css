@@ -15,3 +15,97 @@ body {
 body {
   margin: 0;
 }
+
+/* ---------------------------------------------------------------------------
+ * Contenu de l'éditeur de documents (Tiptap / ProseMirror).
+ * Purement visuel : le contenu sémantique reste du HTML standard.
+ * ------------------------------------------------------------------------- */
+
+.workspace-editor {
+  font-size: 15px;
+  line-height: 1.7;
+  color: var(--foreground);
+}
+
+.workspace-editor:focus {
+  outline: none;
+}
+
+.workspace-editor > * + * {
+  margin-top: 0.75em;
+}
+
+.workspace-editor h1 {
+  font-size: 1.75em;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  margin-top: 1.4em;
+}
+
+.workspace-editor h2 {
+  font-size: 1.35em;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  margin-top: 1.2em;
+}
+
+.workspace-editor h3 {
+  font-size: 1.15em;
+  font-weight: 600;
+  margin-top: 1.1em;
+}
+
+.workspace-editor ul {
+  list-style: disc;
+  padding-left: 1.4em;
+}
+
+.workspace-editor ol {
+  list-style: decimal;
+  padding-left: 1.4em;
+}
+
+.workspace-editor li > * + * {
+  margin-top: 0.35em;
+}
+
+.workspace-editor blockquote {
+  border-left: 3px solid var(--border);
+  padding-left: 0.9em;
+  color: color-mix(in oklch, var(--foreground) 75%, transparent);
+}
+
+.workspace-editor pre {
+  background: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  padding: 0.75rem 1rem;
+  overflow-x: auto;
+  font-size: 0.85em;
+}
+
+.workspace-editor code {
+  background: var(--muted);
+  border-radius: 0.3rem;
+  padding: 0.1em 0.35em;
+  font-size: 0.88em;
+}
+
+.workspace-editor pre code {
+  background: transparent;
+  padding: 0;
+}
+
+.workspace-editor hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 1.5em 0;
+}
+
+.workspace-editor p.is-editor-empty:first-child::before {
+  content: "Commencez à écrire…";
+  color: var(--muted-foreground);
+  float: left;
+  height: 0;
+  pointer-events: none;
+}

@@ -11,6 +11,32 @@ export async function listMyOrganizations(headers: Headers) {
   return auth.api.listOrganizations({ headers });
 }
 
+/**
+ * Contexte serveur obligatoire : session **et** organisation.
+ * L'organisation active est une préférence, pas un prérequis : si elle est
+ * absente (nouvelle session après reconnexion), la première organisation de
+ * l'utilisateur est sélectionnée et mémorisée.
+ */
+export async function requireActorContext(
+  headers: Headers,
+): Promise<{ userId: string; orgId: string }> {
+  const session = await getSession(headers);
+  if (!session) throw new UnauthorizedError();
+
+  let orgId = session.session.activeOrganizationId;
+  if (!orgId) {
+    const organizations = await listMyOrganizations(headers);
+    const first = organizations[0];
+    if (!first) throw new NoOrganizationError();
+    orgId = first.id;
+    await auth.api
+      .setActiveOrganization({ headers, body: { organizationId: orgId } })
+      .catch(() => undefined);
+  }
+
+  return { userId: session.user.id, orgId };
+}
+
 export class UnauthorizedError extends Error {
   constructor() {
     super("Authentification requise.");

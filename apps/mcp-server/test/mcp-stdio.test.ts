@@ -3,8 +3,10 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { issueApiToken, type WorkspaceScope } from "@workspace/auth";
 import { closeDb, getDb, schema } from "@workspace/database";
+import { createDocument, saveDocument } from "@workspace/docs";
+import { uploadFile } from "@workspace/drive";
 import { eq } from "drizzle-orm";
-import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, describe, expect, it } from "vitest";
 
 const { user, organization, apiTokens, auditEvents } = schema;
 
@@ -45,8 +47,9 @@ async function cleanup(f: Fixtures): Promise<void> {
   const db = getDb();
   await db.delete(auditEvents).where(eq(auditEvents.orgId, f.orgId));
   await db.delete(apiTokens).where(eq(apiTokens.userId, f.userId));
-  await db.delete(user).where(eq(user.id, f.userId));
+  // La suppression de l'organisation cascade sur Drive et Docs.
   await db.delete(organization).where(eq(organization.id, f.orgId));
+  await db.delete(user).where(eq(user.id, f.userId));
 }
 
 /** Démarre le vrai serveur MCP (stdio) et retourne un client connecté. */
@@ -72,14 +75,26 @@ async function connectClient(
   return { client, transport };
 }
 
-let fixtures: Fixtures;
+function payloadOf(result: unknown): Record<string, unknown> {
+  const content = (result as { content: { type: string; text: string }[] }).content;
+  const first = content[0];
+  if (!first) throw new Error("Réponse MCP sans contenu.");
+  return JSON.parse(first.text) as Record<string, unknown>;
+}
 
-beforeEach(async () => {
-  fixtures = await createFixtures(["drive:read"]);
-});
+const fixturesStack: Fixtures[] = [];
+
+async function fixtures(scopes: string[]): Promise<Fixtures> {
+  const f = await createFixtures(scopes);
+  fixturesStack.push(f);
+  return f;
+}
 
 afterEach(async () => {
-  await cleanup(fixtures);
+  while (fixturesStack.length > 0) {
+    const f = fixturesStack.pop();
+    if (f) await cleanup(f);
+  }
 });
 
 afterAll(async () => {
@@ -87,41 +102,41 @@ afterAll(async () => {
 });
 
 describe("serveur MCP — intégration réelle (stdio)", () => {
-  it("liste les outils et répond à me.whoami avec le bon principal", async () => {
-    const { client, transport } = await connectClient(fixtures.token);
+  it("liste les cinq outils et répond à me.whoami avec le bon principal", async () => {
+    const f = await fixtures(["drive:read"]);
+    const { client, transport } = await connectClient(f.token);
     try {
       const tools = await client.listTools();
       const names = tools.tools.map((tool) => tool.name).sort();
-      expect(names).toEqual(["audit.recent", "me.whoami"]);
+      expect(names).toEqual([
+        "audit.recent",
+        "docs.read",
+        "files.read",
+        "files.search",
+        "me.whoami",
+      ]);
 
       const whoami = await client.callTool({ name: "me.whoami", arguments: {} });
       expect(whoami.isError).toBeFalsy();
-      const text = Array.isArray(whoami.content) ? whoami.content[0] : undefined;
-      const payload = JSON.parse(String((text as { type: string; text: string }).text)) as {
-        organizationId: string;
-        scopes: string[];
-        user: { email: string };
-      };
-      expect(payload.organizationId).toBe(fixtures.orgId);
+      const payload = payloadOf(whoami);
+      expect(payload.organizationId).toBe(f.orgId);
       expect(payload.scopes).toEqual(["drive:read"]);
-      expect(payload.user.email).toBe(`${fixtures.userId}@example.org`);
+      expect((payload.user as { email: string }).email).toBe(`${f.userId}@example.org`);
     } finally {
       await client.close();
       await transport.close();
     }
   });
 
-  it("refuse audit.recent sans le scope audit:read et journalise le refus", async () => {
-    const { client, transport } = await connectClient(fixtures.token);
+  it("refuse audit.recent sans scope et journalise le refus", async () => {
+    const f = await fixtures(["drive:read"]);
+    const { client, transport } = await connectClient(f.token);
     try {
       const result = await client.callTool({ name: "audit.recent", arguments: {} });
       expect(result.isError).toBe(true);
 
       const db = getDb();
-      const events = await db
-        .select()
-        .from(auditEvents)
-        .where(eq(auditEvents.orgId, fixtures.orgId));
+      const events = await db.select().from(auditEvents).where(eq(auditEvents.orgId, f.orgId));
       const denied = events.find((event) => event.action === "mcp.audit.recent");
       expect(denied?.result).toBe("denied");
     } finally {
@@ -130,24 +145,157 @@ describe("serveur MCP — intégration réelle (stdio)", () => {
     }
   });
 
-  it("autorise audit.recent avec le scope audit:read et journalise le succès", async () => {
-    await cleanup(fixtures);
-    fixtures = await createFixtures(["audit:read"]);
-
-    const { client, transport } = await connectClient(fixtures.token);
+  it("autorise audit.recent avec scope et journalise le succès", async () => {
+    const f = await fixtures(["audit:read"]);
+    const { client, transport } = await connectClient(f.token);
     try {
       const result = await client.callTool({ name: "audit.recent", arguments: { limit: 5 } });
       expect(result.isError).toBeFalsy();
 
       const db = getDb();
-      const events = await db
-        .select()
-        .from(auditEvents)
-        .where(eq(auditEvents.orgId, fixtures.orgId));
-      const success = events.find(
-        (event) => event.action === "mcp.audit.recent" && event.result === "success",
-      );
-      expect(success).toBeTruthy();
+      const events = await db.select().from(auditEvents).where(eq(auditEvents.orgId, f.orgId));
+      expect(
+        events.some((event) => event.action === "mcp.audit.recent" && event.result === "success"),
+      ).toBe(true);
+    } finally {
+      await client.close();
+      await transport.close();
+    }
+  });
+
+  it("files.search + files.read : cherche et lit un fichier texte autorisé", async () => {
+    const f = await fixtures(["drive:read"]);
+    const actor = { userId: f.userId, orgId: f.orgId };
+
+    const { entry } = await uploadFile(actor, {
+      name: "notes-mcp.txt",
+      contentType: "text/plain",
+      body: Buffer.from("Ligne un\nLigne deux", "utf8"),
+    });
+
+    const { client, transport } = await connectClient(f.token);
+    try {
+      const search = await client.callTool({
+        name: "files.search",
+        arguments: { query: "notes-mcp" },
+      });
+      expect(search.isError).toBeFalsy();
+      const results = payloadOf(search) as unknown as { id: string; name: string }[];
+      expect(results.length).toBeGreaterThan(0);
+      expect(results[0]?.name).toBe("notes-mcp.txt");
+
+      const read = await client.callTool({
+        name: "files.read",
+        arguments: { fileId: entry.id },
+      });
+      expect(read.isError).toBeFalsy();
+      const payload = payloadOf(read);
+      expect(payload.text).toContain("Ligne deux");
+      expect(payload.truncated).toBe(false);
+    } finally {
+      await client.close();
+      await transport.close();
+    }
+  });
+
+  it("files.read refuse un jeton sans scope drive:read", async () => {
+    const f = await fixtures(["docs:read"]);
+    const actor = { userId: f.userId, orgId: f.orgId };
+
+    const { entry } = await uploadFile(actor, {
+      name: "prive.txt",
+      contentType: "text/plain",
+      body: Buffer.from("secret", "utf8"),
+    });
+
+    const { client, transport } = await connectClient(f.token);
+    try {
+      const read = await client.callTool({
+        name: "files.read",
+        arguments: { fileId: entry.id },
+      });
+      expect(read.isError).toBe(true);
+    } finally {
+      await client.close();
+      await transport.close();
+    }
+  });
+
+  it("isolation : un jeton d'une autre organisation ne voit aucun fichier", async () => {
+    const owner = await fixtures(["drive:read"]);
+    const stranger = await fixtures(["drive:read"]);
+
+    const { entry } = await uploadFile(
+      { userId: owner.userId, orgId: owner.orgId },
+      { name: "confidentiel.txt", contentType: "text/plain", body: Buffer.from("top", "utf8") },
+    );
+
+    const { client, transport } = await connectClient(stranger.token);
+    try {
+      const search = await client.callTool({
+        name: "files.search",
+        arguments: { query: "confidentiel" },
+      });
+      expect(search.isError).toBeFalsy();
+      expect(payloadOf(search) as unknown as unknown[]).toHaveLength(0);
+
+      const read = await client.callTool({
+        name: "files.read",
+        arguments: { fileId: entry.id },
+      });
+      expect(read.isError).toBe(true);
+    } finally {
+      await client.close();
+      await transport.close();
+    }
+  });
+
+  it("docs.read : lit le texte d'un document autorisé, refuse sans scope", async () => {
+    const f = await fixtures(["docs:read"]);
+    const actor = { userId: f.userId, orgId: f.orgId };
+
+    const { entry } = await createDocument(actor, { title: "Brief MCP" });
+    await saveDocument(actor, entry.id, {
+      content: {
+        type: "doc",
+        content: [
+          {
+            type: "paragraph",
+            content: [{ type: "text", text: "Bonjour le monde" }],
+          },
+        ],
+      },
+      mode: "append",
+    });
+
+    const { client, transport } = await connectClient(f.token);
+    try {
+      const read = await client.callTool({
+        name: "docs.read",
+        arguments: { fileId: entry.id },
+      });
+      expect(read.isError).toBeFalsy();
+      const payload = payloadOf(read);
+      expect(payload.title).toBe("Brief MCP");
+      expect(payload.text).toContain("Bonjour le monde");
+    } finally {
+      await client.close();
+      await transport.close();
+    }
+  });
+
+  it("docs.read refuse un jeton sans scope docs:read", async () => {
+    const f = await fixtures(["drive:read"]);
+    const actor = { userId: f.userId, orgId: f.orgId };
+    const { entry } = await createDocument(actor, { title: "Sans accès" });
+
+    const { client, transport } = await connectClient(f.token);
+    try {
+      const read = await client.callTool({
+        name: "docs.read",
+        arguments: { fileId: entry.id },
+      });
+      expect(read.isError).toBe(true);
     } finally {
       await client.close();
       await transport.close();

@@ -21,10 +21,10 @@ Agent (stdio ou HTTP) ──► apps/mcp-server ──► modules/*/service.ts �
 
 ## Authentification et jetons
 
-- Jetons émis par l'utilisateur dans l'interface (page « Agents & jetons »), liés à (utilisateur, organisation).
-- **Scopes** par domaine et par niveau : `drive:read`, `drive:write`, `docs:read`, `docs:write`, … ; jamais d'`admin` implicite.
-- Stockage : empreinte uniquement (le jeton en clair n'est montré qu'à la création) ; expiration optionnelle ; révocation immédiate ; « dernier usage » visible.
-- Le jeton ne peut jamais voir plus que son propriétaire au moment de l'appel : le serveur construit l'`Actor` puis appelle `can()`.
+- Jetons émis par l'utilisateur dans l'interface (**Agents & jetons**, `/app/settings/tokens`), liés à (utilisateur, organisation).
+- **Scopes** : `drive:read`, `drive:write`, `docs:read`, `docs:write`, `audit:read` (état actuel).
+- Stockage : empreinte SHA-256 uniquement ; le jeton en clair n'est montré qu'à la création ; révocation immédiate ; « dernier usage » visible.
+- Le jeton ne peut jamais voir plus que son propriétaire au moment de l'appel : l'`Actor` est construit par le serveur puis les mêmes contrôles que le web s'appliquent.
 
 ## Contrat d'un outil
 
@@ -33,29 +33,31 @@ Agent (stdio ou HTTP) ──► apps/mcp-server ──► modules/*/service.ts �
 | `name` | stable, préfixé par domaine (`files.search`, `docs.read`…) |
 | `input` | JSON Schema strict, validé avant tout traitement |
 | `scopes` | liste minimale ; `read` séparé de `write` |
-| `confirmation` | obligatoire pour les actions destructrices (l'outil refuse sans `confirm: true` éclairé) |
-| `errors` | typées (`not_found`, `forbidden`, `validation`, `conflict`, `rate_limited`) — jamais de détail interne |
-| `audit` | acteur, org, outil, ressource visée, résultat (succès **et** refus) |
+| `confirmation` | obligatoire pour les actions destructrices (à venir avec `files.delete`) |
+| `errors` | typées — jamais de détail interne au-delà du message métier |
+| `audit` | acteur, org, outil, résultat (succès **et** refus) dans `audit_events` |
 
-## Outils v0 (Phase 2)
+## Outils livrés (v1)
 
 | Outil | Scopes | Description |
 |---|---|---|
-| `files.search` | `drive:read` | Rechercher des fichiers accessibles (nom, type, texte simple) |
-| `files.read` | `drive:read` | Lire le contenu texte d'un fichier autorisé (types texte/markdown) |
-| `docs.read` | `docs:read` | Lire le texte d'un document autorisé |
-| `docs.list` | `docs:read` | Lister les documents accessibles |
+| `me.whoami` | — (jeton valide) | Identité, organisation et scopes du jeton courant |
+| `audit.recent` | `audit:read` | Derniers événements d'audit de l'organisation |
+| `files.search` | `drive:read` | Recherche de fichiers accessibles (partages hérités compris) |
+| `files.read` | `drive:read` | Lecture d'un fichier texte (text/\*, JSON, Markdown, XML), tronquée à 60 k caractères |
+| `docs.read` | `docs:read` | Lecture du texte d'un document (extraction plain text) |
 
-L'élargissement (écriture, calendrier, formulaires, administration selon permissions) suit la feuille de route des modules, sous les mêmes règles. La liste complète et les schémas seront générés/documentés au fil des phases.
+## Feuille de route des outils
+
+- Phase 3 : `docs.list`, `docs.create`, `docs.update`, `files.write`, `files.delete` (confirmation explicite), recherche plein texte.
+- Phases suivantes : Calendar, Tasks, Forms, administration selon permissions — toujours sous les mêmes règles.
 
 ## Sécurité et tests obligatoires
 
-- Jeton révoqué → refus ; scope insuffisant → refus ; autre organisation → refus ; ressource non partagée → refus ; action destructive sans confirmation → refus.
-- Limitation de débit par jeton (protection contre les boucles d'agent).
-- Les tests s'exécutent contre les services réels (pas de mocks de permissions).
+- Jeton révoqué → refus ; scope insuffisant → refus ; autre organisation → refus ; ressource non partagée → refus ; action destructive sans confirmation → refus (à venir avec l'outil).
+- Les tests d'intégration démarrent le **vrai serveur MCP** (stdio) contre une base PostgreSQL réelle et vérifient aussi que les refus sont **journalisés**.
 
 ## Limites connues
 
-- Pas d'administration exposée au MCP à ce stade.
-- Les écritures riches (édition collaborative, formulaires) attendent leurs modules.
+- Pas d'administration exposée au MCP à ce stade ; pas de recherche plein texte (nom uniquement).
 - L'API HTTP publique documentée (Phase 6) est un canal distinct, avec sa propre authentification.
