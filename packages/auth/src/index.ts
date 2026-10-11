@@ -6,6 +6,7 @@ export {
   getSession,
   listMyOrganizations,
   NoOrganizationError,
+  requireActor,
   requireActorContext,
   UnauthorizedError,
 } from "./server";

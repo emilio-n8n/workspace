@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useRef } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import { cn } from "../cn.ts";
 
 export type DialogProps = {
@@ -8,13 +8,15 @@ export type DialogProps = {
   children: ReactNode;
   footer?: ReactNode;
   className?: string;
+  /** Sans rembourrage interne (palettes, contenus qui gèrent leur mise en page). */
+  bare?: boolean;
 };
 
 /**
  * Dialogue modal basé sur l'élément natif <dialog> :
  * focus trap, fermeture Échap et sémantique fournis par la plateforme.
  */
-export function Dialog({ open, onClose, title, children, footer, className }: DialogProps) {
+export function Dialog({ open, onClose, title, children, footer, className, bare }: DialogProps) {
   const ref = useRef<HTMLDialogElement>(null);
 
   useEffect(() => {
@@ -29,12 +31,12 @@ export function Dialog({ open, onClose, title, children, footer, className }: Di
       ref={ref}
       onClose={onClose}
       className={cn(
-        "w-full max-w-md rounded-lg border border-border bg-card p-0 text-card-foreground shadow-lg backdrop:bg-foreground/30",
+        "w-full max-w-md rounded-xl border border-border bg-card p-0 text-card-foreground shadow-lift backdrop:bg-foreground/30",
         className,
       )}
     >
       <div className="flex items-center justify-between border-b border-border px-4 py-3">
-        <h2 className="text-sm font-semibold">{title}</h2>
+        <h2 className="font-display text-sm font-semibold">{title}</h2>
         <button
           type="button"
           onClick={onClose}
@@ -54,7 +56,7 @@ export function Dialog({ open, onClose, title, children, footer, className }: Di
           </svg>
         </button>
       </div>
-      <div className="px-4 py-4">{children}</div>
+      <div className={bare ? undefined : "px-4 py-4"}>{children}</div>
       {footer ? (
         <div className="flex justify-end gap-2 border-t border-border px-4 py-3">{footer}</div>
       ) : null}

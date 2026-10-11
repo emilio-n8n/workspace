@@ -25,6 +25,17 @@ export function createAuth() {
       minPasswordLength: 10,
     },
     plugins: [organization({ teams: { enabled: true } })],
+    // Production multi-apps : cookie de session partagé entre sous-domaines.
+    ...(env.BETTER_AUTH_COOKIE_DOMAIN
+      ? {
+          advanced: {
+            crossSubDomainCookies: {
+              enabled: true,
+              domain: env.BETTER_AUTH_COOKIE_DOMAIN,
+            },
+          },
+        }
+      : {}),
   });
 }
 

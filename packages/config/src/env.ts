@@ -21,6 +21,14 @@ const serverEnvSchema = z.object({
   /** Connexion PostgreSQL des tests d'intégration. */
   TEST_DATABASE_URL: z.string().url().optional(),
 
+  /** URLs des applications de la suite (surcharges optionnelles). */
+  DRIVE_URL: z.string().url().optional(),
+  DOCS_URL: z.string().url().optional(),
+  TASKS_URL: z.string().url().optional(),
+
+  /** Domaine du cookie de session partagé entre sous-domaines (production). */
+  BETTER_AUTH_COOKIE_DOMAIN: z.string().optional(),
+
   /** Secret de signature des sessions (≥ 32 caractères). Requis en production. */
   SESSION_SECRET: z.string().min(32).optional(),
 

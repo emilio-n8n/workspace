@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { Actor } from "@workspace/permissions";
 import { auth } from "./auth.ts";
 
 /** Session utilisateur courante à partir des en-têtes de requête. */
@@ -35,6 +36,21 @@ export async function requireActorContext(
   }
 
   return { userId: session.user.id, orgId };
+}
+
+/**
+ * Acteur serveur prêt pour la couche de permissions : session obligatoire,
+ * organisation résolue (préférence ou première organisation).
+ * Refus par défaut si aucune session.
+ */
+export async function requireActor(
+  headers: Headers,
+): Promise<{ actor: Actor; userId: string }> {
+  const context = await requireActorContext(headers);
+  return {
+    actor: { userId: context.userId, orgId: context.orgId },
+    userId: context.userId,
+  };
 }
 
 export class UnauthorizedError extends Error {
