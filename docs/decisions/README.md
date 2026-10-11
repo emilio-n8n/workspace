@@ -17,6 +17,7 @@ Format : titre, statut (`proposé` | `accepté` | `remplacé` | `rejeté`), cont
 | [0009](0009-moteur-slides.md) | Moteur de présentations (Slides) : scène maison hybride | accepté sous réserve des POC |
 | [0010](0010-socle-mail.md) | Socle messagerie (Mail) : Stalwart en sidecar, UI maison JMAP | accepté sous réserve du POC délivrabilité |
 | [0011](0011-moteur-meet.md) | Visioconférence (Meet) : LiveKit + coturn, UI maison | accepté sous réserve des POC réseau et charge |
+| [0012](0012-suite-multi-applications.md) | Suite multi-applications et SSO (rail, lanceur, palette ⌘K) | accepté |
 
 ## Modèle
 

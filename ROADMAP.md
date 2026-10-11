@@ -35,7 +35,8 @@ Prouver de bout en bout : authentification → stockage → permissions → édi
 - [x] Docs — cœur : autosave (`replace-latest`) + instantanés (`append`), permissions mappées sur Drive, exports Markdown/HTML, conversions testées
 - [x] Docs — éditeur Tiptap 3 (StarterKit) : barre d'outils, statut d'enregistrement, historique des versions, lecture seule pour les viewers
 - [x] MCP v1 : `files.search`, `files.read`, `docs.read` — refus sans scope et isolation inter-organisations testés
-- [▶] E2E des critères de preuve MVP : parcours Drive/Docs + partage réel entre deux comptes avec révocation (vérification en cours)
+- [x] E2E des critères de preuve MVP : parcours Drive/Docs/Tasks + partage réel entre deux comptes avec révocation — **10/10 verts (multi-applications, SSO inclus)**
+- [x] **Refonte multi-applications** (ADR-0012) : accueil (lanceur), Drive, Docs et Tasks en applications isolées, SSO par cookie partagé, rail d'applications, sélecteur d'organisation, palette ⌘K — design system v2 « Papier & encre », polices auto-hébergées, thème sombre complet
 
 ## Phase 3 — Suite de productivité ▶
 

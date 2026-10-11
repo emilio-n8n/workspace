@@ -1,47 +1,53 @@
 # Design system — fondations
 
-> Direction : **« instrument de précision »** — surfaces calmes, information dense sans encombrement, un seul accent, aucune décoration gratuite. Source des valeurs : `packages/design-tokens/tokens.css`. Règle absolue : **aucune couleur, ombre ou rayon codé en dur dans un composant**.
+> Direction : **« Papier & encre »** — surfaces papier chaudes, encre profonde, **un accent evergreen**, ambre pour l'attention, et une **couleur d'identité par application** (petites marques uniquement). Typographies **auto-hébergées** (aucun CDN). Source des valeurs : `packages/design-tokens/` (`tokens.css`, `fonts.css`). Règle absolue : **aucune couleur, ombre ou rayon codé en dur dans un composant**.
 
 ## Principes
 
-1. **Une suite, une identité.** Tous les modules consomment les mêmes tokens et les mêmes composants de base.
-2. **Tokens sémantiques uniquement.** `bg-background`, `text-foreground`, `bg-muted`, `border-border`, `bg-primary`… — jamais `bg-white`, `bg-[#123]` ou une couleur brute.
-3. **Parité clair/sombre.** Chaque token a ses deux valeurs ; une interface qui ne fonctionne que dans un thème est refusée.
-4. **Sobriété.** Pas de dégradés décoratifs, pas de glassmorphism, pas d'ombres portées pour « faire profond ». Les bordures structurent, les ombres sont réservées aux surfaces flottantes (menus, dialogues).
-5. **Performance perçue.** Transitions courtes (≤ 150 ms), pas d'animation d'entrée sur chaque page, pas de bibliothèque d'icônes complète (imports nommés).
-6. **Accessibilité intégrée.** Contraste AA minimum, focus visible par défaut (`ring`), navigation clavier complète, HTML sémantique, cibles ≥ 32 px (44 px tactile).
-7. **Contenu clair.** Libellés en français au lancement ; les chaînes destinées à la traduction seront centralisées (i18n prévu, pas de texte enfoui).
-
-## Couleur
-
-- Neutres frais et calmes ; un **accent unique pétrole** (`primary`) ; `destructive` pour les actions dangereuses ; `accent` pour les états sélectionnés/survols.
-- Tokens actuels : `background/foreground`, `card`, `muted`, `border/input/ring`, `primary`, `accent`, `destructive` (voir `tokens.css`).
-- À ajouter avant leur premier usage : `success`, `warning`, `info` (état de messages système) — avec paires clair/sombre.
+1. **Une suite, des applications distinctes.** Chaque application a son site, son port/sous-domaine et son domaine de responsabilité ; l'identité visuelle est commune (mêmes tokens, mêmes composants), la navigation est assurée par le **rail d'applications**, le **lanceur** (grille 9 points) et la **palette de commandes ⌘K**.
+2. **Tokens sémantiques uniquement.** `bg-background`, `text-foreground`, `bg-surface`, `border-border`, `bg-primary`, `bg-rail`, `text-app-drive`, `text-file-pdf`… — jamais `bg-white`, `bg-[#…]`.
+3. **Parité clair/sombre complète.** Chaque token a ses deux valeurs ; un composant qui ne fonctionne que dans un thème est refusé.
+4. **Sobriété.** Pas de dégradés décoratifs, pas de glassmorphism ; les bordures structurent, les ombres (`shadow-soft`, `shadow-lift`) sont réservées aux surfaces flottantes.
+5. **Performance perçue.** Transitions ≤ 160 ms, pas d'animation d'entrée par page, aucune police d'icônes (icônes SVG maison, 16 px, stroke 1,6).
+6. **Accessibilité intégrée.** Contraste AA, focus visible (`ring` 2 px), navigation clavier complète (⌘K, Échap ferme les menus), HTML sémantique, cibles ≥ 32 px.
 
 ## Typographie
 
-- **Décision en attente d'un prototype visuel** (Phase 1) entre :
-  - **Geist** (grotesque neutre et précise, OFL) — cohérente, discrète ;
-  - **Instrument Sans** (plus caractéristique, OFL) — identité plus marquée.
-- Contrainte : **polices auto-hébergées** (aucun CDN de polices — confidentialité et self-host), sous-ensembles latins, `font-display: swap`.
-- Monospace pour code et identifiants : Geist Mono ou JetBrains Mono.
-- Échelle : 12/14/16 px texte, 16 px minimum pour les corps de documents ; titres **600** maximum.
+- **Interface** : **Public Sans** (variable, OFL, auto-hébergée) — lisible, neutre, professionnelle.
+- **Display** : **Bricolage Grotesque** (variable 500-700, OFL, auto-hébergée) — titres `h1-h3`, marque, chiffres de mise en avant : c'est la signature visuelle de la suite.
+- **Monospace** : pile système.
+- Chargement : `fonts.css` (sous-ensemble latin, `font-display: swap`) — aucun appel réseau tiers.
 
-## Forme, espace, mouvement
+## Couleur
 
-- Rayon de base `--radius` (8 px) décliné `sm/md/lg/xl` ; les contrôles s'alignent sur la grille d'espacement Tailwind (4 px).
-- Densité : confortable par défaut ; un mode compact (tables) pourra être ajouté pour les écrans d'administration — testé avant adoption.
-- Mouvement : uniquement fonctionnel (apparition de menus, chargements squelettes). Pas d'animation sur chaque interaction.
+- Neutres **chauds** (papier ~hue 85 en clair, encre ~hue 75 en sombre) ; `surface` pour les barres, `rail` (sombre, hue 160) pour le rail d'applications.
+- **Primary evergreen** (`oklch(0.42 0.075 168)` en clair, éclairci en sombre) : actions principales, sélection.
+- **Attention ambre** : avertissements, échéances proches — jamais pour des actions.
+- **Tons par application** (`--app-drive`, `--app-docs`…) : réservés aux icônes et pastilles d'identité, jamais aux surfaces.
+- **Couleurs de fichiers** (`--file-*`) : icônes des types de fichiers dans Drive — contenu, pas interface.
+
+## Espace, forme, mouvement
+
+- Rayon de base `--radius` = 10 px (`sm/md/lg/xl` déclinés) ; grille 4 px ; densité d'outil (tableaux compacts, padding 8-12 px).
+- Ombres : `shadow-soft` (cartes, barre), `shadow-lift` (popovers, dialogues).
+- Mouvement : uniquement fonctionnel (menus, dialogues, indicateurs) ; jamais d'animation décorative.
+
+## Shell partagé (package `ui`)
+
+- **Rail d'applications** (76 px) : marque, applications livrées (état actif), palette ⌘K.
+- **Barre supérieure** : nom de l'application active, recherche/palette, lanceur, thème, menu du compte (organisations + jetons + déconnexion).
+- **Palette ⌘K** (cmdk) : navigation vers les applications, actions (thème, jetons).
+- **Registre `SUITE_APPS`** : source unique des applications (nom, description, phase, ton, livrée) — le lanceur n'affiche jamais un lien mort, les applications non livrées portent leur phase.
 
 ## Composants
 
-- Base : boutons, champs, sélecteurs, menus, dialogues, badges, avatars, tables, onglets — construits sur Radix primitives (accessibilité) + variantes **cva**. Package : `packages/ui` (Phase 1).
-- Un composant = une API de variantes documentée (`variant`, `size`, `disabled`, `loading`) ; pas d'explosion de props booléennes.
-- Chaque composant doit exister en clair **et** sombre et être utilisable au clavier ; une page « vitrine » interne servira de référence visuelle vivante.
+- Base : boutons, champs, sélecteurs, dialogues natifs (`<dialog>`), badges, cartes — variantes `cva`, tokens uniquement.
+- Un composant = une API de variantes documentée ; pas d'explosion de props booléennes.
+- Chaque composant existe en clair **et** sombre, utilisable au clavier.
 
 ## Ce qui est proscrit
 
-- `text-white` / `bg-black` / couleurs hexadécimales dans les composants.
-- SVG décoratifs lourds, emojis dans la chrome d'interface, 3 tailles de texte pour le même niveau.
-- Polices chargées depuis un CDN externe.
-- Thème « IA générique » : dégradés violet/indigo, cartes arrondies partout, hero interchangeables (explicitement rejetés dans le brief produit).
+- Couleurs en dur, dégradés violet/indigo, glassmorphism, cartes arrondies partout.
+- Polices chargées depuis un CDN externe (violation self-host + vie privée).
+- Applications qui introduisent leurs propres couleurs, espacements ou composants sans validation (voir ADR-0012 et le registre).
+- Faux liens : une application non livrée est affichée avec sa phase, jamais cliquable vers une page vide.

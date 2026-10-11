@@ -12,10 +12,10 @@ Caddy ou Traefik (option)  →  TLS + domaine
 Sauvegarde documentée      →  base + stockage (cohérents)
 ```
 
-- **web** : l'application (SSR + server functions). Image construite depuis le dépôt.
+- **web** : les applications de la suite (Accueil, Drive, Docs, Tasks — puis les suivantes), chacune son propre conteneur, exposées sur des sous-domaines (`exemple.org`, `drive.exemple.org`, `docs.exemple.org`, `tasks.exemple.org`). Un seul PostgreSQL, une seule authentification (SSO par cookie de domaine).
 - **postgres** : PostgreSQL ≥ 16 (18 recommandé), volume persistant, mot de passe généré à l'installation.
 - **stockage** : LocalFS (volume) par défaut ; S3-compatible (MinIO, Garage, Ceph…) en option par variables d'environnement.
-- Réverse proxy non fourni dans le compose par défaut (choix de l'exploitant documenté : Caddy recommandé pour le TLS automatique).
+- Réverse proxy non fourni dans le compose par défaut (choix de l'exploitant documenté : **Caddy recommandé**, TLS automatique par sous-domaine).
 
 ## Configuration (variables d'environnement)
 
@@ -23,7 +23,9 @@ Sauvegarde documentée      →  base + stockage (cohérents)
 |---|---|---|
 | `DATABASE_URL` | Connexion PostgreSQL | requis |
 | `SESSION_SECRET` | Signature des sessions | requis (généré à l'installation) |
-| `PUBLIC_URL` | URL publique de l'instance (liens d'invitation, partage) | requis |
+| `PUBLIC_URL` | URL publique de l'application d'accueil | requis |
+| `DRIVE_URL`, `DOCS_URL`, `TASKS_URL` | URLs publiques des applications | dérivées en sous-domaines de `PUBLIC_URL` |
+| `BETTER_AUTH_COOKIE_DOMAIN` | Cookie de session partagé entre sous-domaines (SSO) | requis en production multi-sous-domaines (ex. `.exemple.org`) |
 | `STORAGE_DRIVER` | `local` \| `s3` | `local` |
 | `STORAGE_DIR` | Répertoire des binaires (driver local) | `/data/storage` |
 | `S3_ENDPOINT`, `S3_BUCKET`, `S3_ACCESS_KEY`, `S3_SECRET_KEY`, `S3_REGION` | Stockage S3-compatible | — |
@@ -65,4 +67,4 @@ Sauvegarde documentée      →  base + stockage (cohérents)
 
 ## Développement local (état actuel)
 
-L'environnement de développement utilise PostgreSQL 18 natif (`workspace_dev` / `workspace_test`), `pnpm dev` pour le web. `.env` local non versionné. Le compose de développement et le compose d'installation seront ajoutés en Phase 1 avec vérification (`docker compose config` + montée réelle dès que l'accès Docker de la machine sera effectif).
+`pnpm dev` démarre les quatre applications (Accueil 3000, Drive 3001, Docs 3002, Tasks 3003) sur `localhost` — le SSO fonctionne sans configuration (les cookies ignorent les ports). PostgreSQL natif (`workspace_dev` / `workspace_test`), `.env` local non versionné. Le compose de développement et le compose d'installation multi-applications seront ajoutés en Phase 1/6 avec vérification réelle dès que l'accès Docker de la machine sera effectif.
