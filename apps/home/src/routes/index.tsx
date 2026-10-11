@@ -3,15 +3,9 @@ import {
   Badge,
   Button,
   currentTheme,
-  IconCalendar,
-  IconFileText,
-  IconFolder,
-  IconGrid,
-  IconMail,
   IconMoon,
-  IconPresentation,
   IconSun,
-  IconVideo,
+  SUITE_APPS,
   type Theme,
   toggleTheme,
 } from "@workspace/ui";
@@ -19,16 +13,12 @@ import { useEffect, useState } from "react";
 
 export const Route = createFileRoute("/")({ component: HomePage });
 
-const suiteApps = [
-  { label: "Drive", icon: <IconFolder />, phase: "Phase 2" },
-  { label: "Docs", icon: <IconFileText />, phase: "Phase 2" },
-  { label: "Sheets", icon: <IconGrid />, phase: "Phase 3" },
-  { label: "Slides", icon: <IconPresentation />, phase: "Phase 3" },
-  { label: "Calendar", icon: <IconCalendar />, phase: "Phase 3" },
-  { label: "Tasks & Forms", icon: <IconGrid />, phase: "Phase 3" },
-  { label: "Mail", icon: <IconMail />, phase: "Phase 4" },
-  { label: "Meet", icon: <IconVideo />, phase: "Phase 4" },
-];
+// Dérivé du registre unique de la suite : plus jamais de liste en dur périmée.
+const suiteApps = SUITE_APPS.map((app) => ({
+  label: app.name,
+  icon: <app.Icon />,
+  phase: `Phase ${app.phase}`,
+}));
 
 const principles = [
   {

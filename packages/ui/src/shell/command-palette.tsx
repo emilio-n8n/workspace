@@ -38,7 +38,7 @@ export function CommandPalette({ open, onOpenChange, actions }: CommandPalettePr
       bare
       className="max-w-xl"
     >
-      <Command label="Palette de commandes" className="overflow-hidden rounded-b-lg">
+      <Command label="Palette de commandes" className="overflow-hidden rounded-b-xl">
         <Command.Input
           autoFocus
           placeholder="Rechercher une application ou une action…"

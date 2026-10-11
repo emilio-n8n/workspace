@@ -143,11 +143,23 @@ export async function createGrant(input: {
 }
 
 /** Révoque un grant par son identifiant (retourne false s'il n'existait pas). */
-export async function revokeGrant(grantId: string): Promise<boolean> {
+/**
+ * Révoque un grant en le confinant à la ressource et à l'organisation :
+ * un administrateur d'une organisation ne peut jamais révoquer le grant
+ * d'une autre organisation (identifiants non devinables seuls).
+ */
+export async function revokeGrant(resource: Resource, grantId: string): Promise<boolean> {
   const db = getDb();
   const result = await db
     .delete(resourceGrants)
-    .where(eq(resourceGrants.id, grantId))
+    .where(
+      and(
+        eq(resourceGrants.id, grantId),
+        eq(resourceGrants.orgId, resource.orgId),
+        eq(resourceGrants.resourceType, resource.type),
+        eq(resourceGrants.resourceId, resource.id),
+      ),
+    )
     .returning({ id: resourceGrants.id });
 
   return result.length > 0;

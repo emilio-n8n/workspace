@@ -12,7 +12,15 @@ export {
 export { Dialog, type DialogProps } from "./components/dialog.tsx";
 export { Input, type InputProps } from "./components/input.tsx";
 export { Label, type LabelProps } from "./components/label.tsx";
-export { DOCS_MIME, FileIcon, fileVisual } from "./file-icon.tsx";
+export {
+  DOCS_MIME,
+  FileIcon,
+  FORMS_MIME,
+  fileVisual,
+  SHEETS_MIME,
+  SITES_MIME,
+  SLIDES_MIME,
+} from "./file-icon.tsx";
 export * from "./icons.tsx";
 export { AppRail, type AppRailProps } from "./shell/app-rail.tsx";
 export { AppShell, type AppShellProps } from "./shell/app-shell.tsx";

@@ -29,7 +29,10 @@
     "@workspace/docs": "workspace:*",
     "@workspace/drive": "workspace:*",
     "@workspace/storage": "workspace:*",
-    "zod": "^4.1.12"
+    "zod": "^4.1.12",
+    "@workspace/forms": "workspace:*",
+    "@workspace/sheets": "workspace:*",
+    "@workspace/slides": "workspace:*"
   },
   "devDependencies": {
     "@tanstack/devtools-vite": "0.8.5",

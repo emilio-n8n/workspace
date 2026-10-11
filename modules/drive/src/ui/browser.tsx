@@ -7,11 +7,15 @@ import {
   Dialog,
   DOCS_MIME,
   FileIcon,
+  FORMS_MIME,
   IconChevronDown,
   IconFolder,
   IconTrash,
   Input,
   Label,
+  SHEETS_MIME,
+  SITES_MIME,
+  SLIDES_MIME,
 } from "@workspace/ui";
 import {
   type DragEvent,
@@ -43,8 +47,20 @@ type Props = {
   folderId?: string | null;
   /** Base URL de l'application Docs (navigation inter-apps). */
   docsUrl?: string;
+  /** Base URL de l'application Sheets (navigation inter-apps). */
+  sheetsUrl?: string;
+  /** Base URL de l'application Slides (navigation inter-apps). */
+  slidesUrl?: string;
+  /** Base URL de l'application Forms (navigation inter-apps). */
+  formsUrl?: string;
   /** Création d'un document côté application hôtesse (injecté). */
   createDocument?: (parentId: string | null, title: string) => Promise<{ fileId: string }>;
+  /** Création d'une feuille de calcul côté application hôtesse (injecté). */
+  createSpreadsheet?: (parentId: string | null, title: string) => Promise<{ fileId: string }>;
+  /** Création d'une présentation côté application hôtesse (injecté). */
+  createPresentation?: (parentId: string | null, title: string) => Promise<{ fileId: string }>;
+  /** Création d'un formulaire côté application hôtesse (injecté). */
+  createForm?: (parentId: string | null, title: string) => Promise<{ fileId: string }>;
 };
 
 type DetailsState = {
@@ -77,6 +93,56 @@ function formatDateShort(iso: string): string {
   return new Date(iso).toLocaleDateString("fr-FR", { dateStyle: "medium" });
 }
 
+/** Types de fichiers liés, ouverts par une application dédiée. */
+const LINKED_MIMES = new Set([DOCS_MIME, SHEETS_MIME, SLIDES_MIME, FORMS_MIME]);
+
+function isLinkedMime(mimeType: string | null): boolean {
+  return mimeType !== null && LINKED_MIMES.has(mimeType);
+}
+
+/** Libellé du badge des fichiers liés (ouverts par l'application dédiée). */
+const LINKED_LABELS: Record<string, string> = {
+  [DOCS_MIME]: "Document",
+  [SHEETS_MIME]: "Feuille",
+  [SLIDES_MIME]: "Présentation",
+  [FORMS_MIME]: "Formulaire",
+};
+
+/** Types connus → libellés français (badges et dialogue de détails). */
+const MIME_LABELS: Record<string, string> = { ...LINKED_LABELS, [SITES_MIME]: "Site" };
+
+type CreationKind = "doc" | "sheet" | "slide" | "form";
+
+const CREATION: Record<
+  CreationKind,
+  { dialogTitle: string; fieldLabel: string; placeholder: string; errorMessage: string }
+> = {
+  doc: {
+    dialogTitle: "Nouveau document",
+    fieldLabel: "Titre du document",
+    placeholder: "Compte rendu de réunion",
+    errorMessage: "Création du document impossible.",
+  },
+  sheet: {
+    dialogTitle: "Nouvelle feuille de calcul",
+    fieldLabel: "Titre de la feuille",
+    placeholder: "Budget 2026",
+    errorMessage: "Création de la feuille impossible.",
+  },
+  slide: {
+    dialogTitle: "Nouvelle présentation",
+    fieldLabel: "Titre de la présentation",
+    placeholder: "Présentation client",
+    errorMessage: "Création de la présentation impossible.",
+  },
+  form: {
+    dialogTitle: "Nouveau formulaire",
+    fieldLabel: "Titre du formulaire",
+    placeholder: "Enquête de satisfaction",
+    errorMessage: "Création du formulaire impossible.",
+  },
+};
+
 const TABS: { id: string; label: string; to: string }[] = [
   { id: "drive", label: "Mon Drive", to: "/" },
   { id: "recent", label: "Récents", to: "/recent" },
@@ -88,13 +154,25 @@ const TABS: { id: string; label: string; to: string }[] = [
  * Navigateur de fichiers Drive : dossiers, upload (bouton ou glisser-déposer),
  * recherche dans la vue, tri, renommage, corbeille, aperçu des versions et partage.
  */
-export function DriveBrowser({ view = "drive", folderId = null, docsUrl, createDocument }: Props) {
+export function DriveBrowser({
+  view = "drive",
+  folderId = null,
+  docsUrl,
+  sheetsUrl,
+  slidesUrl,
+  formsUrl,
+  createDocument,
+  createSpreadsheet,
+  createPresentation,
+  createForm,
+}: Props) {
   const router = useRouter();
 
   const [entries, setEntries] = useState<DriveEntryView[] | null>(null);
   const [sharedRoles, setSharedRoles] = useState<Map<string, string>>(new Map());
   const [crumbs, setCrumbs] = useState<BreadcrumbItem[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const [dragOver, setDragOver] = useState(false);
 
@@ -106,9 +184,9 @@ export function DriveBrowser({ view = "drive", folderId = null, docsUrl, createD
   const [folderName, setFolderName] = useState("");
   const [creatingFolder, setCreatingFolder] = useState(false);
 
-  const [docDialogOpen, setDocDialogOpen] = useState(false);
-  const [docTitle, setDocTitle] = useState("");
-  const [creatingDoc, setCreatingDoc] = useState(false);
+  const [createKind, setCreateKind] = useState<CreationKind | null>(null);
+  const [createTitle, setCreateTitle] = useState("");
+  const [creatingFile, setCreatingFile] = useState(false);
 
   const [renameTarget, setRenameTarget] = useState<DriveEntryView | null>(null);
   const [renameValue, setRenameValue] = useState("");
@@ -121,6 +199,7 @@ export function DriveBrowser({ view = "drive", folderId = null, docsUrl, createD
 
   const refresh = useCallback(async () => {
     setError(null);
+    setLoadError(null);
     try {
       if (view === "drive") {
         const [list, crumb] = await Promise.all([
@@ -143,7 +222,7 @@ export function DriveBrowser({ view = "drive", folderId = null, docsUrl, createD
       setSharedRoles(new Map(rows.map((row) => [row.entry.id, row.role])));
       setCrumbs([]);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Impossible de charger le contenu.");
+      setLoadError(caught instanceof Error ? caught.message : "Impossible de charger le contenu.");
       setEntries([]);
     }
   }, [view, folderId]);
@@ -163,12 +242,11 @@ export function DriveBrowser({ view = "drive", folderId = null, docsUrl, createD
     if (typeFilter === "folders") rows = rows.filter((entry) => entry.kind === "folder");
     if (typeFilter === "files") rows = rows.filter((entry) => entry.kind === "file");
 
-    if (!sortAsc || query.trim().length > 0) {
-      rows = [...rows].sort((a, b) => {
-        if (a.kind !== b.kind) return a.kind === "folder" ? -1 : 1;
-        return a.name.localeCompare(b.name, "fr", { sensitivity: "base" }) * (sortAsc ? 1 : -1);
-      });
-    }
+    // Le tri est toujours appliqué : la flèche de l'en-tête ne peut pas mentir.
+    rows = [...rows].sort((a, b) => {
+      if (a.kind !== b.kind) return a.kind === "folder" ? -1 : 1;
+      return a.name.localeCompare(b.name, "fr", { sensitivity: "base" }) * (sortAsc ? 1 : -1);
+    });
 
     return rows;
   }, [entries, query, typeFilter, sortAsc]);
@@ -225,6 +303,18 @@ export function DriveBrowser({ view = "drive", folderId = null, docsUrl, createD
       setDetails({ entry: loadedDoc.entry, versions: loadedDoc.versions });
       return;
     }
+    if (entry.mimeType === SHEETS_MIME && sheetsUrl) {
+      window.location.assign(`${sheetsUrl}/sheet/${entry.id}`);
+      return;
+    }
+    if (entry.mimeType === SLIDES_MIME && slidesUrl) {
+      window.location.assign(`${slidesUrl}/slide/${entry.id}`);
+      return;
+    }
+    if (entry.mimeType === FORMS_MIME && formsUrl) {
+      window.location.assign(`${formsUrl}/form/${entry.id}`);
+      return;
+    }
     const loaded = await entryDetailsFn({ data: { entryId: entry.id } });
     setDetails({ entry: loaded.entry, versions: loaded.versions });
   }
@@ -248,23 +338,51 @@ export function DriveBrowser({ view = "drive", folderId = null, docsUrl, createD
     }
   }
 
-  async function onCreateDoc(event: FormEvent<HTMLFormElement>) {
+  async function onCreateFile(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const title = docTitle.trim();
-    if (title.length === 0) return;
+    const title = createTitle.trim();
+    if (title.length === 0 || createKind === null) return;
 
-    setCreatingDoc(true);
+    setCreatingFile(true);
     setError(null);
     try {
-      if (!createDocument || !docsUrl) return;
-      const created = await createDocument(folderId, title);
-      setDocDialogOpen(false);
-      setDocTitle("");
-      window.location.assign(`${docsUrl}/doc/${created.fileId}`);
+      if (createKind === "doc" && createDocument && docsUrl) {
+        const created = await createDocument(folderId, title);
+        setCreateKind(null);
+        setCreateTitle("");
+        window.location.assign(`${docsUrl}/doc/${created.fileId}`);
+        return;
+      }
+      if (createKind === "sheet" && createSpreadsheet && sheetsUrl) {
+        const created = await createSpreadsheet(folderId, title);
+        setCreateKind(null);
+        setCreateTitle("");
+        window.location.assign(`${sheetsUrl}/sheet/${created.fileId}`);
+        return;
+      }
+      if (createKind === "slide" && createPresentation && slidesUrl) {
+        const created = await createPresentation(folderId, title);
+        setCreateKind(null);
+        setCreateTitle("");
+        window.location.assign(`${slidesUrl}/slide/${created.fileId}`);
+        return;
+      }
+      if (createKind === "form" && createForm && formsUrl) {
+        const created = await createForm(folderId, title);
+        setCreateKind(null);
+        setCreateTitle("");
+        window.location.assign(`${formsUrl}/form/${created.fileId}`);
+      }
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Création du document impossible.");
+      setError(
+        caught instanceof Error
+          ? caught.message
+          : createKind
+            ? CREATION[createKind].errorMessage
+            : "Création impossible.",
+      );
     } finally {
-      setCreatingDoc(false);
+      setCreatingFile(false);
     }
   }
 
@@ -362,7 +480,10 @@ export function DriveBrowser({ view = "drive", folderId = null, docsUrl, createD
           <div className="flex flex-wrap items-center gap-2">
             <NewMenu
               onFolder={() => setFolderDialogOpen(true)}
-              onDoc={createDocument && docsUrl ? () => setDocDialogOpen(true) : undefined}
+              onDoc={createDocument && docsUrl ? () => setCreateKind("doc") : undefined}
+              onSheet={createSpreadsheet && sheetsUrl ? () => setCreateKind("sheet") : undefined}
+              onSlide={createPresentation && slidesUrl ? () => setCreateKind("slide") : undefined}
+              onForm={createForm && formsUrl ? () => setCreateKind("form") : undefined}
               onUpload={() => fileInputRef.current?.click()}
               uploading={uploading}
             />
@@ -412,7 +533,18 @@ export function DriveBrowser({ view = "drive", folderId = null, docsUrl, createD
         </span>
       </div>
 
-      {visibleEntries === null ? (
+      {loadError ? (
+        <Card>
+          <div className="flex flex-col items-center gap-3 px-6 py-14 text-center">
+            <p role="alert" className="font-medium text-destructive">
+              {loadError}
+            </p>
+            <Button size="sm" variant="outline" onClick={() => void refresh()}>
+              Réessayer
+            </Button>
+          </div>
+        </Card>
+      ) : visibleEntries === null ? (
         <p className="text-sm text-muted-foreground">Chargement…</p>
       ) : visibleEntries.length === 0 ? (
         <Card>
@@ -445,84 +577,89 @@ export function DriveBrowser({ view = "drive", folderId = null, docsUrl, createD
           </div>
         </Card>
       ) : (
-        <div className="overflow-hidden rounded-lg border border-border">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-border bg-muted/40 text-left text-xs uppercase tracking-wider text-muted-foreground">
-                <th className="w-full px-4 py-2 font-medium">
-                  <button
-                    type="button"
-                    className="inline-flex items-center gap-1 hover:text-foreground"
-                    onClick={() => setSortAsc((current) => !current)}
-                    title="Trier par nom"
+        <div className="rounded-xl border border-border">
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-border bg-muted/40 text-left text-xs uppercase tracking-wider text-muted-foreground">
+                  <th
+                    className="w-full px-4 py-2 font-medium"
+                    aria-sort={sortAsc ? "ascending" : "descending"}
                   >
-                    Nom <span aria-hidden>{sortAsc ? "↑" : "↓"}</span>
-                  </button>
-                </th>
-                <th className="hidden px-4 py-2 font-medium sm:table-cell">
-                  {view === "shared" ? "Droit" : "Propriétaire"}
-                </th>
-                <th className="hidden px-4 py-2 font-medium md:table-cell">Modifié</th>
-                <th className="hidden px-4 py-2 font-medium sm:table-cell">Taille</th>
-                <th className="px-2 py-2 font-medium sr-only">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {visibleEntries.map((entry) => (
-                <tr
-                  key={entry.id}
-                  className="border-b border-border/60 last:border-b-0 hover:bg-muted/30"
-                >
-                  <td className="w-full px-4 py-2">
                     <button
                       type="button"
-                      onClick={() => void onOpen(entry)}
-                      className="flex w-full min-w-0 items-center gap-2 text-left"
+                      className="inline-flex items-center gap-1 hover:text-foreground"
+                      onClick={() => setSortAsc((current) => !current)}
+                      title="Trier par nom"
                     >
-                      <FileIcon
-                        kind={entry.kind}
-                        mimeType={entry.mimeType}
-                        name={entry.name}
-                        className="size-4 shrink-0"
-                      />
-                      <span className="truncate font-medium">{entry.name}</span>
-                      {entry.mimeType === DOCS_MIME ? (
-                        <Badge variant="accent" className="hidden sm:inline-flex">
-                          Document
-                        </Badge>
-                      ) : null}
+                      Nom <span aria-hidden>{sortAsc ? "↑" : "↓"}</span>
                     </button>
-                  </td>
-                  <td className="hidden px-4 py-2 text-muted-foreground sm:table-cell">
-                    {view === "shared"
-                      ? (ROLE_LABELS[sharedRoles.get(entry.id) ?? "viewer"] ?? "Partagé")
-                      : entry.isOwner
-                        ? "moi"
-                        : "Partagé"}
-                  </td>
-                  <td className="hidden whitespace-nowrap px-4 py-2 text-muted-foreground md:table-cell">
-                    {formatDateShort(entry.updatedAt)}
-                  </td>
-                  <td className="hidden px-4 py-2 text-muted-foreground sm:table-cell">
-                    {entry.kind === "folder" ? "—" : formatBytes(entry.sizeBytes)}
-                  </td>
-                  <td className="px-2 py-2 text-right">
-                    <RowMenu
-                      entry={entry}
-                      showDownload={entry.kind === "file" && entry.mimeType !== DOCS_MIME}
-                      onOpen={() => void onOpen(entry)}
-                      onRename={() => {
-                        setRenameTarget(entry);
-                        setRenameValue(entry.name);
-                      }}
-                      onShare={() => setShareTarget(entry)}
-                      onTrash={() => void onTrash(entry)}
-                    />
-                  </td>
+                  </th>
+                  <th className="hidden px-4 py-2 font-medium sm:table-cell">
+                    {view === "shared" ? "Droit" : "Propriétaire"}
+                  </th>
+                  <th className="hidden px-4 py-2 font-medium md:table-cell">Modifié</th>
+                  <th className="hidden px-4 py-2 font-medium sm:table-cell">Taille</th>
+                  <th className="px-2 py-2 font-medium sr-only">Actions</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {visibleEntries.map((entry) => (
+                  <tr
+                    key={entry.id}
+                    className="border-b border-border/60 last:border-b-0 hover:bg-muted/30"
+                  >
+                    <td className="w-full px-4 py-2">
+                      <button
+                        type="button"
+                        onClick={() => void onOpen(entry)}
+                        className="flex w-full min-w-0 items-center gap-2 text-left"
+                      >
+                        <FileIcon
+                          kind={entry.kind}
+                          mimeType={entry.mimeType}
+                          name={entry.name}
+                          className="size-4 shrink-0"
+                        />
+                        <span className="truncate font-medium">{entry.name}</span>
+                        {entry.mimeType && LINKED_LABELS[entry.mimeType] ? (
+                          <Badge variant="accent" className="hidden sm:inline-flex">
+                            {LINKED_LABELS[entry.mimeType]}
+                          </Badge>
+                        ) : null}
+                      </button>
+                    </td>
+                    <td className="hidden px-4 py-2 text-muted-foreground sm:table-cell">
+                      {view === "shared"
+                        ? (ROLE_LABELS[sharedRoles.get(entry.id) ?? "viewer"] ?? "Partagé")
+                        : entry.isOwner
+                          ? "moi"
+                          : "Partagé"}
+                    </td>
+                    <td className="hidden whitespace-nowrap px-4 py-2 text-muted-foreground md:table-cell">
+                      {formatDateShort(entry.updatedAt)}
+                    </td>
+                    <td className="hidden px-4 py-2 text-muted-foreground sm:table-cell">
+                      {entry.kind === "folder" ? "—" : formatBytes(entry.sizeBytes)}
+                    </td>
+                    <td className="relative px-2 py-2 text-right">
+                      <RowMenu
+                        entry={entry}
+                        showDownload={entry.kind === "file" && !isLinkedMime(entry.mimeType)}
+                        onOpen={() => void onOpen(entry)}
+                        onRename={() => {
+                          setRenameTarget(entry);
+                          setRenameValue(entry.name);
+                        }}
+                        onShare={() => setShareTarget(entry)}
+                        onTrash={() => void onTrash(entry)}
+                      />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
 
@@ -573,27 +710,33 @@ export function DriveBrowser({ view = "drive", folderId = null, docsUrl, createD
         </form>
       </Dialog>
 
-      <Dialog open={docDialogOpen} onClose={() => setDocDialogOpen(false)} title="Nouveau document">
-        <form onSubmit={onCreateDoc} method="post" className="flex flex-col gap-4">
+      <Dialog
+        open={createKind !== null}
+        onClose={() => setCreateKind(null)}
+        title={createKind ? CREATION[createKind].dialogTitle : "Nouveau"}
+      >
+        <form onSubmit={onCreateFile} method="post" className="flex flex-col gap-4">
           <div className="flex flex-col gap-2">
-            <Label htmlFor="doc-name">Titre du document</Label>
+            <Label htmlFor="create-name">
+              {createKind ? CREATION[createKind].fieldLabel : "Titre"}
+            </Label>
             <Input
-              id="doc-name"
-              value={docTitle}
-              onChange={(event) => setDocTitle(event.target.value)}
-              placeholder="Compte rendu de réunion"
+              id="create-name"
+              value={createTitle}
+              onChange={(event) => setCreateTitle(event.target.value)}
+              placeholder={createKind ? CREATION[createKind].placeholder : ""}
               maxLength={255}
               autoFocus
             />
             <p className="text-xs text-muted-foreground">
-              Le document sera créé ici avec les mêmes permissions.
+              Le fichier sera créé ici avec les mêmes permissions.
             </p>
           </div>
           <div className="flex justify-end gap-2">
-            <Button type="button" variant="ghost" onClick={() => setDocDialogOpen(false)}>
+            <Button type="button" variant="ghost" onClick={() => setCreateKind(null)}>
               Annuler
             </Button>
-            <Button type="submit" loading={creatingDoc} disabled={docTitle.trim().length === 0}>
+            <Button type="submit" loading={creatingFile} disabled={createTitle.trim().length === 0}>
               Créer et ouvrir
             </Button>
           </div>
@@ -642,7 +785,11 @@ export function DriveBrowser({ view = "drive", folderId = null, docsUrl, createD
           <div className="flex flex-col gap-4">
             <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
               <dt className="text-muted-foreground">Type</dt>
-              <dd>{details.entry.mimeType ?? "fichier"}</dd>
+              <dd>
+                {details.entry.mimeType
+                  ? (MIME_LABELS[details.entry.mimeType] ?? details.entry.mimeType)
+                  : "fichier"}
+              </dd>
               <dt className="text-muted-foreground">Taille</dt>
               <dd>{formatBytes(details.entry.sizeBytes)}</dd>
               <dt className="text-muted-foreground">Modifié</dt>
@@ -690,19 +837,39 @@ export function DriveBrowser({ view = "drive", folderId = null, docsUrl, createD
   );
 }
 
+/** Ferme un menu ouvert lorsque l'utilisateur appuie sur Échap. */
+function useEscapeToClose(open: boolean, close: () => void) {
+  useEffect(() => {
+    if (!open) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") close();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [open, close]);
+}
+
 /** Menu « Nouveau » : dossier, document ou téléversement. */
 function NewMenu({
   onFolder,
   onDoc,
+  onSheet,
+  onSlide,
+  onForm,
   onUpload,
   uploading,
 }: {
   onFolder: () => void;
   onDoc?: () => void;
+  onSheet?: () => void;
+  onSlide?: () => void;
+  onForm?: () => void;
   onUpload: () => void;
   uploading: boolean;
 }) {
   const [open, setOpen] = useState(false);
+
+  useEscapeToClose(open, () => setOpen(false));
 
   function choose(action: () => void) {
     setOpen(false);
@@ -725,12 +892,13 @@ function NewMenu({
           <button
             type="button"
             aria-label="Fermer le menu"
+            tabIndex={-1}
             className="fixed inset-0 z-10 cursor-default"
             onClick={() => setOpen(false)}
           />
           <div
             role="menu"
-            className="absolute right-0 z-20 mt-1 w-56 rounded-md border border-border bg-card p-1 shadow-lg"
+            className="absolute right-0 z-20 mt-1 w-56 rounded-md border border-border bg-card p-1 shadow-lift"
           >
             <button
               type="button"
@@ -750,6 +918,37 @@ function NewMenu({
                 <FileIcon kind="file" mimeType={DOCS_MIME} name="doc" /> Nouveau document
               </button>
             ) : null}
+            {onSheet ? (
+              <button
+                type="button"
+                role="menuitem"
+                className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-sm hover:bg-muted"
+                onClick={() => choose(onSheet)}
+              >
+                <FileIcon kind="file" mimeType={SHEETS_MIME} name="sheet" /> Nouvelle feuille de
+                calcul
+              </button>
+            ) : null}
+            {onSlide ? (
+              <button
+                type="button"
+                role="menuitem"
+                className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-sm hover:bg-muted"
+                onClick={() => choose(onSlide)}
+              >
+                <FileIcon kind="file" mimeType={SLIDES_MIME} name="slide" /> Nouvelle présentation
+              </button>
+            ) : null}
+            {onForm ? (
+              <button
+                type="button"
+                role="menuitem"
+                className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-sm hover:bg-muted"
+                onClick={() => choose(onForm)}
+              >
+                <FileIcon kind="file" mimeType={FORMS_MIME} name="form" /> Nouveau formulaire
+              </button>
+            ) : null}
             <button
               type="button"
               role="menuitem"
@@ -765,7 +964,11 @@ function NewMenu({
   );
 }
 
-/** Menu contextuel « ⋮ » d'une ligne. */
+/**
+ * Menu contextuel « ⋮ » d'une ligne. Le menu est positionné en `fixed` d'après le
+ * rectangle du bouton : il échappe ainsi au conteneur `overflow-x-auto` du tableau
+ * qui le rognait pour les dernières lignes.
+ */
 function RowMenu({
   entry,
   showDownload,
@@ -782,6 +985,38 @@ function RowMenu({
   onTrash: () => void;
 }) {
   const [open, setOpen] = useState(false);
+  const [menuPos, setMenuPos] = useState<{ top: number; left: number } | null>(null);
+
+  useEscapeToClose(open, () => setOpen(false));
+
+  useEffect(() => {
+    if (!open) return;
+    // Menu ancré à l'écran : on le referme au défilement/redimensionnement
+    // plutôt que de le laisser se désaligner du bouton.
+    const close = () => setOpen(false);
+    window.addEventListener("scroll", close, true);
+    window.addEventListener("resize", close);
+    return () => {
+      window.removeEventListener("scroll", close, true);
+      window.removeEventListener("resize", close);
+    };
+  }, [open]);
+
+  /** Ouvre/ferme le menu sous le bouton, en le maintenant dans la fenêtre. */
+  function toggleMenu(rect: DOMRect) {
+    if (open) {
+      setOpen(false);
+      return;
+    }
+    const width = 208; // w-52
+    const margin = 8;
+    const maxLeft = Math.max(margin, window.innerWidth - width - margin);
+    setMenuPos({
+      top: rect.bottom + 4,
+      left: Math.min(Math.max(rect.right - width, margin), maxLeft),
+    });
+    setOpen(true);
+  }
 
   function choose(action: () => void) {
     setOpen(false);
@@ -797,21 +1032,23 @@ function RowMenu({
         aria-expanded={open}
         aria-label={`Actions pour « ${entry.name} »`}
         title="Actions"
-        onClick={() => setOpen((current) => !current)}
+        onClick={(event) => toggleMenu(event.currentTarget.getBoundingClientRect())}
       >
         ⋮
       </Button>
-      {open ? (
+      {open && menuPos ? (
         <>
           <button
             type="button"
             aria-label="Fermer le menu"
+            tabIndex={-1}
             className="fixed inset-0 z-10 cursor-default"
             onClick={() => setOpen(false)}
           />
           <div
             role="menu"
-            className="absolute right-0 z-20 mt-1 w-52 rounded-md border border-border bg-card p-1 text-left shadow-lg"
+            style={{ top: menuPos.top, left: menuPos.left }}
+            className="fixed z-30 w-52 rounded-md border border-border bg-card p-1 text-left shadow-lift"
           >
             <button
               type="button"

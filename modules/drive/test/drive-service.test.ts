@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { closeDb, schema as coreSchema, getDb } from "@workspace/database";
 import { type Actor, createGrant, revokeGrant } from "@workspace/permissions";
 import { getStorage } from "@workspace/storage";
-import { eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   accessShareLink,
@@ -10,6 +10,7 @@ import {
   createShareLink,
   download,
   effectiveRole,
+  getAncestors,
   listEntries,
   listVersions,
   purge,
@@ -21,7 +22,7 @@ import {
   trash,
   uploadFile,
 } from "../src/index.ts";
-import { driveFiles, driveShareLinks } from "../src/schema.ts";
+import { driveFiles, driveFileVersions, driveShareLinks } from "../src/schema.ts";
 
 const { user, organization } = coreSchema;
 
@@ -176,7 +177,7 @@ describe("drive — partage et héritage", () => {
     });
 
     // Promotion editor.
-    await revokeGrant(granted!.id);
+    await revokeGrant({ type: "file", id: file.entry.id, orgId: f.orgId }, granted!.id);
     await createGrant({
       resource: { type: "file", id: file.entry.id, orgId: f.orgId },
       subject: { kind: "user", id: f.bruno },
@@ -217,6 +218,24 @@ describe("drive — partage et héritage", () => {
     // Bruno (même org) ne voit pas l'organisation de Chloé.
     expect(await effectiveRole(f.actorChloe, file.entry.id)).toBeNull();
   });
+
+  it("fil d'Ariane refusé sans droit de lecture", async () => {
+    const folder = await createFolder(f.actorAlice, { name: "Privé" });
+    const { entry } = await uploadFile(f.actorAlice, {
+      parentId: folder.id,
+      name: "secret.txt",
+      body: bufferOf("x"),
+    });
+
+    // Bruno n'a aucun grant : la fuite de noms d'ancêtres doit être impossible.
+    await expect(getAncestors(f.actorBruno, entry.id)).rejects.toMatchObject({
+      code: "forbidden",
+    });
+
+    // Le propriétaire obtient bien dossier → fichier.
+    const chain = await getAncestors(f.actorAlice, entry.id);
+    expect(chain.map((row) => row.name)).toEqual(["Privé", "secret.txt"]);
+  });
 });
 
 describe("drive — corbeille, versions et purge", () => {
@@ -233,7 +252,8 @@ describe("drive — corbeille, versions et purge", () => {
     expect((await listEntries(f.actorAlice)).map((row) => row.name)).toEqual(["jetable.txt"]);
 
     const storage = getStorage();
-    const key = entry.storageKey!;
+    const key = entry.storageKey;
+    if (!key) throw new Error("clé de stockage manquante");
     expect(await storage.get(key)).not.toBeNull();
 
     await trash(f.actorAlice, entry.id);
@@ -265,6 +285,101 @@ describe("drive — corbeille, versions et purge", () => {
   it("purge impossible si l'élément n'est pas dans la corbeille", async () => {
     const { entry } = await uploadFile(f.actorAlice, { name: "actif.txt", body: bufferOf("ok") });
     await expect(purge(f.actorAlice, entry.id)).rejects.toMatchObject({ code: "validation" });
+  });
+
+  it("purge d'un dossier : sous-arbre entier supprimé (lignes, blobs, grants, liens)", async () => {
+    const folder = await createFolder(f.actorAlice, { name: "Dossier" });
+    const childFolder = await createFolder(f.actorAlice, {
+      parentId: folder.id,
+      name: "Sous-dossier",
+    });
+    const { entry: file } = await uploadFile(f.actorAlice, {
+      parentId: childFolder.id,
+      name: "dedans.txt",
+      body: bufferOf("contenu"),
+    });
+
+    // Partage et lien sur un descendant : tout doit disparaître avec la purge.
+    await shareEntry(f.actorAlice, file.id, {
+      subject: { kind: "user", id: f.bruno },
+      role: "viewer",
+    });
+    const link = await createShareLink(f.actorAlice, file.id, { role: "viewer" });
+    const key = file.storageKey;
+    if (!key) throw new Error("clé de stockage manquante");
+
+    await trash(f.actorAlice, folder.id);
+    const summary = await purge(f.actorAlice, folder.id);
+
+    expect(summary.deletedEntries).toBe(3);
+    expect(summary.deletedBlobs).toBe(1);
+    expect(summary.blobErrors).toEqual([]);
+
+    const db = getDb();
+    const remaining = await db
+      .select()
+      .from(driveFiles)
+      .where(inArray(driveFiles.id, [folder.id, childFolder.id, file.id]));
+    expect(remaining).toHaveLength(0);
+
+    const versions = await db
+      .select()
+      .from(driveFileVersions)
+      .where(eq(driveFileVersions.fileId, file.id));
+    expect(versions).toHaveLength(0);
+
+    const grants = await db
+      .select()
+      .from(coreSchema.resourceGrants)
+      .where(
+        and(
+          eq(coreSchema.resourceGrants.resourceType, "file"),
+          eq(coreSchema.resourceGrants.resourceId, file.id),
+        ),
+      );
+    expect(grants).toHaveLength(0);
+
+    const links = await db.select().from(driveShareLinks).where(eq(driveShareLinks.id, link.id));
+    expect(links).toHaveLength(0);
+
+    expect(await getStorage().get(key)).toBeNull();
+  });
+});
+
+describe("drive — quota de stockage", () => {
+  it("bloque l'upload au-delà du quota puis l'autorise une fois le quota relevé", async () => {
+    const db = getDb();
+    await db.insert(coreSchema.orgSettings).values({ orgId: f.orgId, storageQuotaBytes: 10 });
+
+    // 8 octets : sous le quota.
+    await uploadFile(f.actorAlice, { name: "a.txt", body: bufferOf("12345678") });
+
+    // 5 octets de plus : 8 + 5 > 10 → refus.
+    await expect(
+      uploadFile(f.actorAlice, { name: "b.txt", body: bufferOf("12345") }),
+    ).rejects.toMatchObject({
+      name: "DriveError",
+      code: "quota",
+      message: "Quota de stockage dépassé — contactez un administrateur.",
+    });
+
+    // Quota relevé : le même upload passe.
+    await db
+      .update(coreSchema.orgSettings)
+      .set({ storageQuotaBytes: 100 })
+      .where(eq(coreSchema.orgSettings.orgId, f.orgId));
+
+    const { entry } = await uploadFile(f.actorAlice, { name: "b.txt", body: bufferOf("12345") });
+    expect(entry.sizeBytes).toBe(5);
+
+    // Quota nul : tout nouvel upload est refusé.
+    await db
+      .update(coreSchema.orgSettings)
+      .set({ storageQuotaBytes: 0 })
+      .where(eq(coreSchema.orgSettings.orgId, f.orgId));
+    await expect(
+      uploadFile(f.actorAlice, { name: "c.txt", body: bufferOf("x") }),
+    ).rejects.toMatchObject({ code: "quota" });
   });
 });
 

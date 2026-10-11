@@ -1,0 +1,358 @@
+import { randomUUID } from "node:crypto";
+import { closeDb, schema as coreSchema, getDb } from "@workspace/database";
+import type { Actor } from "@workspace/permissions";
+import { eq } from "drizzle-orm";
+import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
+import {
+  CalendarError,
+  createCalendar,
+  createEvent,
+  deleteEvent,
+  ensurePrimaryCalendar,
+  getEvent,
+  listCalendars,
+  listEvents,
+  setAttendance,
+  updateEvent,
+} from "../src/index.ts";
+
+const { user, organization, member } = coreSchema;
+
+let counter = 0;
+const tag = (prefix: string) => `${prefix}${++counter}_${randomUUID().slice(0, 8)}`;
+
+type Fixtures = {
+  orgId: string;
+  otherOrgId: string;
+  alice: string;
+  bruno: string;
+  actorAlice: Actor;
+  actorBruno: Actor;
+  actorChloe: Actor;
+  emailAlice: string;
+  emailBruno: string;
+  emailChloe: string;
+};
+
+async function createFixtures(): Promise<Fixtures> {
+  const db = getDb();
+  const now = new Date();
+
+  const orgId = tag("org");
+  const otherOrgId = tag("org");
+  await db.insert(organization).values([
+    { id: orgId, name: tag("Org "), slug: orgId, createdAt: now },
+    { id: otherOrgId, name: tag("Org "), slug: otherOrgId, createdAt: now },
+  ]);
+
+  const makeUser = async (name: string) => {
+    const id = tag("usr");
+    const email = `${id}@example.org`.toLowerCase();
+    await db.insert(user).values({
+      id,
+      name,
+      email,
+      emailVerified: true,
+      createdAt: now,
+      updatedAt: now,
+    });
+    return { id, email };
+  };
+
+  const alice = await makeUser("Alice");
+  const bruno = await makeUser("Bruno");
+  const chloe = await makeUser("Chloe");
+
+  // Alice et Bruno sont membres de la même organisation ; Chloe est ailleurs.
+  await db.insert(member).values([
+    { id: tag("mem"), organizationId: orgId, userId: alice.id, role: "owner", createdAt: now },
+    { id: tag("mem"), organizationId: orgId, userId: bruno.id, role: "member", createdAt: now },
+    {
+      id: tag("mem"),
+      organizationId: otherOrgId,
+      userId: chloe.id,
+      role: "owner",
+      createdAt: now,
+    },
+  ]);
+
+  return {
+    orgId,
+    otherOrgId,
+    alice: alice.id,
+    bruno: bruno.id,
+    emailAlice: alice.email,
+    emailBruno: bruno.email,
+    emailChloe: chloe.email,
+    actorAlice: { userId: alice.id, orgId },
+    actorBruno: { userId: bruno.id, orgId },
+    actorChloe: { userId: chloe.id, orgId: otherOrgId },
+  };
+}
+
+async function cleanup(f: Fixtures): Promise<void> {
+  const db = getDb();
+  await db.delete(organization).where(eq(organization.id, f.orgId));
+  await db.delete(organization).where(eq(organization.id, f.otherOrgId));
+  for (const id of [f.alice, f.bruno, f.actorChloe.userId]) {
+    await db.delete(user).where(eq(user.id, id));
+  }
+}
+
+let f: Fixtures;
+
+beforeEach(async () => {
+  f = await createFixtures();
+});
+
+afterEach(async () => {
+  await cleanup(f);
+});
+
+afterAll(async () => {
+  await closeDb();
+});
+
+const FROM = "2026-03-01T00:00:00.000Z";
+const TO = "2026-03-31T23:59:59.000Z";
+
+function eventInput(title: string) {
+  return {
+    title,
+    startsAt: "2026-03-10T09:00:00.000Z",
+    endsAt: "2026-03-10T10:00:00.000Z",
+  };
+}
+
+describe("calendar — agendas", () => {
+  it("crée l'agenda personnel une seule fois", async () => {
+    const first = await ensurePrimaryCalendar(f.actorAlice);
+    const second = await ensurePrimaryCalendar(f.actorAlice);
+    expect(second).toBe(first);
+  });
+
+  it("crée un agenda partagé visible par les autres membres", async () => {
+    const shared = await createCalendar(f.actorAlice, { name: "Équipe", shared: true });
+    expect(shared.isOrg).toBe(true);
+
+    const brunoCalendars = await listCalendars(f.actorBruno);
+    expect(brunoCalendars.some((calendar) => calendar.id === shared.id)).toBe(true);
+  });
+
+  it("refuse deux agendas personnels de même nom", async () => {
+    await createCalendar(f.actorAlice, { name: "Projets" });
+    await expect(createCalendar(f.actorAlice, { name: "Projets" })).rejects.toMatchObject({
+      code: "conflict",
+      message: "Un agenda porte déjà ce nom.",
+    });
+
+    // Le même nom reste possible pour un autre propriétaire.
+    const bruno = await createCalendar(f.actorBruno, { name: "Projets" });
+    expect(bruno.name).toBe("Projets");
+  });
+});
+
+describe("calendar — événements", () => {
+  it("crée un événement dans l'agenda personnel et le liste par plage", async () => {
+    const event = await createEvent(f.actorAlice, eventInput("Point produit"));
+    expect(event.calendarName).toBe("Mon agenda");
+    expect(event.myStatus).toBeNull();
+
+    const list = await listEvents(f.actorAlice, { from: FROM, to: TO });
+    expect(list).toHaveLength(1);
+    expect(list[0]?.title).toBe("Point produit");
+
+    // L'agenda personnel d'Alice n'est pas visible par Bruno.
+    const brunoList = await listEvents(f.actorBruno, { from: FROM, to: TO });
+    expect(brunoList).toHaveLength(0);
+  });
+
+  it("refuse une fin avant le début", async () => {
+    await expect(
+      createEvent(f.actorAlice, {
+        title: "Invalide",
+        startsAt: "2026-03-10T10:00:00.000Z",
+        endsAt: "2026-03-10T09:00:00.000Z",
+      }),
+    ).rejects.toThrow(CalendarError);
+  });
+
+  it("un invité voit l'événement, reçoit le lien utilisateur et peut répondre", async () => {
+    const created = await createEvent(f.actorAlice, {
+      ...eventInput("Revue"),
+      attendees: [f.emailBruno],
+    });
+    expect(created.attendees).toHaveLength(1);
+    expect(created.attendees[0]?.userId).toBe(f.bruno);
+    expect(created.attendees[0]?.status).toBe("invited");
+
+    const brunoList = await listEvents(f.actorBruno, { from: FROM, to: TO });
+    expect(brunoList).toHaveLength(1);
+    expect(brunoList[0]?.myStatus).toBe("invited");
+
+    const accepted = await setAttendance(f.actorBruno, created.id, "accepted");
+    expect(accepted.myStatus).toBe("accepted");
+  });
+
+  it("un invité extérieur reste sans compte lié", async () => {
+    const created = await createEvent(f.actorAlice, {
+      ...eventInput("Externe"),
+      attendees: ["personne@ailleurs.example"],
+    });
+    expect(created.attendees[0]?.userId).toBeNull();
+  });
+
+  it("ne révèle pas à un invité d'une autre organisation l'événement (cloisonnement)", async () => {
+    const created = await createEvent(f.actorAlice, {
+      ...eventInput("Confidentiel"),
+      attendees: [f.emailChloe],
+    });
+    expect(created.attendees[0]?.email).toBe(f.emailChloe);
+    expect(created.attendees[0]?.userId).toBeNull(); // Chloe n'est pas membre de l'organisation d'Alice.
+
+    const chloeList = await listEvents(f.actorChloe, { from: FROM, to: TO });
+    expect(chloeList).toHaveLength(0);
+
+    await expect(getEvent(f.actorChloe, created.id)).rejects.toThrow(CalendarError);
+    await expect(setAttendance(f.actorChloe, created.id, "accepted")).rejects.toThrow(
+      CalendarError,
+    );
+
+    // La tentative refusée n'a rien écrit : le statut reste « invité ».
+    const aliceView = await getEvent(f.actorAlice, created.id);
+    expect(aliceView.attendees[0]?.status).toBe("invited");
+  });
+
+  it("applique un intervalle semi-ouvert aux bornes de la plage", async () => {
+    const created = await createEvent(f.actorAlice, eventInput("Bordures")); // 09:00 → 10:00
+
+    // Un événement qui se termine exactement au début de la plage est exclu.
+    const afterEnd = await listEvents(f.actorAlice, {
+      from: "2026-03-10T10:00:00.000Z",
+      to: "2026-03-11T00:00:00.000Z",
+    });
+    expect(afterEnd).toHaveLength(0);
+
+    // Un événement qui commence exactement à la fin de la plage est exclu.
+    const beforeStart = await listEvents(f.actorAlice, {
+      from: "2026-03-10T00:00:00.000Z",
+      to: "2026-03-10T09:00:00.000Z",
+    });
+    expect(beforeStart).toHaveLength(0);
+
+    // Recouvrement partiel : l'événement reste visible.
+    const overlap = await listEvents(f.actorAlice, {
+      from: "2026-03-10T09:30:00.000Z",
+      to: "2026-03-10T09:45:00.000Z",
+    });
+    expect(overlap.map((event) => event.id)).toEqual([created.id]);
+  });
+
+  it("refuse les plages de plus de 366 jours", async () => {
+    // Exactement 366 jours : accepté.
+    const exactly = await listEvents(f.actorAlice, {
+      from: "2026-01-01T00:00:00.000Z",
+      to: "2027-01-02T00:00:00.000Z",
+    });
+    expect(exactly).toHaveLength(0);
+
+    // 367 jours : refusé (garde-fou anti-DoS).
+    await expect(
+      listEvents(f.actorAlice, {
+        from: "2026-01-01T00:00:00.000Z",
+        to: "2027-01-03T00:00:00.000Z",
+      }),
+    ).rejects.toThrow(CalendarError);
+  });
+
+  it("stocke les événements journée entière en instants DATE seule (UTC)", async () => {
+    const created = await createEvent(f.actorAlice, {
+      title: "Journée entière",
+      startsAt: "2026-03-10T00:00:00.000Z",
+      endsAt: "2026-03-11T00:00:00.000Z",
+      allDay: true,
+    });
+    expect(created.allDay).toBe(true);
+    expect(created.startsAt).toBe("2026-03-10T00:00:00.000Z");
+    expect(created.endsAt).toBe("2026-03-11T00:00:00.000Z");
+
+    // Une heure résiduelle est ramenée au minuit UTC du jour choisi.
+    const normalized = await createEvent(f.actorAlice, {
+      title: "Congé",
+      startsAt: "2026-03-10T13:45:00.000Z",
+      endsAt: "2026-03-10T14:30:00.000Z",
+      allDay: true,
+    });
+    expect(normalized.startsAt).toBe("2026-03-10T00:00:00.000Z");
+    expect(normalized.endsAt).toBe("2026-03-11T00:00:00.000Z");
+  });
+
+  it("fusionne un patch d'une seule borne avec la plage existante", async () => {
+    const created = await createEvent(f.actorAlice, eventInput("Partiel"));
+
+    const endOnly = await updateEvent(f.actorAlice, created.id, {
+      endsAt: "2026-03-10T11:00:00.000Z",
+    });
+    expect(endOnly.startsAt).toBe("2026-03-10T09:00:00.000Z");
+    expect(endOnly.endsAt).toBe("2026-03-10T11:00:00.000Z");
+
+    const startOnly = await updateEvent(f.actorAlice, created.id, {
+      startsAt: "2026-03-10T08:30:00.000Z",
+    });
+    expect(startOnly.startsAt).toBe("2026-03-10T08:30:00.000Z");
+    expect(startOnly.endsAt).toBe("2026-03-10T11:00:00.000Z");
+
+    // Plage résultante invalide : refusée sans écriture partielle.
+    await expect(
+      updateEvent(f.actorAlice, created.id, { startsAt: "2026-03-10T12:00:00.000Z" }),
+    ).rejects.toThrow(CalendarError);
+    const unchanged = await getEvent(f.actorAlice, created.id);
+    expect(unchanged.startsAt).toBe("2026-03-10T08:30:00.000Z");
+    expect(unchanged.endsAt).toBe("2026-03-10T11:00:00.000Z");
+  });
+
+  it("refuse de modifier les invités ou l'agenda d'un événement", async () => {
+    const created = await createEvent(f.actorAlice, eventInput("Fixes"));
+
+    await expect(
+      updateEvent(f.actorAlice, created.id, { attendees: [f.emailBruno] }),
+    ).rejects.toThrow("Les invités ne sont pas modifiables après création.");
+    await expect(
+      updateEvent(f.actorAlice, created.id, { calendarId: created.calendarId }),
+    ).rejects.toThrow(CalendarError);
+
+    // Le reste des champs demeure modifiable.
+    const renamed = await updateEvent(f.actorAlice, created.id, { title: "Fixes 2" });
+    expect(renamed.title).toBe("Fixes 2");
+  });
+
+  it("un membre ne peut pas modifier l'événement personnel d'un autre", async () => {
+    const created = await createEvent(f.actorAlice, eventInput("Privé"));
+    await expect(updateEvent(f.actorBruno, created.id, { title: "Détournement" })).rejects.toThrow(
+      CalendarError,
+    );
+    await expect(deleteEvent(f.actorBruno, created.id)).rejects.toThrow(CalendarError);
+  });
+
+  it("un agenda partagé est modifiable par les membres, sans franchir l'organisation", async () => {
+    const shared = await createCalendar(f.actorAlice, { name: "Équipe", shared: true });
+    const created = await createEvent(f.actorAlice, {
+      ...eventInput("Réunion d'équipe"),
+      calendarId: shared.id,
+    });
+
+    const updated = await updateEvent(f.actorBruno, created.id, { location: "Salle 2" });
+    expect(updated.location).toBe("Salle 2");
+
+    await expect(getEvent(f.actorChloe, created.id)).rejects.toThrow(CalendarError);
+    const chloeList = await listEvents(f.actorChloe, { from: FROM, to: TO });
+    expect(chloeList).toHaveLength(0);
+  });
+
+  it("refuse une réponse de quelqu'un qui n'est pas invité", async () => {
+    const created = await createEvent(f.actorAlice, eventInput("Sans invité"));
+    await expect(setAttendance(f.actorBruno, created.id, "accepted")).rejects.toThrow(
+      CalendarError,
+    );
+  });
+});

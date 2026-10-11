@@ -2,8 +2,10 @@ import type { ComponentType, SVGProps } from "react";
 import { cn } from "./cn.ts";
 import {
   IconArchive,
+  IconClipboard,
   IconFileText,
   IconFolder,
+  IconGlobe,
   IconGrid,
   IconImage,
   IconMusic,
@@ -11,7 +13,12 @@ import {
   IconVideo,
 } from "./icons.tsx";
 
+/** Types MIME des fichiers liés produits par les applications de la suite. */
 export const DOCS_MIME = "application/vnd.workspace.docs+json";
+export const SHEETS_MIME = "application/vnd.workspace.sheets+json";
+export const SLIDES_MIME = "application/vnd.workspace.slides+json";
+export const FORMS_MIME = "application/vnd.workspace.forms+json";
+export const SITES_MIME = "application/vnd.workspace.sites+json";
 
 type Tone =
   | "file-folder"
@@ -24,7 +31,9 @@ type Tone =
   | "file-audio"
   | "file-video"
   | "file-text"
-  | "file-generic";
+  | "file-generic"
+  | "app-form"
+  | "app-sites";
 
 /** Classes Tailwind statiques (jamais construites dynamiquement). */
 const TONE_CLASS: Record<Tone, string> = {
@@ -39,6 +48,8 @@ const TONE_CLASS: Record<Tone, string> = {
   "file-video": "text-file-video",
   "file-text": "text-file-text",
   "file-generic": "text-file-generic",
+  "app-form": "text-app-forms",
+  "app-sites": "text-app-sites",
 };
 
 const SHEET_MIMES = [
@@ -71,6 +82,11 @@ export function fileVisual(input: {
 
   const mime = input.mimeType ?? "";
   const extension = input.name.split(".").pop()?.toLowerCase() ?? "";
+
+  if (mime === SHEETS_MIME) return { Icon: IconGrid, tone: "file-sheet" };
+  if (mime === SLIDES_MIME) return { Icon: IconPresentation, tone: "file-slide" };
+  if (mime === FORMS_MIME) return { Icon: IconClipboard, tone: "app-form" };
+  if (mime === SITES_MIME) return { Icon: IconGlobe, tone: "app-sites" };
 
   if (
     mime === DOCS_MIME ||

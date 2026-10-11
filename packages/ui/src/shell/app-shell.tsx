@@ -76,7 +76,13 @@ export function AppShell({
   }
 
   return (
-    <div className="flex min-h-screen bg-background text-foreground">
+    <div className="flex h-dvh bg-background text-foreground">
+      <a
+        href="#contenu"
+        className="sr-only focus:not-sr-only focus:absolute focus:left-3 focus:top-3 focus:z-50 focus:rounded-md focus:bg-card focus:px-3 focus:py-2 focus:text-sm focus:shadow-lift"
+      >
+        Aller au contenu
+      </a>
       <AppRail
         apps={apps}
         activeAppId={activeAppId}
@@ -84,7 +90,7 @@ export function AppShell({
         onOpenPalette={() => setPaletteOpen(true)}
       />
 
-      <div className="flex min-w-0 flex-1 flex-col">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <TopBar
           activeApp={activeApp}
           apps={apps}
@@ -102,7 +108,9 @@ export function AppShell({
           {topBarContent}
         </TopBar>
 
-        <main className="min-w-0 flex-1 p-4 md:p-6">{children}</main>
+        <main id="contenu" className="min-h-0 min-w-0 flex-1 overflow-y-auto p-4 md:p-6">
+          {children}
+        </main>
       </div>
 
       <CommandPalette open={paletteOpen} onOpenChange={setPaletteOpen} actions={paletteActions} />

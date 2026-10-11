@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useRef } from "react";
+import { type ReactNode, useEffect, useId, useRef } from "react";
 import { cn } from "../cn.ts";
 
 export type DialogProps = {
@@ -13,11 +13,13 @@ export type DialogProps = {
 };
 
 /**
- * Dialogue modal basé sur l'élément natif <dialog> :
- * focus trap, fermeture Échap et sémantique fournis par la plateforme.
+ * Dialogue modal basé sur l'élément natif <dialog> : focus trap, fermeture
+ * Échap et sémantique fournis par la plateforme. Le titre est associé par
+ * `aria-labelledby` (chaque modale est nommée pour les lecteurs d'écran).
  */
 export function Dialog({ open, onClose, title, children, footer, className, bare }: DialogProps) {
   const ref = useRef<HTMLDialogElement>(null);
+  const titleId = useId();
 
   useEffect(() => {
     const dialog = ref.current;
@@ -30,18 +32,21 @@ export function Dialog({ open, onClose, title, children, footer, className, bare
     <dialog
       ref={ref}
       onClose={onClose}
+      aria-labelledby={titleId}
       className={cn(
-        "w-full max-w-md rounded-xl border border-border bg-card p-0 text-card-foreground shadow-lift backdrop:bg-foreground/30",
+        "w-full max-w-md rounded-xl border border-border bg-card p-0 text-card-foreground shadow-lift backdrop:bg-overlay",
         className,
       )}
     >
-      <div className="flex items-center justify-between border-b border-border px-4 py-3">
-        <h2 className="font-display text-sm font-semibold">{title}</h2>
+      <div className="flex items-center justify-between gap-2 border-b border-border px-4 py-3">
+        <h2 id={titleId} className="min-w-0 truncate font-display text-sm font-semibold">
+          {title}
+        </h2>
         <button
           type="button"
           onClick={onClose}
           aria-label="Fermer"
-          className="text-muted-foreground transition-colors hover:text-foreground"
+          className="grid size-8 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
         >
           <svg
             viewBox="0 0 16 16"

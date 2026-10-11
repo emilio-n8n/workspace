@@ -19,12 +19,26 @@ function escapeMarkdown(text: string): string {
   return text.replace(MD_ESCAPE, "\\$1");
 }
 
-function escapeHtml(text: string): string {
+export function escapeHtml(text: string): string {
   return text
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
+}
+
+// biome-ignore lint/suspicious/noControlCharactersInRegex: sanitisation volontaire des URL
+const CONTROL_CHARS = /[\u0000-\u001F\u007F]/g;
+
+/**
+ * Liste blanche d'URL : http(s) et mailto uniquement, caractères de contrôle
+ * retirés (le contournement « java\tscript: » est ainsi fermé). Retourne
+ * `null` pour tout autre schéma (javascript:, data:, vbscript:…).
+ */
+function sanitizeUrl(raw: string): string | null {
+  const stripped = raw.replace(CONTROL_CHARS, "").trim();
+  if (!/^(https?:|mailto:)/i.test(stripped)) return null;
+  return stripped;
 }
 
 function linkHref(node: PmNode): string | null {
@@ -44,11 +58,15 @@ function inlineMarkdown(node: PmNode): string {
     for (const mark of node.marks ?? []) {
       if (mark.type === "bold") text = `**${text}**`;
       else if (mark.type === "italic") text = `*${text}*`;
-      else if (mark.type === "code") text = `\`${node.text ?? ""}\``;
-      else if (mark.type === "strike") text = `~~${text}~~`;
+      else if (mark.type === "code") {
+        const raw = node.text ?? "";
+        const fence = raw.includes("`") ? "``" : "`";
+        text = `${fence}${raw}${fence}`;
+      } else if (mark.type === "strike") text = `~~${text}~~`;
       else if (mark.type === "link") {
         const href = linkHref(node);
-        if (href) text = `[${text}](${href})`;
+        const safe = href ? sanitizeUrl(href) : null;
+        if (safe) text = `[${text}](${safe.replace(/\)/g, "%29").replace(/\s/g, "%20")})`;
       }
     }
     return text;
@@ -139,9 +157,9 @@ function inlineHtml(node: PmNode): string {
       else if (mark.type === "strike") text = `<s>${text}</s>`;
       else if (mark.type === "link") {
         const href = linkHref(node);
-        if (href) {
-          const safeHref = escapeHtml(href).replace(/^javascript:/i, "#");
-          text = `<a href="${safeHref}" rel="noopener noreferrer">${text}</a>`;
+        const safe = href ? sanitizeUrl(href) : null;
+        if (safe) {
+          text = `<a href="${escapeHtml(safe)}" rel="noopener noreferrer">${text}</a>`;
         }
       }
     }

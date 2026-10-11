@@ -1,4 +1,4 @@
-import { getAppUrls, getServerEnv } from "@workspace/config";
+import { getAppUrls, getServerEnv, isProduction } from "@workspace/config";
 import { getDb, schema } from "@workspace/database";
 import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
@@ -16,6 +16,13 @@ import { organization } from "better-auth/plugins";
 export function createAuth() {
   const env = getServerEnv();
 
+  // En production, une URL locale signale une configuration incomplète : on
+  // refuse de démarrer plutôt que de faire confiance à localhost.
+  const publicHost = new URL(env.PUBLIC_URL).hostname;
+  if (isProduction() && (publicHost === "localhost" || publicHost === "127.0.0.1")) {
+    throw new Error("PUBLIC_URL doit être une URL publique en production (localhost interdit).");
+  }
+
   return betterAuth({
     baseURL: env.PUBLIC_URL,
     secret: env.SESSION_SECRET,
@@ -28,17 +35,23 @@ export function createAuth() {
       minPasswordLength: 10,
     },
     plugins: [organization({ teams: { enabled: true } })],
-    // Production multi-apps : cookie de session partagé entre sous-domaines.
-    ...(env.BETTER_AUTH_COOKIE_DOMAIN
-      ? {
-          advanced: {
+    rateLimit: { enabled: true, window: 60, max: 100 },
+    advanced: {
+      defaultCookieAttributes: {
+        httpOnly: true,
+        sameSite: "lax",
+        secure: isProduction(),
+      },
+      // Production multi-apps : cookie de session partagé entre sous-domaines.
+      ...(env.BETTER_AUTH_COOKIE_DOMAIN
+        ? {
             crossSubDomainCookies: {
               enabled: true,
               domain: env.BETTER_AUTH_COOKIE_DOMAIN,
             },
-          },
-        }
-      : {}),
+          }
+        : {}),
+    },
   });
 }
 

@@ -30,18 +30,39 @@ function DashboardPage() {
   const [urls, setUrls] = useState<Record<SuiteAppKey, string> | null>(null);
   const [storage, setStorage] = useState<StorageUsage | null>(null);
 
+  const [loadError, setLoadError] = useState(false);
+
   useEffect(() => {
     void (async () => {
-      const [data, appUrls, usage] = await Promise.all([
-        getWorkspaceFn(),
-        getAppUrlsFn(),
-        getStorageUsageFn(),
-      ]);
-      setWorkspace(data);
-      setUrls(appUrls);
-      setStorage(usage);
+      try {
+        const [data, appUrls, usage] = await Promise.all([
+          getWorkspaceFn(),
+          getAppUrlsFn(),
+          getStorageUsageFn(),
+        ]);
+        setWorkspace(data);
+        setUrls(appUrls);
+        setStorage(usage);
+      } catch {
+        setLoadError(true);
+      }
     })();
   }, []);
+
+  if (loadError) {
+    return (
+      <div className="flex flex-col items-start gap-3">
+        <p className="text-sm text-destructive">Impossible de charger votre espace de travail.</p>
+        <button
+          type="button"
+          onClick={() => window.location.reload()}
+          className="rounded-md border border-border bg-card px-3 py-1.5 text-sm hover:bg-muted"
+        >
+          Réessayer
+        </button>
+      </div>
+    );
+  }
 
   const apps = urls ? resolveSuiteApps(urls) : [];
 

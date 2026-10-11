@@ -14,5 +14,6 @@
     "lint": {},
     "typecheck": {},
     "test": {}
-  }
+  },
+  "envMode": "loose"
 }

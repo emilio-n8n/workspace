@@ -11,6 +11,16 @@ export const WORKSPACE_SCOPES = [
   "tasks:write",
   "calendar:read",
   "calendar:write",
+  "forms:read",
+  "sheets:read",
+  "slides:read",
+  "chat:read",
+  "chat:write",
+  "mail:read",
+  "mail:write",
+  "classroom:read",
+  "classroom:write",
+  "sites:read",
   "audit:read",
 ] as const;
 

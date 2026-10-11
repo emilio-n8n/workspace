@@ -194,7 +194,7 @@ describe("docs — permissions et isolation", () => {
     ).rejects.toMatchObject({ code: "forbidden" });
 
     // Promotion editor.
-    await revokeGrant(grant!.id);
+    await revokeGrant({ type: "file", id: entry.id, orgId: f.orgId }, grant!.id);
     await createGrant({
       resource: { type: "file", id: entry.id, orgId: f.orgId },
       subject: { kind: "user", id: f.bruno },

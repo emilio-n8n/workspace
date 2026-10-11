@@ -1,6 +1,6 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { getServerEnv } from "@workspace/config";
-import { getDb, withTransaction } from "@workspace/database";
+import { schema as coreSchema, getDb, withTransaction } from "@workspace/database";
 import {
   type Actor,
   createGrant,
@@ -23,7 +23,7 @@ import {
   driveShareLinks,
 } from "./schema.ts";
 
-export type DriveErrorCode = "not_found" | "forbidden" | "validation" | "conflict";
+export type DriveErrorCode = "not_found" | "forbidden" | "validation" | "conflict" | "quota";
 
 export class DriveError extends Error {
   readonly code: DriveErrorCode;
@@ -39,6 +39,11 @@ const LINK_ROLES: readonly GrantRole[] = ["viewer", "editor"];
 
 const db = () => getDb();
 const storage = () => getStorage();
+
+/** Limite d'upload configurée (octets) — lecture paresseuse de l'environnement. */
+export function getMaxUploadBytes(): number {
+  return getServerEnv().MAX_UPLOAD_BYTES;
+}
 
 function isUniqueViolation(error: unknown): boolean {
   const candidate = error as { code?: string; cause?: { code?: string } };
@@ -323,23 +328,49 @@ export async function searchEntries(
   return visible;
 }
 
+/**
+ * Vérifie le quota de stockage de l'organisation (réglage facultatif).
+ * Consommation = somme des `size_bytes` des fichiers actifs (une seule requête SUM).
+ */
+async function assertStorageQuota(actor: Actor, incomingBytes: number): Promise<void> {
+  const [settings] = await db()
+    .select({ quotaBytes: coreSchema.orgSettings.storageQuotaBytes })
+    .from(coreSchema.orgSettings)
+    .where(eq(coreSchema.orgSettings.orgId, actor.orgId))
+    .limit(1);
+
+  const quotaBytes = settings?.quotaBytes ?? null;
+  if (quotaBytes === null) return;
+
+  const [usage] = await db()
+    .select({ usedBytes: sql<number>`coalesce(sum(${driveFiles.sizeBytes}), 0)`.mapWith(Number) })
+    .from(driveFiles)
+    .where(and(eq(driveFiles.orgId, actor.orgId), eq(driveFiles.status, "active")));
+
+  const usedBytes = usage?.usedBytes ?? 0;
+  if (usedBytes + incomingBytes > quotaBytes) {
+    throw new DriveError("quota", "Quota de stockage dépassé — contactez un administrateur.");
+  }
+}
+
 export async function uploadFile(
   actor: Actor,
   input: { parentId?: string | null; name: string; contentType?: string; body: Buffer },
 ): Promise<{ entry: DriveEntry; version: DriveVersion }> {
   const name = assertValidName(input.name);
-  const env = getServerEnv();
+  const maxUploadBytes = getMaxUploadBytes();
 
   if (input.body.length === 0) throw new DriveError("validation", "Fichier vide.");
-  if (input.body.length > env.MAX_UPLOAD_BYTES) {
+  if (input.body.length > maxUploadBytes) {
     throw new DriveError(
       "validation",
-      `Fichier trop volumineux (maximum ${Math.floor(env.MAX_UPLOAD_BYTES / (1024 * 1024))} Mo).`,
+      `Fichier trop volumineux (maximum ${Math.floor(maxUploadBytes / (1024 * 1024))} Mo).`,
     );
   }
 
   const parentId = input.parentId ?? null;
   await assertWritableParent(actor, parentId);
+  await assertStorageQuota(actor, input.body.length);
 
   const checksum = sha256(input.body);
   const key = orgKey(actor.orgId, randomUUID(), name);
@@ -455,9 +486,9 @@ export async function replaceContent(
     throw new DriveError("validation", "Seul un fichier peut être remplacé.");
   }
 
-  const env = getServerEnv();
+  const maxUploadBytes = getMaxUploadBytes();
   if (input.body.length === 0) throw new DriveError("validation", "Fichier vide.");
-  if (input.body.length > env.MAX_UPLOAD_BYTES) {
+  if (input.body.length > maxUploadBytes) {
     throw new DriveError("validation", "Fichier trop volumineux.");
   }
 
@@ -540,49 +571,85 @@ export async function restore(actor: Actor, entryId: string): Promise<void> {
     .where(and(eq(driveFiles.orgId, actor.orgId), inArray(driveFiles.id, ids)));
 }
 
-/** Purge définitive (corbeille uniquement) : supprime le contenu du stockage puis les lignes. */
-export async function purge(actor: Actor, entryId: string): Promise<void> {
+/** Résumé d'une purge : lignes supprimées, blobs nettoyés et erreurs de nettoyage (best effort). */
+export type PurgeSummary = {
+  deletedEntries: number;
+  deletedBlobs: number;
+  blobErrors: { key: string; message: string }[];
+};
+
+/**
+ * Purge définitive (corbeille uniquement) : collecte le sous-arbre entier via une
+ * CTE récursive (`drive_files.parent_id` n'a pas de clé étrangère), supprime
+ * versions, grants, liens et lignes dans une seule transaction, puis nettoie les
+ * blobs après commit (best effort ; les erreurs sont retournées dans le résumé).
+ */
+export async function purge(actor: Actor, entryId: string): Promise<PurgeSummary> {
   const entry = await assertDrive(actor, "delete", entryId, { allowTrashed: true });
   if (entry.status !== "trashed") {
     throw new DriveError("validation", "Un élément doit être dans la corbeille pour être purgé.");
   }
 
-  const ids = await collectSubtree(actor.orgId, entryId);
+  const { entryIds, keys } = await withTransaction(async (tx) => {
+    const subtree = await tx.execute<{ id: string }>(sql`
+      WITH RECURSIVE subtree AS (
+        SELECT id FROM drive_files WHERE id = ${entryId} AND org_id = ${actor.orgId}
+        UNION ALL
+        SELECT f.id
+        FROM drive_files f
+        JOIN subtree s ON f.parent_id = s.id
+        WHERE f.org_id = ${actor.orgId}
+      )
+      SELECT id FROM subtree
+    `);
+    const entryIds = subtree.rows.map((row) => row.id);
+    if (entryIds.length === 0) return { entryIds, keys: [] as string[] };
 
-  const files = await db()
-    .select({ id: driveFiles.id, storageKey: driveFiles.storageKey })
-    .from(driveFiles)
-    .where(
-      and(
-        eq(driveFiles.orgId, actor.orgId),
-        inArray(driveFiles.id, ids),
-        eq(driveFiles.kind, "file"),
-      ),
-    );
+    const fileRows = await tx
+      .select({ storageKey: driveFiles.storageKey })
+      .from(driveFiles)
+      .where(and(eq(driveFiles.orgId, actor.orgId), inArray(driveFiles.id, entryIds)));
+    const versionRows = await tx
+      .select({ storageKey: driveFileVersions.storageKey })
+      .from(driveFileVersions)
+      .where(inArray(driveFileVersions.fileId, entryIds));
 
-  const versions = files.length
-    ? await db()
-        .select({ storageKey: driveFileVersions.storageKey })
-        .from(driveFileVersions)
-        .where(
-          inArray(
-            driveFileVersions.fileId,
-            files.map((file) => file.id),
-          ),
-        )
-    : [];
+    const keys = new Set<string>();
+    for (const row of fileRows) if (row.storageKey) keys.add(row.storageKey);
+    for (const row of versionRows) keys.add(row.storageKey);
 
-  const keys = new Set<string>();
-  for (const file of files) if (file.storageKey) keys.add(file.storageKey);
-  for (const version of versions) keys.add(version.storageKey);
+    // Ordre : versions → grants → liens → lignes. Les grants n'ont pas de clé
+    // étrangère vers drive_files : sans suppression explicite ils resteraient orphelins.
+    await tx.delete(driveFileVersions).where(inArray(driveFileVersions.fileId, entryIds));
+    await tx
+      .delete(coreSchema.resourceGrants)
+      .where(
+        and(
+          eq(coreSchema.resourceGrants.resourceType, "file"),
+          eq(coreSchema.resourceGrants.orgId, actor.orgId),
+          inArray(coreSchema.resourceGrants.resourceId, entryIds),
+        ),
+      );
+    await tx.delete(driveShareLinks).where(inArray(driveShareLinks.fileId, entryIds));
+    await tx
+      .delete(driveFiles)
+      .where(and(eq(driveFiles.orgId, actor.orgId), inArray(driveFiles.id, entryIds)));
 
+    return { entryIds, keys: [...keys] };
+  });
+
+  let deletedBlobs = 0;
+  const blobErrors: { key: string; message: string }[] = [];
   for (const key of keys) {
-    await storage().delete(key);
+    try {
+      await storage().delete(key);
+      deletedBlobs += 1;
+    } catch (error) {
+      blobErrors.push({ key, message: error instanceof Error ? error.message : String(error) });
+    }
   }
 
-  await db()
-    .delete(driveFiles)
-    .where(and(eq(driveFiles.orgId, actor.orgId), eq(driveFiles.id, entryId)));
+  return { deletedEntries: entryIds.length, deletedBlobs, blobErrors };
 }
 
 export async function listVersions(actor: Actor, fileId: string): Promise<DriveVersion[]> {
@@ -596,6 +663,8 @@ export async function listVersions(actor: Actor, fileId: string): Promise<DriveV
 
 /** Chaîne d'ancêtres (du plus haut au plus proche) — affichage du fil d'Ariane. */
 export async function getAncestors(actor: Actor, entryId: string): Promise<DriveEntry[]> {
+  await assertDrive(actor, "read", entryId);
+
   const chain: DriveEntry[] = [];
   let current: string | null = entryId;
   let depth = 0;
@@ -640,7 +709,7 @@ export async function unshareEntry(
   grantId: string,
 ): Promise<boolean> {
   await assertDrive(actor, "share", entryId);
-  return revokeGrant(grantId);
+  return revokeGrant({ type: "file", id: entryId, orgId: actor.orgId }, grantId);
 }
 
 export async function listEntryGrants(actor: Actor, entryId: string): Promise<ResourceGrantRow[]> {

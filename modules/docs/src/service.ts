@@ -9,8 +9,8 @@ import {
   touchEntry,
 } from "@workspace/drive";
 import { type Actor, roleSatisfies } from "@workspace/permissions";
-import { desc, eq } from "drizzle-orm";
-import { type PmNode, toHtml, toMarkdown } from "./export.ts";
+import { desc, eq, sql } from "drizzle-orm";
+import { escapeHtml, type PmNode, toHtml, toMarkdown } from "./export.ts";
 import { type DocsDocument, type DocsVersion, docsDocuments, docsVersions } from "./schema.ts";
 
 /** Type MIME du pointeur Drive d'un document Workspace. */
@@ -55,11 +55,41 @@ function assertTitle(title: string): string {
   return trimmed;
 }
 
+const ALLOWED_NODE_TYPES = new Set([
+  "doc",
+  "paragraph",
+  "heading",
+  "text",
+  "bulletList",
+  "orderedList",
+  "listItem",
+  "codeBlock",
+  "blockquote",
+  "horizontalRule",
+  "hardBreak",
+]);
+
+const MAX_CONTENT_BYTES = 1_000_000;
+
 function assertDocumentContent(content: unknown): PmNode {
   const candidate = content as PmNode;
   if (!candidate || typeof candidate !== "object" || candidate.type !== "doc") {
     throw new DocsError("validation", "Contenu de document invalide.");
   }
+  const serialized = JSON.stringify(candidate);
+  if (serialized.length > MAX_CONTENT_BYTES) {
+    throw new DocsError("validation", "Document trop volumineux (1 Mo maximum).");
+  }
+  const walk = (node: PmNode, depth: number): void => {
+    if (depth > 100) {
+      throw new DocsError("validation", "Document trop profondément imbriqué.");
+    }
+    if (typeof node.type !== "string" || !ALLOWED_NODE_TYPES.has(node.type)) {
+      throw new DocsError("validation", "Contenu de document invalide.");
+    }
+    for (const child of node.content ?? []) walk(child, depth + 1);
+  };
+  walk(candidate, 0);
   return candidate;
 }
 
@@ -180,24 +210,28 @@ export async function saveDocument(
     }
 
     if (mode === "append") {
-      const nextVersion = doc.currentVersion + 1;
+      // Incrément atomique : deux instantanés concurrents ne peuvent pas
+      // produire la même version (la ligne est verrouillée par l'UPDATE).
+      const [bumped] = await tx
+        .update(docsDocuments)
+        .set({ currentVersion: sql`${docsDocuments.currentVersion} + 1` })
+        .where(eq(docsDocuments.id, doc.id))
+        .returning({ version: docsDocuments.currentVersion });
+      if (!bumped) throw new DocsError("conflict", "Enregistrement concurrent impossible.");
       await tx.insert(docsVersions).values({
         documentId: doc.id,
-        version: nextVersion,
+        version: bumped.version,
         content,
         createdBy: actor.userId,
       });
-      await tx
-        .update(docsDocuments)
-        .set({ currentVersion: nextVersion })
-        .where(eq(docsDocuments.id, doc.id));
-      return { version: nextVersion, documentId: doc.id };
+      return { version: bumped.version, documentId: doc.id };
     }
 
     // replace-latest : le contenu de la version courante est actualisé.
+    // replace-latest : on conserve createdAt d'origine (seul le contenu vit).
     await tx
       .update(docsVersions)
-      .set({ content, createdBy: actor.userId, createdAt: new Date() })
+      .set({ content, createdBy: actor.userId })
       .where(eq(docsVersions.id, latest.id));
 
     return { version: latest.version, documentId: doc.id };
@@ -265,6 +299,6 @@ export async function exportDocument(
   return {
     name: `${document.title}.html`,
     contentType: "text/html; charset=utf-8",
-    body: `<!doctype html>\n<html lang="fr">\n<head>\n<meta charset="utf-8" />\n<title>${document.title}</title>\n</head>\n<body>\n${toHtml(content)}\n</body>\n</html>\n`,
+    body: `<!doctype html>\n<html lang="fr">\n<head>\n<meta charset="utf-8" />\n<title>${escapeHtml(document.title)}</title>\n</head>\n<body>\n${toHtml(content)}\n</body>\n</html>\n`,
   };
 }

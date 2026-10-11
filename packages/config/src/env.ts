@@ -29,6 +29,33 @@ const serverEnvSchema = z.object({
   /** Domaine du cookie de session partagé entre sous-domaines (production). */
   BETTER_AUTH_COOKIE_DOMAIN: z.string().optional(),
 
+  /** URLs des applications restantes (surcharges optionnelles). */
+  CALENDAR_URL: z.string().url().optional(),
+  FORMS_URL: z.string().url().optional(),
+  SHEETS_URL: z.string().url().optional(),
+  SLIDES_URL: z.string().url().optional(),
+  MAIL_URL: z.string().url().optional(),
+  CHAT_URL: z.string().url().optional(),
+  MEET_URL: z.string().url().optional(),
+  SITES_URL: z.string().url().optional(),
+  CLASSROOM_URL: z.string().url().optional(),
+  ADMIN_URL: z.string().url().optional(),
+
+  /** Messagerie : domaine des adresses locales et relais SMTP sortant. */
+  MAIL_DOMAIN: z.string().optional(),
+  SMTP_HOST: z.string().optional(),
+  SMTP_PORT: z.coerce.number().optional(),
+  SMTP_USER: z.string().optional(),
+  SMTP_PASS: z.string().optional(),
+  SMTP_FROM: z.string().optional(),
+  /** Secret partagé du webhook d'ingestion du courrier entrant. */
+  MAIL_WEBHOOK_SECRET: z.string().optional(),
+
+  /** Visioconférence : serveur média LiveKit (ADR-0011). */
+  LIVEKIT_URL: z.string().url().optional(),
+  LIVEKIT_API_KEY: z.string().optional(),
+  LIVEKIT_API_SECRET: z.string().optional(),
+
   /** Secret de signature des sessions (≥ 32 caractères). Requis en production. */
   SESSION_SECRET: z.string().min(32).optional(),
 

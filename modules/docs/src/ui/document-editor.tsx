@@ -11,6 +11,7 @@ type Props = {
 };
 
 type SaveStatus = "idle" | "saving" | "saved" | "error";
+type SaveMode = "replace-latest" | "append";
 
 const AUTOSAVE_DELAY_MS = 1200;
 
@@ -21,23 +22,61 @@ const AUTOSAVE_DELAY_MS = 1200;
  */
 export function DocumentEditor({ fileId, initialContent, canEdit }: Props) {
   const [status, setStatus] = useState<SaveStatus>("idle");
+  const [dirty, setDirty] = useState(false);
   const [lastSavedAt, setLastSavedAt] = useState<string | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const savingRef = useRef(false);
+  const queuedRef = useRef<{ content: unknown; mode: SaveMode } | null>(null);
+  const dirtyRef = useRef(false);
+  const latestRef = useRef<unknown>(null);
 
+  /**
+   * Enregistre `content`. Si un enregistrement est déjà en vol, le contenu le
+   * plus récent est mis en file d'attente et sauvegardé à la fin du vol.
+   * Le drapeau « sale » n'est effacé que lorsque la file est vide, pour que la
+   * fermeture de l'onglet avertisse tant qu'il reste des modifications.
+   */
   const persist = useCallback(
-    async (content: unknown, mode: "replace-latest" | "append") => {
-      if (savingRef.current) return;
+    async (content: unknown, mode: SaveMode) => {
+      if (savingRef.current) {
+        const pending = queuedRef.current;
+        queuedRef.current = {
+          content,
+          mode: mode === "append" || pending?.mode === "append" ? "append" : mode,
+        };
+        return;
+      }
+
       savingRef.current = true;
-      setStatus("saving");
+      let current: { content: unknown; mode: SaveMode } | null = { content, mode };
       try {
-        await saveDocumentFn({ data: { fileId, content, mode } });
-        setStatus("saved");
-        setLastSavedAt(
-          new Date().toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" }),
-        );
-      } catch {
-        setStatus("error");
+        while (current) {
+          setStatus("saving");
+          try {
+            await saveDocumentFn({
+              data: { fileId, content: current.content, mode: current.mode },
+            });
+            if (queuedRef.current === null) {
+              dirtyRef.current = false;
+              setDirty(false);
+            }
+            setStatus("saved");
+            setLastSavedAt(
+              new Date().toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" }),
+            );
+          } catch {
+            setStatus("error");
+          }
+          const queued = queuedRef.current;
+          queuedRef.current = null;
+          current = queued
+            ? {
+                content: queued.content,
+                mode:
+                  current.mode === "append" || queued.mode === "append" ? "append" : queued.mode,
+              }
+            : null;
+        }
       } finally {
         savingRef.current = false;
       }
@@ -58,18 +97,44 @@ export function DocumentEditor({ fileId, initialContent, canEdit }: Props) {
     },
     onUpdate: ({ editor: instance }) => {
       if (!canEdit) return;
+      const content = instance.getJSON();
+      latestRef.current = content;
+      dirtyRef.current = true;
+      setDirty(true);
+      setStatus((current) => (current === "saved" || current === "error" ? "idle" : current));
       if (timer.current) clearTimeout(timer.current);
       timer.current = setTimeout(() => {
-        void persist(instance.getJSON(), "replace-latest");
+        timer.current = null;
+        void persist(content, "replace-latest");
       }, AUTOSAVE_DELAY_MS);
     },
   });
 
+  // Fermeture de l'onglet : avertissement tant que des modifications ne sont pas enregistrées.
+  useEffect(() => {
+    function onBeforeUnload(event: BeforeUnloadEvent) {
+      if (!dirtyRef.current) return;
+      event.preventDefault();
+      event.returnValue = "";
+    }
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, []);
+
+  // Démontage : vide le minuteur en attente et sauvegarde une dernière fois, au mieux.
   useEffect(() => {
     return () => {
-      if (timer.current) clearTimeout(timer.current);
+      const hadPendingTimer = timer.current !== null;
+      if (timer.current) {
+        clearTimeout(timer.current);
+        timer.current = null;
+      }
+      if (!dirtyRef.current && !hadPendingTimer) return;
+      const content = latestRef.current;
+      if (content === null) return;
+      void persist(content, "replace-latest").catch(() => undefined);
     };
-  }, []);
+  }, [persist]);
 
   if (!editor) {
     return <p className="px-6 py-8 text-sm text-muted-foreground">Chargement de l'éditeur…</p>;
@@ -81,9 +146,11 @@ export function DocumentEditor({ fileId, initialContent, canEdit }: Props) {
       : status === "saved"
         ? `Enregistré${lastSavedAt ? ` à ${lastSavedAt}` : ""}`
         : status === "error"
-          ? "Échec de l'enregistrement — nouvelle tentative à la prochaine saisie"
+          ? "Échec de l'enregistrement"
           : canEdit
-            ? "Aucune modification"
+            ? dirty
+              ? "Modifications non enregistrées"
+              : "Aucune modification"
             : "Lecture seule";
 
   return (
@@ -211,6 +278,16 @@ export function DocumentEditor({ fileId, initialContent, canEdit }: Props) {
           >
             {statusLabel}
           </span>
+          {status === "error" && canEdit ? (
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-6 px-2 text-xs"
+              onClick={() => void persist(editor.getJSON(), "replace-latest")}
+            >
+              Réessayer
+            </Button>
+          ) : null}
           {canEdit ? (
             <Button
               size="sm"

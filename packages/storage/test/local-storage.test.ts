@@ -47,8 +47,9 @@ describe("storage — LocalFS", () => {
 
     const stream = await storage.getStream(key);
     expect(stream).not.toBeNull();
+    if (!stream) throw new Error("flux manquant");
     const chunks: Buffer[] = [];
-    for await (const chunk of stream!) chunks.push(Buffer.from(chunk));
+    for await (const chunk of stream) chunks.push(Buffer.from(chunk));
     expect(Buffer.concat(chunks).toString()).toBe("flux-de-donnees");
     await storage.delete(key);
   });

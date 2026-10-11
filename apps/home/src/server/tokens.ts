@@ -1,3 +1,5 @@
+import { getDb, schema as coreSchema } from "@workspace/database";
+import { and, eq } from "drizzle-orm";
 import { createServerFn } from "@tanstack/react-start";
 import { getRequest } from "@tanstack/react-start/server";
 import {
@@ -33,8 +35,8 @@ async function requireSession(headers: Headers): Promise<{ userId: string; orgId
 export const listTokensFn = createServerFn({ method: "GET" }).handler(
   async (): Promise<TokenView[]> => {
     const request = getRequest();
-    const { userId } = await requireSession(request.headers);
-    const tokens = await listApiTokens(userId);
+    const { userId, orgId } = await requireSession(request.headers);
+    const tokens = await listApiTokens(userId, orgId);
     return tokens.map((token) => ({
       id: token.id,
       name: token.name,
@@ -58,6 +60,23 @@ export const createTokenFn = createServerFn({ method: "POST" })
   .handler(async ({ data }) => {
     const request = getRequest();
     const { userId, orgId } = await requireSession(request.headers);
+
+    // Garde-fou : le scope d'audit est réservé aux administrateurs de
+    // l'organisation (cohérent avec l'écran Admin).
+    if (data.scopes.includes("audit:read")) {
+      const db = getDb();
+      const [row] = await db
+        .select({ role: coreSchema.member.role })
+        .from(coreSchema.member)
+        .where(
+          and(eq(coreSchema.member.organizationId, orgId), eq(coreSchema.member.userId, userId)),
+        )
+        .limit(1);
+      if (!row || (row.role !== "owner" && row.role !== "admin")) {
+        throw new Error("Le scope audit:read est réservé aux administrateurs de l'organisation.");
+      }
+    }
+
     const issued = await issueApiToken({
       userId,
       orgId,

@@ -12,6 +12,16 @@ Suite bureautique open source, auto-hébergeable et pensée pour l'ère de l'IA 
 | **Drive** | 3001 | Fichiers, dossiers, partages, liens révocables, corbeille, versions |
 | **Docs** | 3002 | Éditeur riche (Tiptap 3), autosave, versions, export Markdown/HTML |
 | **Tasks** | 3003 | Listes partagées, échéances, priorités, assignations |
+| **Calendar** | 3004 | Agendas personnels et d'organisation, invitations, réponses |
+| **Forms** | 3005 | Formulaires, page publique, réponses, export CSV |
+| **Sheets** | 3006 | Tableur, onglets, formules (SUM/AVG/MIN/MAX/COUNT), export CSV |
+| **Slides** | 3007 | Présentations, zones de texte et formes, plein écran |
+| **Mail** | 3008 | Boîtes locales, SMTP sortant, ingestion webhook, dossiers |
+| **Chat** | 3009 | Canaux et discussions directes, non-lus |
+| **Meet** | 3010 | Salles et liens, média LiveKit optionnel |
+| **Sites** | 3011 | Sites internes en Markdown rendu en HTML sûr |
+| **Classroom** | 3012 | Cours, devoirs, copies, notation |
+| **Admin** | 3013 | Profil d'organisation, membres, quota, journal d'audit |
 
 Le **SSO est natif** : une connexion sur l'accueil donne accès à toutes les applications (cookie de session partagé). En développement, les applications partagent `localhost` sur des ports différents ; en production, elles vivent sur des sous-domaines (`drive.exemple.org`…).
 
@@ -34,8 +44,8 @@ Prérequis : Node ≥ 22, pnpm ≥ 12, PostgreSQL ≥ 16 (18 recommandé).
 ```bash
 pnpm install
 cp .env.example .env        # renseigner DATABASE_URL / SESSION_SECRET
-pnpm --filter @workspace/database db:migrate
-pnpm dev                    # démarre les 4 applications (3000-3003)
+pnpm db:migrate             # schéma cœur + les 13 modules, dans un ordre déterministe
+pnpm dev                    # démarre les 14 applications (3000-3013)
 ```
 
 Vérifications :
@@ -58,9 +68,10 @@ Les jetons se créent dans l'application (Accueil → Agents & jetons) avec des 
 ## Structure du dépôt
 
 ```
-apps/        home · drive · docs · tasks · mcp-server
+apps/        home · drive · docs · tasks · calendar · forms · sheets · slides · mail · chat · meet · sites · classroom · admin · mcp-server
 packages/    design-tokens · ui · database · auth · permissions · storage · config
-modules/     drive · docs · tasks (services + server functions + interface)
+modules/     drive · docs · tasks · calendar · forms · sheets · slides · mail · chat · meet · sites · classroom · admin
+             (services + server functions + interface)
 e2e/         tests de bout en bout multi-applications
 docs/        architecture · decisions · design-system · modules · security · deployment · mcp · studies
 ```

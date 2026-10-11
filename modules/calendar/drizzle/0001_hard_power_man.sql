@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX "calendars_org_owner_name_uidx" ON "calendars" USING btree ("org_id","owner_id","name");

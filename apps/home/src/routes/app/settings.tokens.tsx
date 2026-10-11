@@ -8,6 +8,7 @@ import {
   CardDescription,
   CardHeader,
   CardTitle,
+  Dialog,
   IconCopy,
   IconKey,
   IconTrash,
@@ -45,12 +46,20 @@ function TokensPage() {
   const [error, setError] = useState<string | null>(null);
   const [created, setCreated] = useState<CreatedToken | null>(null);
   const [copied, setCopied] = useState(false);
+  const [revokeTarget, setRevokeTarget] = useState<TokenView | null>(null);
+  const [revoking, setRevoking] = useState(false);
 
   const refresh = useCallback(async () => {
     setLoading(true);
-    const list = await listTokensFn();
-    setTokens(list);
-    setLoading(false);
+    try {
+      const list = await listTokensFn();
+      setTokens(list);
+      setError(null);
+    } catch {
+      setError("Chargement des jetons impossible — rechargez la page.");
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
   useEffect(() => {
@@ -84,9 +93,19 @@ function TokensPage() {
     }
   }
 
-  async function onRevoke(id: string) {
-    await revokeTokenFn({ data: { id } });
-    await refresh();
+  async function onRevokeConfirm() {
+    if (!revokeTarget) return;
+    setRevoking(true);
+    setError(null);
+    try {
+      await revokeTokenFn({ data: { id: revokeTarget.id } });
+      setRevokeTarget(null);
+      await refresh();
+    } catch {
+      setError("Révocation impossible — réessayez.");
+    } finally {
+      setRevoking(false);
+    }
   }
 
   async function onCopy() {
@@ -257,7 +276,7 @@ function TokensPage() {
                             variant="ghost"
                             size="sm"
                             disabled={Boolean(token.revokedAt)}
-                            onClick={() => void onRevoke(token.id)}
+                            onClick={() => setRevokeTarget(token)}
                             aria-label={`Révoquer ${token.name}`}
                           >
                             <IconTrash />
@@ -294,6 +313,30 @@ function TokensPage() {
           </pre>
         </CardContent>
       </Card>
+
+      <Dialog
+        open={revokeTarget !== null}
+        onClose={() => setRevokeTarget(null)}
+        title={revokeTarget ? `Révoquer « ${revokeTarget.name} » ?` : "Révoquer le jeton"}
+      >
+        <p className="text-sm text-muted-foreground">
+          Les agents qui utilisent ce jeton perdront immédiatement l'accès. Cette action est
+          irréversible.
+        </p>
+        <div className="flex justify-end gap-2 pt-4">
+          <Button type="button" variant="ghost" onClick={() => setRevokeTarget(null)}>
+            Annuler
+          </Button>
+          <Button
+            type="button"
+            variant="destructive"
+            loading={revoking}
+            onClick={() => void onRevokeConfirm()}
+          >
+            Révoquer
+          </Button>
+        </div>
+      </Dialog>
     </div>
   );
 }

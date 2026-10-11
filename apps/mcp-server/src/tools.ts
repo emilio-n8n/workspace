@@ -4,9 +4,10 @@ import { getDb, schema } from "@workspace/database";
 import { getDocumentByFileId, toPlainText } from "@workspace/docs";
 import { download, searchEntries } from "@workspace/drive";
 import { createTask, listLists, listTasks } from "@workspace/tasks";
-import { desc, eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import { z } from "zod";
 import { errorResult, requireScope, withAudit } from "./audit.ts";
+import { registerSuiteTools } from "./tools-suite.ts";
 
 /**
  * Outils MCP — mêmes services que l'application web, mêmes règles de
@@ -85,6 +86,19 @@ export function registerTools(server: McpServer, principal: TokenPrincipal): voi
         requireScope(principal, "audit:read");
 
         const db = getDb();
+        const [memberRow] = await db
+          .select({ role: schema.member.role })
+          .from(schema.member)
+          .where(
+            and(
+              eq(schema.member.organizationId, principal.orgId),
+              eq(schema.member.userId, principal.userId),
+            ),
+          )
+          .limit(1);
+        if (!memberRow || (memberRow.role !== "owner" && memberRow.role !== "admin")) {
+          return errorResult("Accès à l'audit réservé aux administrateurs de l'organisation.");
+        }
         const rows = await db
           .select({
             action: schema.auditEvents.action,
@@ -349,4 +363,6 @@ export function registerTools(server: McpServer, principal: TokenPrincipal): voi
         };
       }),
   );
+
+  registerSuiteTools(server, principal);
 }

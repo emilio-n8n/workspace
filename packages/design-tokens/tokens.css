@@ -39,6 +39,7 @@
   --color-input: var(--input);
   --color-ring: var(--ring);
   --color-ring-offset-background: var(--background);
+  --color-overlay: var(--overlay);
 
   --color-rail: var(--rail);
   --color-rail-foreground: var(--rail-foreground);
@@ -119,6 +120,8 @@
   --input: oklch(0.88 0.012 85);
   --ring: oklch(0.55 0.08 168);
 
+  --overlay: oklch(0.2 0.02 75 / 45%);
+
   --rail: oklch(0.21 0.02 160);
   --rail-foreground: oklch(0.9 0.015 150);
   --rail-active: oklch(0.28 0.025 160);
@@ -188,6 +191,8 @@
   --border: oklch(0.29 0.013 75);
   --input: oklch(0.31 0.013 75);
   --ring: oklch(0.62 0.09 168);
+
+  --overlay: oklch(0.12 0.01 75 / 65%);
 
   --rail: oklch(0.15 0.015 160);
   --rail-foreground: oklch(0.88 0.012 150);

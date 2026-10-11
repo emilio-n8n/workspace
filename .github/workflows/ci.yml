@@ -52,10 +52,13 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Apply migrations (base de test)
-        run: pnpm --filter @workspace/database db:migrate
+        run: pnpm db:migrate
 
       - name: Lint & format (Biome)
         run: pnpm exec biome check .
+
+      - name: Contraste WCAG des tokens (calculé)
+        run: pnpm check:design
 
       - name: Typecheck
         run: pnpm typecheck
@@ -110,7 +113,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Apply migrations (base de test)
-        run: pnpm --filter @workspace/database db:migrate
+        run: pnpm db:migrate
 
       - name: Installer Chromium (Playwright)
         run: npx playwright install --with-deps chromium

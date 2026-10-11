@@ -16,12 +16,12 @@ export function AppRail({ apps, activeAppId, homeHref, onOpenPalette }: AppRailP
   return (
     <nav
       aria-label="Applications de la suite"
-      className="hidden w-[76px] shrink-0 flex-col items-center gap-1.5 bg-rail py-4 text-rail-foreground md:flex"
+      className="hidden w-[76px] shrink-0 flex-col items-center gap-1.5 overflow-y-auto bg-rail py-4 text-rail-foreground md:flex"
     >
       <a
         href={homeHref}
         aria-label="Accueil Workspace"
-        className="mb-3 rounded-lg focus-visible:outline-rail-active-foreground"
+        className="mb-3 shrink-0 rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-rail"
       >
         <BrandMark />
       </a>
@@ -36,7 +36,7 @@ export function AppRail({ apps, activeAppId, homeHref, onOpenPalette }: AppRailP
             title={app.name}
             aria-current={active ? "page" : undefined}
             className={cn(
-              "grid size-11 place-items-center rounded-xl transition-colors",
+              "grid size-11 shrink-0 place-items-center rounded-xl transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-rail",
               active
                 ? "bg-rail-active text-rail-active-foreground shadow-soft"
                 : "text-rail-foreground/80 hover:bg-rail-active/50 hover:text-rail-active-foreground",
@@ -52,7 +52,7 @@ export function AppRail({ apps, activeAppId, homeHref, onOpenPalette }: AppRailP
         onClick={onOpenPalette}
         aria-label="Ouvrir la palette de commandes (Ctrl+K)"
         title="Palette de commandes (Ctrl+K)"
-        className="mt-auto grid size-11 place-items-center rounded-xl border border-rail-active text-sm font-semibold text-rail-foreground/80 transition-colors hover:bg-rail-active/50 hover:text-rail-active-foreground"
+        className="mt-auto grid size-11 shrink-0 place-items-center rounded-xl border border-rail-active text-sm font-semibold text-rail-foreground/80 transition-colors hover:bg-rail-active/50 hover:text-rail-active-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-rail"
       >
         ⌘K
       </button>

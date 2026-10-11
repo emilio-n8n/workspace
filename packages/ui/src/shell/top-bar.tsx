@@ -110,6 +110,7 @@ export function TopBar({
             <>
               <button
                 type="button"
+                tabIndex={-1}
                 aria-label="Fermer le lanceur"
                 className="fixed inset-0 z-30 cursor-default"
                 onClick={() => setLauncherOpen(false)}
@@ -127,6 +128,7 @@ export function TopBar({
                       <a
                         key={app.id}
                         href={app.href}
+                        role="menuitem"
                         className="flex flex-col items-center gap-1.5 rounded-lg px-2 py-3 text-center transition-colors hover:bg-muted"
                       >
                         <app.Icon className={cn("size-5", app.toneClass)} />
@@ -135,6 +137,9 @@ export function TopBar({
                     ) : (
                       <span
                         key={app.id}
+                        role="menuitem"
+                        aria-disabled="true"
+                        tabIndex={-1}
                         className="flex cursor-not-allowed flex-col items-center gap-1.5 rounded-lg px-2 py-3 text-center opacity-55"
                         title="Prévu — pas encore disponible"
                       >
@@ -180,6 +185,7 @@ export function TopBar({
             <>
               <button
                 type="button"
+                tabIndex={-1}
                 aria-label="Fermer le menu du compte"
                 className="fixed inset-0 z-30 cursor-default"
                 onClick={() => setMenuOpen(false)}

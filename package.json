@@ -15,7 +15,9 @@
     "test:e2e": "playwright test",
     "check": "biome check .",
     "format": "biome format --write .",
-    "generate-routes": "turbo run generate-routes"
+    "generate-routes": "turbo run generate-routes",
+    "db:migrate": "node scripts/db-migrate-all.mjs",
+    "check:design": "node scripts/contrast-check.mjs"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.15",

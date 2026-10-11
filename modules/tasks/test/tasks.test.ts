@@ -208,7 +208,7 @@ describe("tasks — partage et permissions", () => {
     });
 
     // Promotion editor.
-    await revokeGrant(grant!.id);
+    await revokeGrant({ type: "task_list", id: list.id, orgId: f.orgId }, grant!.id);
     await createGrant({
       resource: { type: "task_list", id: list.id, orgId: f.orgId },
       subject: { kind: "user", id: f.bruno },

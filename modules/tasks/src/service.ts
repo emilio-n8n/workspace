@@ -170,7 +170,7 @@ export async function shareList(
 
 export async function unshareList(actor: Actor, listId: string, grantId: string): Promise<boolean> {
   await assertList(actor, "share", listId);
-  return revokeGrant(grantId);
+  return revokeGrant({ type: "task_list", id: listId, orgId: actor.orgId }, grantId);
 }
 
 export async function listListGrants(actor: Actor, listId: string): Promise<ResourceGrantRow[]> {

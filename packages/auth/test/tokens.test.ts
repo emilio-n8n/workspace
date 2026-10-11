@@ -136,7 +136,7 @@ describe("jetons d'API — émission et authentification", () => {
       scopes: ["drive:read", "docs:read"],
     });
 
-    const list = await listApiTokens(fixtures.userId);
+    const list = await listApiTokens(fixtures.userId, fixtures.orgId);
     expect(list).toHaveLength(1);
     expect(JSON.stringify(list)).not.toContain("tokenHash");
     expect(list[0]?.prefix.startsWith("wsk_")).toBe(true);
@@ -149,7 +149,8 @@ describe("jetons d'API — émission et authentification", () => {
       name: "Lecture seule",
       scopes: ["drive:read"],
     });
-    const principal = (await authenticateApiToken(issued.token))!;
+    const principal = await authenticateApiToken(issued.token);
+    if (!principal) throw new Error("authentification du jeton impossible");
     expect(tokenHasScope(principal, "drive:read")).toBe(true);
     expect(tokenHasScope(principal, "drive:write")).toBe(false);
     expect(tokenHasScope(principal, "audit:read")).toBe(false);

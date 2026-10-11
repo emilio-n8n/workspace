@@ -24,6 +24,8 @@ function DocumentPage() {
   const [versions, setVersions] = useState<
     { id: string; version: number; createdAt: string }[] | null
   >(null);
+  const [versionsLoading, setVersionsLoading] = useState(false);
+  const [versionsError, setVersionsError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -65,10 +67,18 @@ function DocumentPage() {
   async function onLoadVersions() {
     if (versions !== null) {
       setVersions(null);
+      setVersionsError(null);
       return;
     }
-    const list = await listDocumentVersionsFn({ data: { fileId } });
-    setVersions(list);
+    setVersionsLoading(true);
+    setVersionsError(null);
+    try {
+      setVersions(await listDocumentVersionsFn({ data: { fileId } }));
+    } catch {
+      setVersionsError("Impossible de charger l'historique des versions.");
+    } finally {
+      setVersionsLoading(false);
+    }
   }
 
   if (error) {
@@ -87,7 +97,7 @@ function DocumentPage() {
   }
 
   return (
-    <div className="flex h-[calc(100vh-6.5rem)] flex-col">
+    <div className="flex h-full min-h-0 flex-col">
       <header className="flex flex-wrap items-center gap-3 border-b border-border pb-3">
         <Link
           to="/"
@@ -112,7 +122,12 @@ function DocumentPage() {
         <Badge variant="default">v{doc.currentVersion}</Badge>
 
         <div className="ml-auto flex items-center gap-2">
-          <Button variant="ghost" size="sm" onClick={() => void onLoadVersions()}>
+          <Button
+            variant="ghost"
+            size="sm"
+            loading={versionsLoading}
+            onClick={() => void onLoadVersions()}
+          >
             Historique
           </Button>
           <a href={`/api/docs/export/${fileId}?format=md`} download>
@@ -128,24 +143,36 @@ function DocumentPage() {
         </div>
       </header>
 
+      {versionsError ? (
+        <div className="border-b border-border bg-muted/40 px-3 py-2">
+          <p role="alert" className="text-xs text-destructive">
+            {versionsError}
+          </p>
+        </div>
+      ) : null}
+
       {versions ? (
         <div className="border-b border-border bg-muted/40 px-3 py-2">
           <p className="mb-1 text-xs font-medium uppercase tracking-widest text-muted-foreground">
             Versions
           </p>
-          <ul className="flex flex-wrap gap-2">
-            {versions.map((version) => (
-              <li key={version.id}>
-                <Badge variant="outline">
-                  v{version.version} ·{" "}
-                  {new Date(version.createdAt).toLocaleString("fr-FR", {
-                    dateStyle: "short",
-                    timeStyle: "short",
-                  })}
-                </Badge>
-              </li>
-            ))}
-          </ul>
+          {versions.length === 0 ? (
+            <p className="text-xs text-muted-foreground">Aucune version enregistrée.</p>
+          ) : (
+            <ul className="flex flex-wrap gap-2">
+              {versions.map((version) => (
+                <li key={version.id}>
+                  <Badge variant="outline">
+                    v{version.version} ·{" "}
+                    {new Date(version.createdAt).toLocaleString("fr-FR", {
+                      dateStyle: "short",
+                      timeStyle: "short",
+                    })}
+                  </Badge>
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
       ) : null}
 

@@ -18,20 +18,40 @@ export const Route = createFileRoute("/app")({
   },
 });
 
-type AppUrls = { home: string; drive: string; docs: string; tasks: string };
+type AppUrls = {
+  home: string;
+  drive: string;
+  docs: string;
+  sheets: string;
+  slides: string;
+  calendar: string;
+  tasks: string;
+  forms: string;
+  mail: string;
+  chat: string;
+  meet: string;
+  sites: string;
+  classroom: string;
+  admin: string;
+};
 
 function AppLayout() {
   const router = useRouter();
   const [workspace, setWorkspace] = useState<WorkspaceInfo>(null);
   const [urls, setUrls] = useState<AppUrls | null>(null);
   const [theme, setTheme] = useState<Theme>("light");
+  const [loadError, setLoadError] = useState(false);
 
   useEffect(() => {
     setTheme(currentTheme());
     void (async () => {
-      const [data, appUrls] = await Promise.all([getWorkspaceFn(), getAppUrlsFn()]);
-      setWorkspace(data);
-      setUrls(appUrls);
+      try {
+        const [data, appUrls] = await Promise.all([getWorkspaceFn(), getAppUrlsFn()]);
+        setWorkspace(data);
+        setUrls(appUrls);
+      } catch {
+        setLoadError(true);
+      }
     })();
   }, []);
 
@@ -39,6 +59,23 @@ function AppLayout() {
     await signOutFn();
     await router.invalidate();
     window.location.assign("/");
+  }
+
+  if (loadError) {
+    return (
+      <div className="grid min-h-screen place-items-center p-8">
+        <div className="flex flex-col items-center gap-3 text-center">
+          <p className="text-sm text-destructive">Impossible de charger votre espace de travail.</p>
+          <button
+            type="button"
+            onClick={() => window.location.reload()}
+            className="rounded-md border border-border bg-card px-3 py-1.5 text-sm hover:bg-muted"
+          >
+            Réessayer
+          </button>
+        </div>
+      </div>
+    );
   }
 
   if (!workspace || !urls) {

@@ -1,7 +1,7 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { getDb, schema } from "@workspace/database";
-import { and, desc, eq, gt, isNull, or } from "drizzle-orm";
-import type { WorkspaceScope } from "./scopes";
+import { and, desc, eq, gt, isNull, or, sql } from "drizzle-orm";
+import { isWorkspaceScope, type WorkspaceScope } from "./scopes.ts";
 
 const { apiTokens } = schema;
 
@@ -48,6 +48,12 @@ export async function issueApiToken(input: {
   scopes: readonly WorkspaceScope[];
   expiresAt?: Date | null;
 }): Promise<IssuedApiToken> {
+  for (const scope of input.scopes) {
+    if (!isWorkspaceScope(scope)) {
+      throw new Error(`Scope inconnu : ${scope}`);
+    }
+  }
+
   const secret = randomBytes(32).toString("base64url");
   const token = `${TOKEN_PREFIX}${secret}`;
   const prefix = `${TOKEN_PREFIX}${secret.slice(0, 6)}…`;
@@ -72,7 +78,7 @@ export async function issueApiToken(input: {
 }
 
 /** Jetons d'un utilisateur (hash exclu de la projection). */
-export async function listApiTokens(userId: string): Promise<ApiTokenListItem[]> {
+export async function listApiTokens(userId: string, orgId: string): Promise<ApiTokenListItem[]> {
   const db = getDb();
   return db
     .select({
@@ -86,7 +92,7 @@ export async function listApiTokens(userId: string): Promise<ApiTokenListItem[]>
       revokedAt: apiTokens.revokedAt,
     })
     .from(apiTokens)
-    .where(eq(apiTokens.userId, userId))
+    .where(and(eq(apiTokens.userId, userId), eq(apiTokens.orgId, orgId)))
     .orderBy(desc(apiTokens.createdAt));
 }
 
@@ -132,7 +138,16 @@ export async function authenticateApiToken(token: string): Promise<TokenPrincipa
   const actual = Buffer.from(hashToken(token), "hex");
   if (expected.length !== actual.length || !timingSafeEqual(expected, actual)) return null;
 
-  await db.update(apiTokens).set({ lastUsedAt: now }).where(eq(apiTokens.id, row.id));
+  // Mise à jour throttlée (5 min) : évite une écriture à chaque requête MCP.
+  await db
+    .update(apiTokens)
+    .set({ lastUsedAt: now })
+    .where(
+      and(
+        eq(apiTokens.id, row.id),
+        sql`coalesce(${apiTokens.lastUsedAt}, to_timestamp(0)) < now() - interval '5 minutes'`,
+      ),
+    );
 
   return { tokenId: row.id, userId: row.userId, orgId: row.orgId, scopes: row.scopes };
 }

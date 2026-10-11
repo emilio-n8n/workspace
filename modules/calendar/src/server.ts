@@ -1,0 +1,96 @@
+import { createServerFn } from "@tanstack/react-start";
+import { getRequest } from "@tanstack/react-start/server";
+import { requireActor } from "@workspace/auth";
+import { z } from "zod";
+import {
+  createCalendar,
+  createEvent,
+  deleteEvent,
+  listCalendars,
+  listEvents,
+  setAttendance,
+  updateEvent,
+} from "./index.ts";
+
+export type { CalendarView as CalendarOption, EventView } from "./index.ts";
+
+const eventFields = z.object({
+  calendarId: z.string().uuid().nullish(),
+  title: z.string().trim().min(1).max(255),
+  description: z.string().max(5000).nullish(),
+  location: z.string().max(255).nullish(),
+  startsAt: z.string().min(1),
+  endsAt: z.string().min(1),
+  allDay: z.boolean().optional(),
+  attendees: z.array(z.string().trim().min(1).max(255)).max(50).optional(),
+});
+
+export const listCalendarsFn = createServerFn({ method: "GET" }).handler(async () => {
+  const { actor } = await requireActor(getRequest().headers);
+  return listCalendars(actor);
+});
+
+export const listEventsFn = createServerFn({ method: "GET" })
+  .validator((input: unknown) =>
+    z.object({ from: z.string().min(1), to: z.string().min(1) }).parse(input),
+  )
+  .handler(async ({ data }) => {
+    const { actor } = await requireActor(getRequest().headers);
+    return listEvents(actor, { from: data.from, to: data.to });
+  });
+
+export const createEventFn = createServerFn({ method: "POST" })
+  .validator((input: unknown) => eventFields.parse(input))
+  .handler(async ({ data }) => {
+    const { actor } = await requireActor(getRequest().headers);
+    return createEvent(actor, data);
+  });
+
+export const updateEventFn = createServerFn({ method: "POST" })
+  .validator((input: unknown) =>
+    z
+      .object({
+        eventId: z.string().uuid(),
+        patch: z.object({
+          title: z.string().trim().min(1).max(255).optional(),
+          description: z.string().max(5000).nullish(),
+          location: z.string().max(255).nullish(),
+          startsAt: z.string().min(1).optional(),
+          endsAt: z.string().min(1).optional(),
+          allDay: z.boolean().optional(),
+        }),
+      })
+      .parse(input),
+  )
+  .handler(async ({ data }) => {
+    const { actor } = await requireActor(getRequest().headers);
+    return updateEvent(actor, data.eventId, data.patch);
+  });
+
+export const deleteEventFn = createServerFn({ method: "POST" })
+  .validator((input: unknown) => z.object({ eventId: z.string().uuid() }).parse(input))
+  .handler(async ({ data }) => {
+    const { actor } = await requireActor(getRequest().headers);
+    await deleteEvent(actor, data.eventId);
+    return { ok: true };
+  });
+
+export const setAttendanceFn = createServerFn({ method: "POST" })
+  .validator((input: unknown) =>
+    z.object({ eventId: z.string().uuid(), status: z.enum(["accepted", "declined"]) }).parse(input),
+  )
+  .handler(async ({ data }) => {
+    const { actor } = await requireActor(getRequest().headers);
+    return setAttendance(actor, data.eventId, data.status);
+  });
+
+export const createCalendarFn = createServerFn({ method: "POST" })
+  .validator((input: unknown) =>
+    z
+      .object({ name: z.string().trim().min(1).max(120), shared: z.boolean().default(false) })
+      .parse(input),
+  )
+  .handler(async ({ data }) => {
+    const { actor } = await requireActor(getRequest().headers);
+    return createCalendar(actor, { name: data.name, shared: data.shared });
+  });

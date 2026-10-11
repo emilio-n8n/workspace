@@ -176,7 +176,8 @@ describe("permissions — grants directs", () => {
     });
     expect(await canOn(actor, "write")).toBe(true);
 
-    for (const grant of await listGrants(fixtures.resource)) await revokeGrant(grant.id);
+    for (const grant of await listGrants(fixtures.resource))
+      await revokeGrant(fixtures.resource, grant.id);
 
     await createGrant({
       resource: fixtures.resource,
@@ -196,9 +197,9 @@ describe("permissions — grants directs", () => {
       role: "editor",
       actor,
     });
-    expect(grant).not.toBeNull();
-    expect(await revokeGrant(grant!.id)).toBe(true);
-    expect(await revokeGrant(grant!.id)).toBe(false);
+    if (!grant) throw new Error("grant manquant");
+    expect(await revokeGrant(fixtures.resource, grant.id)).toBe(true);
+    expect(await revokeGrant(fixtures.resource, grant.id)).toBe(false);
     expect(await canOn(actor, "read")).toBe(false);
   });
 

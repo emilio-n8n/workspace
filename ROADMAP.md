@@ -41,20 +41,25 @@ Prouver de bout en bout : authentification → stockage → permissions → édi
 ## Phase 3 — Suite de productivité ▶
 
 - [x] Tasks : listes partagées, tâches (échéances, priorités, statuts, assignation), filtres, ajout rapide, partage par membre — 8 tests + E2E navigateur ; MCP `tasks.lists` / `tasks.list` / `tasks.create` (2 tests d'intégration)
-- [ ] Calendar (vues jour/semaine/mois, invitations, CalDAV) — prochaine brique
-- [ ] Forms (création, réponses, partage public)
-- [ ] Sheets (Univer + pont xlsx maison — ADR-0008) — démarre par les POC exigés
-- [ ] Slides (scène maison hybride — ADR-0009) — démarre par les POC exigés
-- [ ] Collaboration temps réel Docs (Yjs/Hocuspocus)
-- [ ] MCP étendu (`tasks.update/delete`, `docs.create/update`, `files.write/delete`, recherche plein texte)
+- [x] Calendar : agendas personnels et d'organisation, invitations et réponses, vues mois/semaine — 16 tests ; **CalDAV reste un chantier dédié** (documenté hors périmètre)
+- [x] Forms : questions (5 types), lien public `/f/<slug>`, réponses stables (identifiants de question conservés), export CSV sûr — 15 tests
+- [x] Sheets : moteur de formules natif (SUM/AVG/MIN/MAX/COUNT, erreurs typées, plages bornées) — **ADR-0014** ; Univer reste candidat pour le collaboratif — tests moteur + service
+- [x] Slides : zones de texte et formes, glisser-déposer, révision optimiste, mode présentation — tests service
+- [ ] Collaboration temps réel (Yjs/Hocuspocus) — chantier dédié, non bloquant
+- [x] MCP étendu : **20 outils** (calendar, forms, sheets, slides, chat, mail, classroom, sites ajoutés) ; écritures Docs/Drive et recherche plein texte restent à venir
 
 ## Phase 4 — Communication ○
 
-Mail (Stalwart en sidecar + UI maison JMAP — ADR-0010), Chat, Meet (LiveKit + coturn — ADR-0011). Exigences opérationnelles documentées (DNS, TURN, charge) avant toute promesse fonctionnelle.
+- [x] Mail : boîtes locales, SMTP sortant (erreurs jamais silencieuses), ingestion entrante par webhook idempotent — **pas d'IMAP client en v1 (ADR-0013)** ; Stalwart/JMAP reste l'option documentée (ADR-0010) pour aller plus loin
+- [x] Chat : canaux et discussions directes, non-lus (requête agrégée unique) — temps réel WebSocket en chantier dédié
+- [x] Meet : salles et liens, jeton LiveKit signé serveur, média optionnel (ADR-0011) — exigences réseau (TURN, DNS) toujours à documenter avant promesse grand public
 
 ## Phase 5 — Éducation et administration avancée ○
 
-Classroom (classes, devoirs, remises, confidentialité des mineurs), politiques organisationnelles, administration avancée, fédération OIDC/MFA.
+- [x] Classroom : cours à code d'accès (8 caractères non biaisés), devoirs, copies, notation stricte (notes conservées)
+- [x] Sites : pages Markdown, rendu HTML sûr (code opaque, liens allowlist)
+- [x] Admin : profil d'organisation, membres et rôles (propriétaire protégé), quota de stockage, journal d'audit réservé owner/admin
+- [ ] Confidentialité des mineurs, fédération OIDC/MFA — chantiers dédiés
 
 ## Phase 6 — MCP, intégrations et maturité ○
 
@@ -63,6 +68,7 @@ Classroom (classes, devoirs, remises, confidentialité des mineurs), politiques 
 ## Dépendances structurantes
 
 - Les contrats des packages communs sont gelés (P1 ✅) ; les modules Phase 3 s'y appuient sans les modifier.
+- Vague qualité « L11 » (2026-10-11) : 3 audits sévères (~260 constats consignés dans `docs/audits/`), 10 escouades de correction, contraste WCAG **calculé** (`pnpm check:design`, 26/26 paires), lois de layout dérivées (`docs/design-system/layout-laws.md`).
 - Chaque ADR moteur conditionne son module (POC listés avant développement).
 - Le serveur MCP utilise exclusivement les services de modules — toute nouvelle capacité passe par eux.
 

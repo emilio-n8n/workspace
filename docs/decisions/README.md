@@ -18,6 +18,8 @@ Format : titre, statut (`proposé` | `accepté` | `remplacé` | `rejeté`), cont
 | [0010](0010-socle-mail.md) | Socle messagerie (Mail) : Stalwart en sidecar, UI maison JMAP | accepté sous réserve du POC délivrabilité |
 | [0011](0011-moteur-meet.md) | Visioconférence (Meet) : LiveKit + coturn, UI maison | accepté sous réserve des POC réseau et charge |
 | [0012](0012-suite-multi-applications.md) | Suite multi-applications et SSO (rail, lanceur, palette ⌘K) | accepté |
+| [0013](0013-mail-sortant-entrant.md) | Mail : SMTP sortant + ingestion webhook entrante | accepté |
+| [0014](0014-sheets-moteur-formules.md) | Sheets : moteur de formules natif avant Univer | accepté |
 
 ## Modèle
 

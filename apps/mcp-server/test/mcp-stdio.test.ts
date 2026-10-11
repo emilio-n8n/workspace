@@ -9,7 +9,7 @@ import { createList as createTaskList } from "@workspace/tasks";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
 
-const { user, organization, apiTokens, auditEvents } = schema;
+const { user, organization, member, apiTokens, auditEvents } = schema;
 
 let counter = 0;
 const tag = (prefix: string) => `${prefix}${++counter}_${randomUUID().slice(0, 8)}`;
@@ -32,6 +32,15 @@ async function createFixtures(scopes: string[]): Promise<Fixtures> {
     emailVerified: true,
     createdAt: now,
     updatedAt: now,
+  });
+  // Tout jeton appartient à un membre : propriétaire de son organisation
+  // (le garde-fou admin d'audit.recent l'exige, comme l'écran Admin).
+  await db.insert(member).values({
+    id: randomUUID(),
+    organizationId: orgId,
+    userId,
+    role: "owner",
+    createdAt: now,
   });
 
   const issued = await issueApiToken({
@@ -103,7 +112,7 @@ afterAll(async () => {
 });
 
 describe("serveur MCP — intégration réelle (stdio)", () => {
-  it("liste les huit outils et répond à me.whoami avec le bon principal", async () => {
+  it("liste les vingt outils de la suite et répond à me.whoami avec le bon principal", async () => {
     const f = await fixtures(["drive:read"]);
     const { client, transport } = await connectClient(f.token);
     try {
@@ -111,10 +120,22 @@ describe("serveur MCP — intégration réelle (stdio)", () => {
       const names = tools.tools.map((tool) => tool.name).sort();
       expect(names).toEqual([
         "audit.recent",
+        "calendar.create",
+        "calendar.list",
+        "chat.list",
+        "chat.send",
+        "classroom.list",
         "docs.read",
         "files.read",
         "files.search",
+        "forms.list",
+        "forms.responses",
+        "mail.list",
+        "mail.send",
         "me.whoami",
+        "sheets.read",
+        "sites.read",
+        "slides.read",
         "tasks.create",
         "tasks.list",
         "tasks.lists",
@@ -349,6 +370,112 @@ describe("serveur MCP — tâches (lecture et création par un agent)", () => {
         arguments: { listId: list.id, title: "Interdit" },
       });
       expect(created.isError).toBe(true);
+    } finally {
+      await client.close();
+      await transport.close();
+    }
+  });
+  it("calendar.create + calendar.list : crée et relit un événement", async () => {
+    const f = await fixtures(["calendar:read", "calendar:write"]);
+    const { client, transport } = await connectClient(f.token);
+    try {
+      const created = await client.callTool({
+        name: "calendar.create",
+        arguments: {
+          title: "Agent : point produit",
+          startsAt: "2026-04-01T09:00:00.000Z",
+          endsAt: "2026-04-01T10:00:00.000Z",
+        },
+      });
+      expect(created.isError).toBeFalsy();
+      const event = payloadOf(created);
+      expect(event.title).toBe("Agent : point produit");
+
+      const list = await client.callTool({
+        name: "calendar.list",
+        arguments: { from: "2026-03-31T00:00:00.000Z", to: "2026-04-02T00:00:00.000Z" },
+      });
+      expect(list.isError).toBeFalsy();
+      const events = payloadOf(list) as unknown as { title: string }[];
+      expect(events.some((entry) => entry.title === "Agent : point produit")).toBe(true);
+    } finally {
+      await client.close();
+      await transport.close();
+    }
+  });
+
+  it("sheets.read : évalue les formules avant de répondre", async () => {
+    const f = await fixtures(["sheets:read"]);
+    const actor = { userId: f.userId, orgId: f.orgId };
+
+    const { createSpreadsheet, getSpreadsheet, saveCells } = await import("@workspace/sheets");
+    const { entry } = await createSpreadsheet(actor, { title: "Agent sheet" });
+    const detail = await getSpreadsheet(actor, entry.id);
+    const tabId = detail.tabs[0]?.id;
+    if (!tabId) throw new Error("onglet manquant");
+    await saveCells(actor, entry.id, {
+      tabId,
+      updates: [
+        { row: 0, col: 0, value: "2" },
+        { row: 1, col: 0, value: "3" },
+        { row: 2, col: 0, value: "=SUM(A1:A2)" },
+      ],
+    });
+
+    const { client, transport } = await connectClient(f.token);
+    try {
+      const result = await client.callTool({
+        name: "sheets.read",
+        arguments: { fileId: entry.id },
+      });
+      expect(result.isError).toBeFalsy();
+      const payload = payloadOf(result);
+      const rows = payload.rows as string[][];
+      expect(rows[2]?.[0]).toBe("5");
+    } finally {
+      await client.close();
+      await transport.close();
+    }
+  });
+
+  it("chat.send + chat.list : écrit et relit un message", async () => {
+    const f = await fixtures(["chat:read", "chat:write"]);
+    const actor = { userId: f.userId, orgId: f.orgId };
+
+    const { createChannel } = await import("@workspace/chat");
+    const channel = await createChannel(actor, "agents");
+
+    const { client, transport } = await connectClient(f.token);
+    try {
+      const sent = await client.callTool({
+        name: "chat.send",
+        arguments: { channelId: channel.id, body: "Bonjour depuis un agent" },
+      });
+      expect(sent.isError).toBeFalsy();
+
+      const list = await client.callTool({ name: "chat.list", arguments: {} });
+      expect(list.isError).toBeFalsy();
+      const channels = payloadOf(list) as unknown as { name: string }[];
+      expect(channels.some((entry) => entry.name === "agents")).toBe(true);
+    } finally {
+      await client.close();
+      await transport.close();
+    }
+  });
+
+  it("forms.list : liste les formulaires accessibles", async () => {
+    const f = await fixtures(["forms:read"]);
+    const actor = { userId: f.userId, orgId: f.orgId };
+
+    const { createForm } = await import("@workspace/forms");
+    await createForm(actor, { title: "Enquête agent" });
+
+    const { client, transport } = await connectClient(f.token);
+    try {
+      const result = await client.callTool({ name: "forms.list", arguments: {} });
+      expect(result.isError).toBeFalsy();
+      const forms = payloadOf(result) as unknown as { title: string }[];
+      expect(forms.some((entry) => entry.title === "Enquête agent")).toBe(true);
     } finally {
       await client.close();
       await transport.close();

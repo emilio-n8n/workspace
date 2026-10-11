@@ -1,0 +1,23 @@
+@import "tailwindcss" source(none);
+@import "@workspace/design-tokens/fonts.css";
+@import "@workspace/design-tokens/tokens.css";
+
+/* Sources Tailwind : l'application et les packages partagés (hors node_modules). */
+@source "../src";
+@source "../../../packages/ui/src";
+@source "../../../modules";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+}

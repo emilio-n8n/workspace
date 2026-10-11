@@ -1,0 +1,534 @@
+import { Badge, Button, cn, Input, Label } from "@workspace/ui";
+import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  type FormDetail,
+  getFormFn,
+  listResponsesFn,
+  type QuestionView,
+  type ResponseView,
+  saveFormFn,
+} from "../server.ts";
+
+const KIND_LABELS: Record<string, string> = {
+  short_text: "Texte court",
+  long_text: "Texte long",
+  choice: "Choix unique",
+  checkbox: "Cases à cocher",
+  scale: "Échelle 1 à 5",
+};
+
+const STATUS_OPTIONS = [
+  { value: "draft", label: "Brouillon (non publié)" },
+  { value: "open", label: "Ouvert (réponses acceptées)" },
+  { value: "closed", label: "Fermé" },
+];
+
+type QuestionDraft = {
+  key: string;
+  /** Identifiant serveur conservé pour ne pas orpheliner les réponses. */
+  id?: string;
+  kind: QuestionView["kind"];
+  label: string;
+  required: boolean;
+  options: string[];
+};
+
+function toDraft(question: QuestionView): QuestionDraft {
+  return {
+    key: crypto.randomUUID(),
+    id: question.id,
+    kind: question.kind,
+    label: question.label,
+    required: question.required,
+    options: question.options,
+  };
+}
+
+function newDraft(kind: QuestionView["kind"]): QuestionDraft {
+  return {
+    key: crypto.randomUUID(),
+    kind,
+    label: "",
+    required: false,
+    options: kind === "choice" || kind === "checkbox" ? ["", ""] : [],
+  };
+}
+
+/** Constructeur de formulaire : questions, statut, lien public et réponses. */
+export function FormBuilder({ fileId }: { fileId: string }) {
+  const [detail, setDetail] = useState<FormDetail | null>(null);
+  const [questions, setQuestions] = useState<QuestionDraft[]>([]);
+  const [title, setTitle] = useState("");
+  const [description, setDescription] = useState("");
+  const [status, setStatus] = useState<FormDetail["status"]>("open");
+  const [dirty, setDirty] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [saved, setSaved] = useState(false);
+  const [tab, setTab] = useState<"questions" | "responses">("questions");
+  const [responses, setResponses] = useState<{
+    questions: QuestionView[];
+    responses: ResponseView[];
+  } | null>(null);
+  const [responsesError, setResponsesError] = useState<string | null>(null);
+  const [responsesBusy, setResponsesBusy] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const copyTimeout = useRef<number | null>(null);
+
+  useEffect(
+    () => () => {
+      if (copyTimeout.current !== null) window.clearTimeout(copyTimeout.current);
+    },
+    [],
+  );
+
+  const load = useCallback(async () => {
+    try {
+      const loaded = await getFormFn({ data: { fileId } });
+      setDetail(loaded);
+      setTitle(loaded.title);
+      setDescription(loaded.description ?? "");
+      setStatus(loaded.status);
+      setQuestions(loaded.questions.map(toDraft));
+      setDirty(false);
+      setError(null);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Chargement impossible.");
+    }
+  }, [fileId]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  async function loadResponses() {
+    setResponsesBusy(true);
+    setResponsesError(null);
+    try {
+      setResponses(await listResponsesFn({ data: { fileId } }));
+    } catch (caught) {
+      setResponsesError(
+        caught instanceof Error ? caught.message : "Chargement des réponses impossible.",
+      );
+    } finally {
+      setResponsesBusy(false);
+    }
+  }
+
+  function copyLink() {
+    void navigator.clipboard?.writeText(publicUrl);
+    setCopied(true);
+    if (copyTimeout.current !== null) window.clearTimeout(copyTimeout.current);
+    copyTimeout.current = window.setTimeout(() => setCopied(false), 2000);
+  }
+
+  function update(change: () => void) {
+    change();
+    setDirty(true);
+    setSaved(false);
+  }
+
+  async function onSave() {
+    setBusy(true);
+    setError(null);
+    try {
+      const updated = await saveFormFn({
+        data: {
+          fileId,
+          title: title.trim(),
+          description,
+          status,
+          questions: questions.map((question) => ({
+            ...(question.id !== undefined ? { id: question.id } : {}),
+            kind: question.kind,
+            label: question.label,
+            required: question.required,
+            options: question.options,
+          })),
+        },
+      });
+      setDetail(updated);
+      setQuestions(updated.questions.map(toDraft));
+      setDirty(false);
+      setSaved(true);
+      if (tab === "responses") await loadResponses();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Enregistrement impossible.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function move(index: number, direction: -1 | 1) {
+    const target = index + direction;
+    if (target < 0 || target >= questions.length) return;
+    update(() => {
+      const copy = [...questions];
+      const [item] = copy.splice(index, 1);
+      if (item) copy.splice(target, 0, item);
+      setQuestions(copy);
+    });
+  }
+
+  function patch(index: number, changes: Partial<QuestionDraft>) {
+    update(() => {
+      setQuestions((current) =>
+        current.map((question, position) =>
+          position === index ? { ...question, ...changes } : question,
+        ),
+      );
+    });
+  }
+
+  const publicUrl = detail ? `${window.location.origin}/f/${detail.slug}` : "";
+
+  return (
+    <div className="mx-auto flex max-w-3xl flex-col gap-4">
+      <header className="flex flex-wrap items-center gap-2">
+        <a href="/" className="text-sm text-muted-foreground hover:text-foreground">
+          ← Formulaires
+        </a>
+        <div className="ml-auto flex items-center gap-2">
+          {dirty ? (
+            <span className="text-xs text-attention-foreground">
+              Modifications non enregistrées
+            </span>
+          ) : saved ? (
+            <span className="text-xs text-muted-foreground" role="status">
+              Enregistré
+            </span>
+          ) : null}
+          <Button size="sm" loading={busy} onClick={() => void onSave()} disabled={!dirty}>
+            Enregistrer
+          </Button>
+        </div>
+      </header>
+
+      {error ? (
+        <p
+          role="alert"
+          className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive"
+        >
+          {error}
+        </p>
+      ) : null}
+
+      {detail ? (
+        <>
+          <div className="flex flex-col gap-3 rounded-xl border border-border bg-card p-4">
+            <input
+              aria-label="Titre du formulaire"
+              value={title}
+              onChange={(event) => update(() => setTitle(event.target.value))}
+              maxLength={255}
+              className="w-full border-none bg-transparent font-display text-xl font-semibold tracking-tight outline-none"
+            />
+            <textarea
+              aria-label="Description"
+              value={description}
+              onChange={(event) => update(() => setDescription(event.target.value))}
+              placeholder="Description (facultative)"
+              rows={2}
+              className="w-full resize-none rounded-md border border-input bg-background px-3 py-2 text-sm"
+            />
+            <div className="flex flex-wrap items-center gap-2">
+              <select
+                aria-label="Statut"
+                value={status}
+                onChange={(event) =>
+                  update(() => setStatus(event.target.value as FormDetail["status"]))
+                }
+                className="h-9 rounded-md border border-input bg-background px-2 text-sm"
+              >
+                {STATUS_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+              <Badge variant={status === "open" ? "accent" : "outline"}>
+                {STATUS_OPTIONS.find((option) => option.value === status)?.label ?? status}
+              </Badge>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <Input
+                readOnly
+                aria-label="Lien public"
+                value={publicUrl}
+                className="h-8 max-w-md flex-1 text-xs"
+                onFocus={(event) => event.target.select()}
+              />
+              <Button
+                size="sm"
+                variant="outline"
+                className="w-20"
+                aria-live="polite"
+                onClick={copyLink}
+              >
+                {copied ? "Copié !" : "Copier"}
+              </Button>
+              <a href={`/f/${detail.slug}`} target="_blank" rel="noreferrer">
+                <Button size="sm" variant="outline">
+                  Ouvrir
+                </Button>
+              </a>
+            </div>
+          </div>
+
+          <div className="flex overflow-hidden rounded-lg border border-border self-start">
+            {(["questions", "responses"] as const).map((value) => (
+              <button
+                key={value}
+                type="button"
+                onClick={() => {
+                  setTab(value);
+                  if (value === "responses") void loadResponses();
+                }}
+                className={cn(
+                  "px-3 py-1.5 text-xs font-medium transition-colors",
+                  tab === value
+                    ? "bg-primary text-primary-foreground"
+                    : "bg-card text-muted-foreground hover:bg-muted",
+                )}
+              >
+                {value === "questions" ? "Questions" : "Réponses"}
+              </button>
+            ))}
+          </div>
+
+          {tab === "questions" ? (
+            <>
+              <ul className="flex flex-col gap-3">
+                {questions.map((question, index) => (
+                  <li
+                    key={question.key}
+                    className="flex flex-col gap-3 rounded-xl border border-border bg-card p-4"
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-medium text-muted-foreground">
+                        Question {index + 1}
+                      </span>
+                      <div className="ml-auto flex items-center gap-1">
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          aria-label="Monter la question"
+                          onClick={() => move(index, -1)}
+                        >
+                          ↑
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          aria-label="Descendre la question"
+                          onClick={() => move(index, 1)}
+                        >
+                          ↓
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="text-destructive"
+                          aria-label="Supprimer la question"
+                          onClick={() =>
+                            update(() =>
+                              setQuestions(questions.filter((_, position) => position !== index)),
+                            )
+                          }
+                        >
+                          Supprimer
+                        </Button>
+                      </div>
+                    </div>
+                    <Input
+                      aria-label="Intitulé de la question"
+                      value={question.label}
+                      onChange={(event) => patch(index, { label: event.target.value })}
+                      placeholder="Votre question…"
+                      maxLength={500}
+                    />
+                    <div className="flex flex-wrap items-center gap-3">
+                      <select
+                        aria-label="Type de question"
+                        value={question.kind}
+                        onChange={(event) => {
+                          const kind = event.target.value as QuestionView["kind"];
+                          patch(index, {
+                            kind,
+                            options:
+                              kind === "choice" || kind === "checkbox"
+                                ? question.options.length >= 2
+                                  ? question.options
+                                  : ["", ""]
+                                : [],
+                          });
+                        }}
+                        className="h-9 rounded-md border border-input bg-background px-2 text-sm"
+                      >
+                        {Object.entries(KIND_LABELS).map(([value, label]) => (
+                          <option key={value} value={value}>
+                            {label}
+                          </option>
+                        ))}
+                      </select>
+                      <label className="flex items-center gap-2 text-sm">
+                        <input
+                          type="checkbox"
+                          checked={question.required}
+                          onChange={(event) => patch(index, { required: event.target.checked })}
+                        />
+                        Obligatoire
+                      </label>
+                    </div>
+                    {(question.kind === "choice" || question.kind === "checkbox") && (
+                      <div className="flex flex-col gap-2">
+                        <Label>Options</Label>
+                        {question.options.map((option, optionIndex) => (
+                          <div
+                            // biome-ignore lint/suspicious/noArrayIndexKey: liste éditable par position, l'index est l'identité de travail (valeurs vides ou dupliquées en cours de saisie).
+                            key={`${question.key}-${optionIndex}`}
+                            className="flex items-center gap-2"
+                          >
+                            <Input
+                              aria-label={`Option ${optionIndex + 1}`}
+                              value={option}
+                              onChange={(event) =>
+                                patch(index, {
+                                  options: question.options.map((value, position) =>
+                                    position === optionIndex ? event.target.value : value,
+                                  ),
+                                })
+                              }
+                              maxLength={200}
+                            />
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              aria-label={`Supprimer l'option ${optionIndex + 1}`}
+                              onClick={() =>
+                                patch(index, {
+                                  options: question.options.filter(
+                                    (_, position) => position !== optionIndex,
+                                  ),
+                                })
+                              }
+                            >
+                              ✕
+                            </Button>
+                          </div>
+                        ))}
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="self-start"
+                          onClick={() => patch(index, { options: [...question.options, ""] })}
+                        >
+                          Ajouter une option
+                        </Button>
+                      </div>
+                    )}
+                  </li>
+                ))}
+              </ul>
+
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-xs font-medium uppercase tracking-widest text-muted-foreground">
+                  Ajouter :
+                </span>
+                {Object.entries(KIND_LABELS).map(([kind, label]) => (
+                  <Button
+                    key={kind}
+                    size="sm"
+                    variant="outline"
+                    onClick={() =>
+                      update(() =>
+                        setQuestions([...questions, newDraft(kind as QuestionView["kind"])]),
+                      )
+                    }
+                  >
+                    {label}
+                  </Button>
+                ))}
+              </div>
+            </>
+          ) : (
+            <div className="flex flex-col gap-3">
+              <div className="flex items-center gap-2">
+                <p className="text-sm text-muted-foreground">
+                  {responsesError
+                    ? "Réponses indisponibles."
+                    : responses
+                      ? `${responses.responses.length} réponse(s)`
+                      : "Chargement…"}
+                </p>
+                {responsesError ? (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    loading={responsesBusy}
+                    onClick={() => void loadResponses()}
+                  >
+                    Réessayer
+                  </Button>
+                ) : null}
+                <a href={`/api/forms/export/${fileId}`} className="ml-auto">
+                  <Button size="sm" variant="outline">
+                    Exporter CSV
+                  </Button>
+                </a>
+              </div>
+              {responsesError ? (
+                <p
+                  role="alert"
+                  className="rounded-xl border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive"
+                >
+                  {responsesError}
+                </p>
+              ) : null}
+              {!responsesError && responses && responses.responses.length === 0 ? (
+                <p className="rounded-xl border border-border bg-card p-6 text-center text-sm text-muted-foreground">
+                  Aucune réponse pour le moment.
+                </p>
+              ) : null}
+              {!responsesError && responses && responses.responses.length > 0 ? (
+                <div className="overflow-x-auto rounded-xl border border-border">
+                  <table className="w-full text-left text-sm">
+                    <thead className="bg-muted/50 text-xs uppercase tracking-widest text-muted-foreground">
+                      <tr>
+                        <th className="px-3 py-2 font-medium">Date</th>
+                        {responses.questions.map((question) => (
+                          <th key={question.id} className="px-3 py-2 font-medium">
+                            {question.label}
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-border">
+                      {responses.responses.map((response) => (
+                        <tr key={response.id}>
+                          <td className="whitespace-nowrap px-3 py-2 text-muted-foreground">
+                            {new Date(response.submittedAt).toLocaleString("fr-FR")}
+                          </td>
+                          {responses.questions.map((question) => {
+                            const value = response.answers[question.id];
+                            return (
+                              <td key={question.id} className="px-3 py-2">
+                                {Array.isArray(value) ? value.join(", ") : (value ?? "—")}
+                              </td>
+                            );
+                          })}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : null}
+            </div>
+          )}
+        </>
+      ) : !error ? (
+        <p className="text-sm text-muted-foreground">Chargement…</p>
+      ) : null}
+    </div>
+  );
+}
