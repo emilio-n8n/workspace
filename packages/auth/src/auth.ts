@@ -1,4 +1,4 @@
-import { getServerEnv } from "@workspace/config";
+import { getAppUrls, getServerEnv } from "@workspace/config";
 import { getDb, schema } from "@workspace/database";
 import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
@@ -19,6 +19,9 @@ export function createAuth() {
   return betterAuth({
     baseURL: env.PUBLIC_URL,
     secret: env.SESSION_SECRET,
+    // Toutes les applications de la suite sont des origines de confiance :
+    // le gestionnaire better-auth est monté sur chacune (SSO multi-apps).
+    trustedOrigins: [env.PUBLIC_URL, ...Object.values(getAppUrls())],
     database: drizzleAdapter(getDb(), { provider: "pg", schema }),
     emailAndPassword: {
       enabled: true,

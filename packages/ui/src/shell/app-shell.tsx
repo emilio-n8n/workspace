@@ -1,8 +1,8 @@
-import { useState, type ReactNode } from "react";
+import { type ReactNode, useState } from "react";
 import { AppRail } from "./app-rail.tsx";
 import { CommandPalette, type PaletteAction } from "./command-palette.tsx";
-import { TopBar } from "./top-bar.tsx";
 import type { ResolvedSuiteApp, SuiteAppId } from "./suite-apps.ts";
+import { TopBar } from "./top-bar.tsx";
 
 export type AppShellProps = {
   activeAppId: SuiteAppId;
@@ -10,7 +10,9 @@ export type AppShellProps = {
   homeHref: string;
   tokensHref: string;
   user: { name: string; email: string };
-  orgName: string | null;
+  organizations: { id: string; name: string }[];
+  activeOrgId: string | null;
+  onSwitchOrg: (organizationId: string) => void;
   theme: "light" | "dark";
   onToggleTheme: () => void;
   onSignOut: () => void;
@@ -30,7 +32,9 @@ export function AppShell({
   homeHref,
   tokensHref,
   user,
-  orgName,
+  organizations,
+  activeOrgId,
+  onSwitchOrg,
   theme,
   onToggleTheme,
   onSignOut,
@@ -87,7 +91,9 @@ export function AppShell({
           homeHref={homeHref}
           tokensHref={tokensHref}
           user={user}
-          orgName={orgName}
+          organizations={organizations}
+          activeOrgId={activeOrgId}
+          onSwitchOrg={onSwitchOrg}
           theme={theme}
           onToggleTheme={onToggleTheme}
           onSignOut={onSignOut}
@@ -99,11 +105,7 @@ export function AppShell({
         <main className="min-w-0 flex-1 p-4 md:p-6">{children}</main>
       </div>
 
-      <CommandPalette
-        open={paletteOpen}
-        onOpenChange={setPaletteOpen}
-        actions={paletteActions}
-      />
+      <CommandPalette open={paletteOpen} onOpenChange={setPaletteOpen} actions={paletteActions} />
     </div>
   );
 }

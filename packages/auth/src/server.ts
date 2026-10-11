@@ -43,9 +43,7 @@ export async function requireActorContext(
  * organisation résolue (préférence ou première organisation).
  * Refus par défaut si aucune session.
  */
-export async function requireActor(
-  headers: Headers,
-): Promise<{ actor: Actor; userId: string }> {
+export async function requireActor(headers: Headers): Promise<{ actor: Actor; userId: string }> {
   const context = await requireActorContext(headers);
   return {
     actor: { userId: context.userId, orgId: context.orgId },

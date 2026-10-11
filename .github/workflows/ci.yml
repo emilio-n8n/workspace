@@ -63,11 +63,11 @@ jobs:
       - name: Tests unitaires & intégration
         run: pnpm test
 
-      - name: Build web
-        run: pnpm --filter @workspace/web build
+      - name: Build de toutes les applications
+        run: pnpm build
 
   e2e:
-    name: E2E navigateur (Playwright)
+    name: E2E navigateur (Playwright) — suite multi-applications
     runs-on: ubuntu-latest
     timeout-minutes: 30
     needs: checks
@@ -115,13 +115,13 @@ jobs:
       - name: Installer Chromium (Playwright)
         run: npx playwright install --with-deps chromium
 
-      - name: Tests E2E
-        run: pnpm --filter @workspace/web test:e2e
+      - name: Tests E2E (accueil, Drive, Docs, Tasks — SSO inclus)
+        run: pnpm test:e2e
 
       - name: Rapport d'échec
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: playwright-report
-          path: apps/web/test-results
+          path: test-results
           retention-days: 7

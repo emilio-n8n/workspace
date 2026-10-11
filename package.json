@@ -12,13 +12,17 @@
     "lint": "biome lint .",
     "typecheck": "turbo run typecheck",
     "test": "turbo run test",
+    "test:e2e": "playwright test",
     "check": "biome check .",
     "format": "biome format --write .",
-    "generate-routes": "pnpm --filter @workspace/web generate-routes"
+    "generate-routes": "turbo run generate-routes"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.15",
     "@playwright/test": "^1.64.0",
+    "@workspace/config": "workspace:*",
+    "@workspace/database": "workspace:*",
+    "drizzle-orm": "^0.45.4",
     "turbo": "^2.11.7",
     "typescript": "^6.0.3"
   }

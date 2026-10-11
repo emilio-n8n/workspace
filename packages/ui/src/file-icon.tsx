@@ -95,9 +95,12 @@ export function fileVisual(input: {
     return { Icon: IconImage, tone: "file-image" };
   }
   if (
-    ["application/zip", "application/x-tar", "application/gzip", "application/x-7z-compressed"].includes(
-      mime,
-    ) ||
+    [
+      "application/zip",
+      "application/x-tar",
+      "application/gzip",
+      "application/x-7z-compressed",
+    ].includes(mime) ||
     ["zip", "tar", "gz", "7z", "rar"].includes(extension)
   ) {
     return { Icon: IconArchive, tone: "file-archive" };
@@ -108,7 +111,10 @@ export function fileVisual(input: {
   if (mime.startsWith("video/") || ["mp4", "webm", "mov", "mkv"].includes(extension)) {
     return { Icon: IconVideo, tone: "file-video" };
   }
-  if (mime.startsWith("text/") || ["txt", "log", "json", "xml", "yaml", "yml"].includes(extension)) {
+  if (
+    mime.startsWith("text/") ||
+    ["txt", "log", "json", "xml", "yaml", "yml"].includes(extension)
+  ) {
     return { Icon: IconFileText, tone: "file-text" };
   }
   return { Icon: IconFileText, tone: "file-generic" };

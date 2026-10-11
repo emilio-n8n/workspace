@@ -1,7 +1,6 @@
 import { cn } from "../cn.ts";
-import type { SuiteAppId } from "./suite-apps.ts";
-import type { ResolvedSuiteApp } from "./suite-apps.ts";
 import { BrandMark } from "./brand-mark.tsx";
+import type { ResolvedSuiteApp, SuiteAppId } from "./suite-apps.ts";
 
 export type AppRailProps = {
   apps: ResolvedSuiteApp[];

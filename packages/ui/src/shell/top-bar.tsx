@@ -1,9 +1,10 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { cn } from "../cn.ts";
 import { Badge } from "../components/badge.tsx";
 import { Button } from "../components/button.tsx";
 import {
   IconApps,
+  IconCheckSquare,
   IconChevronDown,
   IconKey,
   IconLogout,
@@ -20,7 +21,9 @@ export type TopBarProps = {
   homeHref: string;
   tokensHref: string;
   user: { name: string; email: string };
-  orgName: string | null;
+  organizations: { id: string; name: string }[];
+  activeOrgId: string | null;
+  onSwitchOrg: (organizationId: string) => void;
   theme: "light" | "dark";
   onToggleTheme: () => void;
   onSignOut: () => void;
@@ -35,7 +38,9 @@ export function TopBar({
   homeHref,
   tokensHref,
   user,
-  orgName,
+  organizations,
+  activeOrgId,
+  onSwitchOrg,
   theme,
   onToggleTheme,
   onSignOut,
@@ -44,6 +49,19 @@ export function TopBar({
 }: TopBarProps) {
   const [launcherOpen, setLauncherOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
+
+  // Échap ferme les menus (comportement attendu, cohérent avec <dialog>).
+  useEffect(() => {
+    if (!launcherOpen && !menuOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setLauncherOpen(false);
+        setMenuOpen(false);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [launcherOpen, menuOpen]);
 
   return (
     <header className="relative flex h-14 items-center gap-2 border-b border-border bg-surface px-3 md:px-4">
@@ -168,17 +186,38 @@ export function TopBar({
               />
               <div
                 role="menu"
-                className="absolute right-0 z-40 mt-1 w-64 rounded-xl border border-border bg-popover p-1 shadow-lift"
+                className="absolute right-0 z-40 mt-1 w-72 rounded-xl border border-border bg-popover p-1 shadow-lift"
               >
                 <div className="border-b border-border px-3 py-2">
                   <p className="truncate text-sm font-medium">{user.name}</p>
                   <p className="truncate text-xs text-muted-foreground">{user.email}</p>
-                  {orgName ? (
-                    <p className="mt-1 truncate text-xs text-muted-foreground">
-                      Organisation : {orgName}
-                    </p>
-                  ) : null}
                 </div>
+
+                {organizations.length > 0 ? (
+                  <div className="border-b border-border py-1">
+                    <p className="px-3 pb-1 pt-1 text-[10px] font-medium uppercase tracking-widest text-muted-foreground">
+                      Organisation
+                    </p>
+                    {organizations.map((org) => (
+                      <button
+                        key={org.id}
+                        type="button"
+                        role="menuitem"
+                        onClick={() => {
+                          setMenuOpen(false);
+                          if (org.id !== activeOrgId) onSwitchOrg(org.id);
+                        }}
+                        className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-muted"
+                      >
+                        <span className="min-w-0 flex-1 truncate">{org.name}</span>
+                        {org.id === activeOrgId ? (
+                          <IconCheckSquare className="size-3.5 text-primary" />
+                        ) : null}
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+
                 <a
                   href={homeHref}
                   role="menuitem"

@@ -180,9 +180,7 @@ export const SUITE_APPS: SuiteAppDefinition[] = [
 export type ResolvedSuiteApp = SuiteAppDefinition & { href?: string };
 
 /** Associe les URLs configurées aux définitions du registre. */
-export function resolveSuiteApps(
-  urls: Partial<Record<SuiteAppId, string>>,
-): ResolvedSuiteApp[] {
+export function resolveSuiteApps(urls: Partial<Record<SuiteAppId, string>>): ResolvedSuiteApp[] {
   return SUITE_APPS.map((app) => ({ ...app, href: urls[app.id] }));
 }
 

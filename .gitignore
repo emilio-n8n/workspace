@@ -19,7 +19,7 @@ TODO.html
 # Tests (artefacts régénérables)
 test-results/
 playwright-report/
-apps/web/e2e/screenshots/
+e2e/screenshots/
 
 # Données locales (stockage dev)
 data/

@@ -4,7 +4,9 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./ui": "./src/ui.tsx",
+    "./server": "./src/server.ts"
   },
   "main": "./src/index.ts",
   "types": "./src/index.ts",
@@ -18,12 +20,23 @@
     "@workspace/database": "workspace:*",
     "@workspace/drive": "workspace:*",
     "@workspace/permissions": "workspace:*",
-    "drizzle-orm": "^0.45.4"
+    "drizzle-orm": "^0.45.4",
+    "@tanstack/react-router": "^1.170.42",
+    "@tiptap/pm": "^3.0.0",
+    "@tiptap/react": "^3.0.0",
+    "@tiptap/starter-kit": "^3.0.0",
+    "@workspace/ui": "workspace:*",
+    "react": "^19.2.0",
+    "@tanstack/react-start": "1.168.61",
+    "zod": "^4.1.12",
+    "@workspace/auth": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^22.20.5",
     "@workspace/config": "workspace:*",
     "drizzle-kit": "^0.31.11",
-    "vitest": "^3.2.4"
+    "vitest": "^3.2.4",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0"
   }
 }
