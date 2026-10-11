@@ -4,9 +4,12 @@
   "private": true,
   "type": "module",
   "exports": {
-    "./tokens.css": "./tokens.css"
+    "./tokens.css": "./tokens.css",
+    "./fonts.css": "./fonts.css"
   },
   "files": [
-    "tokens.css"
+    "tokens.css",
+    "fonts.css",
+    "fonts"
   ]
 }

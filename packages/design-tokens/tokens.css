@@ -1,112 +1,63 @@
 /*
- * Workspace — design tokens
+ * Workspace — design tokens v2 « Papier & encre »
  *
- * Source unique des valeurs visuelles de la suite. Aucun composant ne code une
- * couleur, un rayon ou une ombre en dur : tout passe par ces tokens sémantiques.
+ * Direction : surfaces papier chaudes, encre, un accent evergreen profond,
+ * ambre pour l'attention. L'identité de chaque application passe par les
+ * tons `--app-*`, réservés aux petites marques (icônes, pastilles) — jamais
+ * pour colorer des surfaces entières.
  *
- * Thème clair par défaut ; thème sombre via la classe `.dark` (cf. styles.css
- * de chaque application, qui définit la variante Tailwind `dark`).
- *
- * Direction : « instrument de précision » — neutres calmes, un seul accent
- * (pétrole), aucun dégradé décoratif.
+ * Règles : aucun composant ne code une couleur en dur ; thème clair par défaut ;
+ * thème sombre via la classe `.dark` (parité complète vérifiée) ; polices
+ * auto-hébergées (fonts.css).
  */
 
-:root {
-  color-scheme: light;
-
-  --background: oklch(0.985 0.002 250);
-  --foreground: oklch(0.2 0.012 250);
-
-  --card: oklch(1 0 0);
-  --card-foreground: var(--foreground);
-
-  --muted: oklch(0.955 0.004 250);
-  --muted-foreground: oklch(0.5 0.015 250);
-
-  --border: oklch(0.905 0.006 250);
-  --input: var(--border);
-  --ring: oklch(0.55 0.1 205);
-
-  --primary: oklch(0.5 0.095 205);
-  --primary-foreground: oklch(0.99 0.005 205);
-
-  --accent: oklch(0.945 0.02 205);
-  --accent-foreground: oklch(0.31 0.05 205);
-
-  --destructive: oklch(0.55 0.19 25);
-  --destructive-foreground: oklch(0.99 0 0);
-
-  /* Couleurs des types de fichiers (contenu, pas de l'interface). */
-  --file-folder: oklch(0.62 0.13 250);
-  --file-doc: oklch(0.55 0.17 255);
-  --file-sheet: oklch(0.58 0.15 150);
-  --file-slide: oklch(0.62 0.16 55);
-  --file-pdf: oklch(0.55 0.19 25);
-  --file-image: oklch(0.55 0.16 330);
-  --file-archive: oklch(0.55 0.03 250);
-  --file-audio: oklch(0.58 0.15 300);
-  --file-video: oklch(0.58 0.16 15);
-  --file-text: oklch(0.5 0.02 250);
-  --file-generic: oklch(0.55 0.03 250);
-
-  --radius: 0.5rem;
-}
-
-.dark {
-  color-scheme: dark;
-
-  --background: oklch(0.16 0.008 250);
-  --foreground: oklch(0.93 0.005 250);
-
-  --card: oklch(0.19 0.009 250);
-  --card-foreground: var(--foreground);
-
-  --muted: oklch(0.22 0.01 250);
-  --muted-foreground: oklch(0.68 0.01 250);
-
-  --border: oklch(0.27 0.012 250);
-  --input: var(--border);
-  --ring: oklch(0.65 0.1 205);
-
-  --primary: oklch(0.72 0.1 205);
-  --primary-foreground: oklch(0.16 0.03 205);
-
-  --accent: oklch(0.26 0.03 205);
-  --accent-foreground: oklch(0.9 0.05 205);
-
-  --destructive: oklch(0.62 0.18 25);
-  --destructive-foreground: oklch(0.16 0.02 25);
-
-  /* Couleurs des types de fichiers — variantes sombres plus lumineuses. */
-  --file-folder: oklch(0.75 0.12 250);
-  --file-doc: oklch(0.72 0.15 255);
-  --file-sheet: oklch(0.74 0.14 150);
-  --file-slide: oklch(0.76 0.15 55);
-  --file-pdf: oklch(0.72 0.17 25);
-  --file-image: oklch(0.72 0.14 330);
-  --file-archive: oklch(0.7 0.03 250);
-  --file-audio: oklch(0.73 0.13 300);
-  --file-video: oklch(0.73 0.15 15);
-  --file-text: oklch(0.72 0.02 250);
-  --file-generic: oklch(0.7 0.03 250);
-}
-
 @theme inline {
+  --font-sans: "Public Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Bricolage Grotesque", "Public Sans", ui-sans-serif, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+
   --color-background: var(--background);
   --color-foreground: var(--foreground);
+  --color-surface: var(--surface);
   --color-card: var(--card);
   --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
   --color-muted: var(--muted);
   --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-attention: var(--attention);
+  --color-attention-foreground: var(--attention-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
-  --color-primary: var(--primary);
-  --color-primary-foreground: var(--primary-foreground);
-  --color-accent: var(--accent);
-  --color-accent-foreground: var(--accent-foreground);
-  --color-destructive: var(--destructive);
-  --color-destructive-foreground: var(--destructive-foreground);
+  --color-ring-offset-background: var(--background);
+
+  --color-rail: var(--rail);
+  --color-rail-foreground: var(--rail-foreground);
+  --color-rail-active: var(--rail-active);
+  --color-rail-active-foreground: var(--rail-active-foreground);
+
+  --color-app-drive: var(--app-drive);
+  --color-app-docs: var(--app-docs);
+  --color-app-sheets: var(--app-sheets);
+  --color-app-slides: var(--app-slides);
+  --color-app-calendar: var(--app-calendar);
+  --color-app-mail: var(--app-mail);
+  --color-app-chat: var(--app-chat);
+  --color-app-meet: var(--app-meet);
+  --color-app-tasks: var(--app-tasks);
+  --color-app-forms: var(--app-forms);
+  --color-app-sites: var(--app-sites);
+  --color-app-classroom: var(--app-classroom);
+  --color-app-admin: var(--app-admin);
 
   --color-file-folder: var(--file-folder);
   --color-file-doc: var(--file-doc);
@@ -120,9 +71,182 @@
   --color-file-text: var(--file-text);
   --color-file-generic: var(--file-generic);
 
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+
   --radius-xs: calc(var(--radius) - 4px);
   --radius-sm: calc(var(--radius) - 2px);
   --radius-md: var(--radius);
   --radius-lg: calc(var(--radius) + 2px);
   --radius-xl: calc(var(--radius) + 6px);
+
+  --shadow-soft: var(--shadow-soft-value);
+  --shadow-lift: var(--shadow-lift-value);
+}
+
+:root {
+  color-scheme: light;
+
+  --radius: 0.625rem;
+  --shadow-soft-value: 0 1px 2px oklch(0.25 0.02 80 / 6%), 0 4px 16px -6px oklch(0.25 0.02 80 / 10%);
+  --shadow-lift-value: 0 2px 4px oklch(0.25 0.02 80 / 6%), 0 16px 40px -12px oklch(0.25 0.02 80 / 22%);
+
+  --background: oklch(0.975 0.006 85);
+  --surface: oklch(0.993 0.003 85);
+  --foreground: oklch(0.22 0.015 70);
+
+  --card: oklch(0.993 0.003 85);
+  --card-foreground: var(--foreground);
+  --popover: oklch(0.993 0.003 85);
+  --popover-foreground: var(--foreground);
+
+  --primary: oklch(0.42 0.075 168);
+  --primary-foreground: oklch(0.98 0.01 160);
+  --secondary: oklch(0.94 0.012 85);
+  --secondary-foreground: oklch(0.26 0.015 70);
+  --muted: oklch(0.945 0.008 85);
+  --muted-foreground: oklch(0.5 0.015 70);
+  --accent: oklch(0.93 0.03 165);
+  --accent-foreground: oklch(0.3 0.06 168);
+  --attention: oklch(0.8 0.13 75);
+  --attention-foreground: oklch(0.28 0.05 60);
+  --destructive: oklch(0.55 0.19 28);
+  --destructive-foreground: oklch(0.98 0.01 28);
+  --border: oklch(0.9 0.01 85);
+  --input: oklch(0.88 0.012 85);
+  --ring: oklch(0.55 0.08 168);
+
+  --rail: oklch(0.21 0.02 160);
+  --rail-foreground: oklch(0.9 0.015 150);
+  --rail-active: oklch(0.28 0.025 160);
+  --rail-active-foreground: oklch(0.97 0.01 150);
+
+  --app-drive: oklch(0.6 0.12 160);
+  --app-docs: oklch(0.55 0.13 250);
+  --app-sheets: oklch(0.58 0.13 145);
+  --app-slides: oklch(0.7 0.14 65);
+  --app-calendar: oklch(0.58 0.15 25);
+  --app-mail: oklch(0.55 0.1 220);
+  --app-chat: oklch(0.6 0.11 190);
+  --app-meet: oklch(0.55 0.12 300);
+  --app-tasks: oklch(0.62 0.12 110);
+  --app-forms: oklch(0.55 0.14 340);
+  --app-sites: oklch(0.55 0.1 200);
+  --app-classroom: oklch(0.65 0.13 85);
+  --app-admin: oklch(0.45 0.02 70);
+
+  /* Couleurs des types de fichiers (contenu, pas de l'interface). */
+  --file-folder: oklch(0.6 0.1 165);
+  --file-doc: oklch(0.55 0.13 250);
+  --file-sheet: oklch(0.58 0.13 145);
+  --file-slide: oklch(0.7 0.14 65);
+  --file-pdf: oklch(0.55 0.19 28);
+  --file-image: oklch(0.58 0.14 330);
+  --file-archive: oklch(0.55 0.03 75);
+  --file-audio: oklch(0.58 0.13 300);
+  --file-video: oklch(0.58 0.15 20);
+  --file-text: oklch(0.5 0.02 70);
+  --file-generic: oklch(0.55 0.025 75);
+
+  --chart-1: oklch(0.6 0.12 160);
+  --chart-2: oklch(0.7 0.14 65);
+  --chart-3: oklch(0.55 0.13 250);
+  --chart-4: oklch(0.58 0.15 25);
+  --chart-5: oklch(0.55 0.12 300);
+}
+
+.dark {
+  color-scheme: dark;
+
+  --shadow-soft-value: 0 1px 2px oklch(0 0 0 / 30%), 0 4px 16px -6px oklch(0 0 0 / 40%);
+  --shadow-lift-value: 0 2px 4px oklch(0 0 0 / 35%), 0 16px 40px -12px oklch(0 0 0 / 55%);
+
+  --background: oklch(0.18 0.012 75);
+  --surface: oklch(0.205 0.013 75);
+  --foreground: oklch(0.93 0.008 80);
+
+  --card: oklch(0.205 0.013 75);
+  --card-foreground: var(--foreground);
+  --popover: oklch(0.215 0.014 75);
+  --popover-foreground: var(--foreground);
+
+  --primary: oklch(0.72 0.1 168);
+  --primary-foreground: oklch(0.18 0.035 168);
+  --secondary: oklch(0.26 0.014 75);
+  --secondary-foreground: oklch(0.9 0.008 80);
+  --muted: oklch(0.24 0.013 75);
+  --muted-foreground: oklch(0.67 0.012 75);
+  --accent: oklch(0.27 0.035 168);
+  --accent-foreground: oklch(0.9 0.05 168);
+  --attention: oklch(0.78 0.13 75);
+  --attention-foreground: oklch(0.2 0.04 60);
+  --destructive: oklch(0.64 0.18 28);
+  --destructive-foreground: oklch(0.17 0.02 28);
+  --border: oklch(0.29 0.013 75);
+  --input: oklch(0.31 0.013 75);
+  --ring: oklch(0.62 0.09 168);
+
+  --rail: oklch(0.15 0.015 160);
+  --rail-foreground: oklch(0.88 0.012 150);
+  --rail-active: oklch(0.24 0.025 160);
+  --rail-active-foreground: oklch(0.97 0.01 150);
+
+  --app-drive: oklch(0.75 0.1 165);
+  --app-docs: oklch(0.72 0.12 250);
+  --app-sheets: oklch(0.74 0.12 145);
+  --app-slides: oklch(0.8 0.13 65);
+  --app-calendar: oklch(0.73 0.14 25);
+  --app-mail: oklch(0.72 0.09 220);
+  --app-chat: oklch(0.75 0.1 190);
+  --app-meet: oklch(0.72 0.11 300);
+  --app-tasks: oklch(0.78 0.11 110);
+  --app-forms: oklch(0.72 0.13 340);
+  --app-sites: oklch(0.72 0.09 200);
+  --app-classroom: oklch(0.8 0.12 85);
+  --app-admin: oklch(0.7 0.02 70);
+
+  --file-folder: oklch(0.74 0.09 165);
+  --file-doc: oklch(0.72 0.12 250);
+  --file-sheet: oklch(0.74 0.12 145);
+  --file-slide: oklch(0.8 0.13 65);
+  --file-pdf: oklch(0.72 0.17 28);
+  --file-image: oklch(0.74 0.13 330);
+  --file-archive: oklch(0.7 0.03 75);
+  --file-audio: oklch(0.74 0.12 300);
+  --file-video: oklch(0.74 0.14 20);
+  --file-text: oklch(0.72 0.02 75);
+  --file-generic: oklch(0.7 0.025 75);
+
+  --chart-1: oklch(0.75 0.1 160);
+  --chart-2: oklch(0.8 0.13 65);
+  --chart-3: oklch(0.72 0.12 250);
+  --chart-4: oklch(0.73 0.14 25);
+  --chart-5: oklch(0.72 0.11 300);
+}
+
+@layer base {
+  html {
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  body {
+    background-color: var(--background);
+    color: var(--foreground);
+  }
+
+  h1,
+  h2,
+  h3 {
+    font-family: var(--font-display);
+    letter-spacing: -0.02em;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
 }
