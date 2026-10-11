@@ -32,7 +32,8 @@
     "zod": "^4.1.12",
     "@workspace/forms": "workspace:*",
     "@workspace/sheets": "workspace:*",
-    "@workspace/slides": "workspace:*"
+    "@workspace/slides": "workspace:*",
+    "nitro": "3.0.260903-beta"
   },
   "devDependencies": {
     "@tanstack/devtools-vite": "0.8.5",

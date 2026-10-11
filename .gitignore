@@ -5,6 +5,9 @@ node_modules/
 # Build
 dist/
 .output/
+.vercel/
+.netlify/
+.wrangler/
 .turbo/
 *.tsbuildinfo
 
