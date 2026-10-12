@@ -25,5 +25,5 @@
   "globalPassThroughEnv": [
     "DEMO_SEED_ALLOW_REMOTE"
   ],
-  "concurrency": 20
+  "concurrency": "20"
 }
