@@ -13,9 +13,11 @@ import {
   getDocumentByFileId,
   listDocuments,
   listDocumentVersions,
+  pruneDocumentVersions,
   renameDocument,
   saveDocument,
 } from "../src/index.ts";
+import { docsVersions } from "../src/schema.ts";
 
 const { user, organization } = coreSchema;
 
@@ -87,6 +89,11 @@ const contentV2 = {
       content: [{ type: "text", text: "Deuxième version", marks: [{ type: "bold" }] }],
     },
   ],
+};
+
+const contentV3 = {
+  type: "doc",
+  content: [{ type: "paragraph", content: [{ type: "text", text: "Troisième version" }] }],
 };
 
 let f: Fixtures;
@@ -328,7 +335,8 @@ describe("docs — permissions et isolation", () => {
     ).rejects.toMatchObject({ code: "forbidden" });
 
     // Promotion editor.
-    await revokeGrant({ type: "file", id: entry.id, orgId: f.orgId }, grant!.id);
+    if (!grant) throw new Error("grant viewer attendu");
+    await revokeGrant({ type: "file", id: entry.id, orgId: f.orgId }, grant.id);
     await createGrant({
       resource: { type: "file", id: entry.id, orgId: f.orgId },
       subject: { kind: "user", id: f.bruno },
@@ -375,5 +383,63 @@ describe("docs — export", () => {
     expect(html.name).toBe("Rapport trimestriel.html");
     expect(html.body).toContain("<strong>Deuxième version</strong>");
     expect(html.body).toContain("<!doctype html>");
+  });
+});
+
+describe("docs — rétention des versions", () => {
+  it("pruneDocumentVersions : supprime les versions expirées et garde la courante", async () => {
+    const db = getDb();
+    const { entry } = await createDocument(f.actorAlice, { title: "Historique" });
+    await saveDocument(f.actorAlice, entry.id, { content: contentV2, mode: "append" });
+
+    // Laisse le prune d'arrière-plan déclenché par saveDocument se terminer :
+    // la suppression attendue doit venir de l'appel explicite ci-dessous.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    const versionsBefore = await listDocumentVersions(f.actorAlice, entry.id);
+    const old = versionsBefore.find((version) => version.version === 1);
+    if (!old) throw new Error("version 1 attendue");
+    await db
+      .update(docsVersions)
+      .set({ createdAt: new Date(Date.now() - 200 * 24 * 60 * 60 * 1000) })
+      .where(eq(docsVersions.id, old.id));
+
+    expect(await pruneDocumentVersions(f.actorAlice, entry.id)).toEqual({ removed: 1 });
+
+    const versions = await listDocumentVersions(f.actorAlice, entry.id);
+    expect(versions.map((version) => version.version)).toEqual([2]);
+    const reread = await getDocumentByFileId(f.actorAlice, entry.id);
+    expect(reread.content).toEqual(contentV2);
+    expect(reread.document.currentVersion).toBe(2);
+
+    // La version courante n'est jamais purgée : second appel sans effet.
+    expect(await pruneDocumentVersions(f.actorAlice, entry.id)).toEqual({ removed: 0 });
+  });
+
+  it("append après purge : la nouvelle version est conservée", async () => {
+    const db = getDb();
+    const { entry } = await createDocument(f.actorAlice, { title: "Historique" });
+    await saveDocument(f.actorAlice, entry.id, { content: contentV2, mode: "append" });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    const old = (await listDocumentVersions(f.actorAlice, entry.id)).find(
+      (version) => version.version === 1,
+    );
+    if (!old) throw new Error("version 1 attendue");
+    await db
+      .update(docsVersions)
+      .set({ createdAt: new Date(Date.now() - 200 * 24 * 60 * 60 * 1000) })
+      .where(eq(docsVersions.id, old.id));
+    await pruneDocumentVersions(f.actorAlice, entry.id);
+
+    const appended = await saveDocument(f.actorAlice, entry.id, {
+      content: contentV3,
+      mode: "append",
+    });
+    expect(appended.version).toBe(3);
+    expect((await getDocumentByFileId(f.actorAlice, entry.id)).content).toEqual(contentV3);
+    expect((await listDocumentVersions(f.actorAlice, entry.id)).map((v) => v.version)).toEqual([
+      3, 2,
+    ]);
   });
 });

@@ -11,6 +11,7 @@ import {
   deleteTask,
   listListGrants,
   listLists,
+  listMyTasks,
   listTasks,
   renameList,
   shareList,
@@ -18,6 +19,8 @@ import {
   unshareList,
   updateTask,
 } from "./index.ts";
+
+export type { MyTasksWindow } from "./index.ts";
 
 export type TaskListView = { id: string; name: string; role: string; isOwner: boolean };
 export type TaskView = {
@@ -34,6 +37,7 @@ export type TaskView = {
 };
 export type MemberView = { userId: string; name: string; email: string };
 export type ListGrantView = { id: string; subjectLabel: string; role: string };
+export type MyTaskView = TaskView & { listName: string };
 
 function toTaskView(task: Task): TaskView {
   return {
@@ -106,6 +110,20 @@ export const listTasksFn = createServerFn({ method: "GET" })
     const { actor } = await requireActor(getRequest().headers);
     const rows = await listTasks(actor, { listId: data.listId });
     return rows.map(toTaskView);
+  });
+
+const myTasksInput = z.object({
+  window: z.enum(["today", "week", "all"]).optional(),
+  limit: z.number().int().min(1).max(500).optional(),
+});
+
+/** Agrégat « Mes tâches » : tout ce qui est assigné (ou à prendre) toutes listes confondues. */
+export const listMyTasksFn = createServerFn({ method: "GET" })
+  .validator((input: unknown) => myTasksInput.parse(input ?? {}))
+  .handler(async ({ data }): Promise<MyTaskView[]> => {
+    const { actor } = await requireActor(getRequest().headers);
+    const rows = await listMyTasks(actor, { window: data.window, limit: data.limit });
+    return rows.map((row) => ({ ...toTaskView(row.task), listName: row.listName }));
   });
 
 export const createTaskFn = createServerFn({ method: "POST" })

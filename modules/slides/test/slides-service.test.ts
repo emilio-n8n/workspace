@@ -2,18 +2,22 @@ import { randomUUID } from "node:crypto";
 import { closeDb, schema as coreSchema, getDb } from "@workspace/database";
 import { DriveError, shareEntry } from "@workspace/drive";
 import type { Actor } from "@workspace/permissions";
+import { getStorage } from "@workspace/storage";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   createPresentation,
   type ElementInput,
   getPresentation,
+  getSlideImage,
   listPresentations,
+  MAX_SLIDE_IMAGE_BYTES,
   renamePresentation,
   SLIDES_MIME,
   type SlideInput,
   SlidesError,
   savePresentation,
+  uploadSlideImage,
 } from "../src/index.ts";
 
 const { user, organization } = coreSchema;
@@ -440,5 +444,149 @@ describe("slides — validation", () => {
     for (const attempt of attempts) {
       await expectSlidesError(attempt(), "validation");
     }
+  });
+});
+
+describe("slides — images", () => {
+  it("conserve le mediaKey d'une image et nettoie son objet quand elle est retirée", async () => {
+    const { entry, presentation } = await createPresentation(f.actorAlice, { title: "Illustrée" });
+    const mediaKey = `slides/${presentation.id}/${randomUUID()}.png`;
+    const body = Buffer.from("png-bytes");
+    await getStorage().put({ key: mediaKey, body, contentType: "image/png" });
+
+    const first = await savePresentation(f.actorAlice, entry.id, {
+      revision: 1,
+      slides: [{ title: "Photo", elements: [element({ kind: "image", text: "", mediaKey })] }],
+    });
+    const savedElement = first.slides[0]?.elements[0];
+    expect(savedElement?.kind).toBe("image");
+    expect(savedElement?.text).toBe("");
+    expect(savedElement?.mediaKey).toBe(mediaKey);
+
+    const reloaded = await getPresentation(f.actorAlice, entry.id);
+    expect(reloaded.slides[0]?.elements[0]?.mediaKey).toBe(mediaKey);
+
+    // Retrait de l'image : son objet est supprimé du stockage après commit.
+    const second = await savePresentation(f.actorAlice, entry.id, {
+      revision: reloaded.revision,
+      slides: [
+        {
+          id: reloaded.slides[0]?.id,
+          title: "Photo",
+          notes: null,
+          elements: [element({ text: "Sans image" })],
+        },
+      ],
+    });
+    expect(second.slides[0]?.elements[0]?.kind).toBe("text");
+    expect(second.slides[0]?.elements[0]?.mediaKey).toBeNull();
+    expect(await getStorage().get(mediaKey)).toBeNull();
+  });
+
+  it("rejette les clés média sur les types non image et les images sans clé valide", async () => {
+    const { entry } = await createPresentation(f.actorAlice, { title: "Validation média" });
+
+    // Un texte ou une forme ne porte jamais de clé média.
+    await expectSlidesError(
+      savePresentation(f.actorAlice, entry.id, {
+        revision: 1,
+        slides: [{ elements: [element({ mediaKey: "slides/x/y.png" })] }],
+      }),
+      "validation",
+    );
+
+    // Une image exige une clé sous le préfixe `slides/`…
+    for (const mediaKey of [null, "", "orgs/x/y.png", 42]) {
+      await expectSlidesError(
+        savePresentation(f.actorAlice, entry.id, {
+          revision: 1,
+          slides: [{ elements: [element({ kind: "image", text: "", mediaKey })] }],
+        }),
+        "validation",
+      );
+    }
+
+    // …et ne peut pas porter de texte.
+    await expectSlidesError(
+      savePresentation(f.actorAlice, entry.id, {
+        revision: 1,
+        slides: [
+          { elements: [element({ kind: "image", text: "Légende", mediaKey: "slides/x/y.png" })] },
+        ],
+      }),
+      "validation",
+    );
+
+    expect((await getPresentation(f.actorAlice, entry.id)).revision).toBe(1);
+  });
+
+  it("téléverse une image et la relit avec son type MIME", async () => {
+    const { entry, presentation } = await createPresentation(f.actorAlice, { title: "Upload" });
+    const body = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+    const { mediaKey } = await uploadSlideImage(f.actorAlice, entry.id, {
+      contentType: "image/png",
+      body,
+    });
+    expect(mediaKey.startsWith(`slides/${presentation.id}/`)).toBe(true);
+    expect(mediaKey.endsWith(".png")).toBe(true);
+    expect((await getStorage().get(mediaKey))?.equals(body)).toBe(true);
+
+    const image = await getSlideImage(f.actorAlice, entry.id, mediaKey);
+    expect(image.contentType).toBe("image/png");
+    expect(image.body.equals(body)).toBe(true);
+
+    // Type non image, corps vide et dépassement de la limite : refusés.
+    await expectSlidesError(
+      uploadSlideImage(f.actorAlice, entry.id, { contentType: "application/pdf", body }),
+      "validation",
+    );
+    await expectSlidesError(
+      uploadSlideImage(f.actorAlice, entry.id, { contentType: "image/png", body: Buffer.alloc(0) }),
+      "validation",
+    );
+    await expectSlidesError(
+      uploadSlideImage(f.actorAlice, entry.id, {
+        contentType: "image/png",
+        body: Buffer.alloc(MAX_SLIDE_IMAGE_BYTES + 1),
+      }),
+      "validation",
+    );
+
+    // Un lecteur (droit write absent) ne peut pas téléverser.
+    await shareEntry(f.actorAlice, entry.id, {
+      subject: { kind: "user", id: f.actorBruno.userId },
+      role: "viewer",
+    });
+    await expectSlidesError(
+      uploadSlideImage(f.actorBruno, entry.id, { contentType: "image/jpeg", body }),
+      "forbidden",
+    );
+  });
+
+  it("interdit la lecture d'une image d'une autre présentation (anti-IDOR)", async () => {
+    const a = await createPresentation(f.actorAlice, { title: "A" });
+    const b = await createPresentation(f.actorAlice, { title: "B" });
+    const { mediaKey } = await uploadSlideImage(f.actorAlice, a.entry.id, {
+      contentType: "image/webp",
+      body: Buffer.from("webp-bytes"),
+    });
+
+    // Clé d'une autre présentation, préfixe étranger : validation.
+    await expectSlidesError(getSlideImage(f.actorAlice, b.entry.id, mediaKey), "validation");
+    await expectSlidesError(
+      getSlideImage(f.actorAlice, a.entry.id, `slides/${b.presentation.id}/x.webp`),
+      "validation",
+    );
+    await expectSlidesError(
+      getSlideImage(f.actorAlice, a.entry.id, `orgs/${f.orgId}/x.webp`),
+      "validation",
+    );
+
+    // Clé bien préfixée mais objet absent : introuvable.
+    await expectSlidesError(
+      getSlideImage(f.actorAlice, b.entry.id, `slides/${b.presentation.id}/absent.webp`),
+      "not_found",
+    );
   });
 });

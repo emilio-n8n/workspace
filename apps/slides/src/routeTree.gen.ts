@@ -14,6 +14,8 @@ import { Route as AppIndexRouteImport } from './routes/_app/index'
 import { Route as ApiHealthRouteImport } from './routes/api/health'
 import { Route as AppSlideFileIdRouteImport } from './routes/_app/slide.$fileId'
 import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
+import { Route as ApiSlidesMediaRouteImport } from './routes/api/slides/media'
+import { Route as ApiSlidesUploadRouteImport } from './routes/api/slides/upload'
 
 const AppRoute = AppRouteImport.update({
   id: '/_app',
@@ -39,18 +41,32 @@ const ApiAuthSplatRoute = ApiAuthSplatRouteImport.update({
   path: '/api/auth/$',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiSlidesMediaRoute = ApiSlidesMediaRouteImport.update({
+  id: '/api/slides/media',
+  path: '/api/slides/media',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiSlidesUploadRoute = ApiSlidesUploadRouteImport.update({
+  id: '/api/slides/upload',
+  path: '/api/slides/upload',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof AppIndexRoute
   '/api/health': typeof ApiHealthRoute
   '/slide/$fileId': typeof AppSlideFileIdRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
+  '/api/slides/media': typeof ApiSlidesMediaRoute
+  '/api/slides/upload': typeof ApiSlidesUploadRoute
 }
 export interface FileRoutesByTo {
   '/api/health': typeof ApiHealthRoute
   '/': typeof AppIndexRoute
   '/slide/$fileId': typeof AppSlideFileIdRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
+  '/api/slides/media': typeof ApiSlidesMediaRoute
+  '/api/slides/upload': typeof ApiSlidesUploadRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -59,12 +75,26 @@ export interface FileRoutesById {
   '/_app/': typeof AppIndexRoute
   '/_app/slide/$fileId': typeof AppSlideFileIdRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
+  '/api/slides/media': typeof ApiSlidesMediaRoute
+  '/api/slides/upload': typeof ApiSlidesUploadRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/api/health' | '/slide/$fileId' | '/api/auth/$'
+  fullPaths:
+    | '/'
+    | '/api/health'
+    | '/slide/$fileId'
+    | '/api/auth/$'
+    | '/api/slides/media'
+    | '/api/slides/upload'
   fileRoutesByTo: FileRoutesByTo
-  to: '/api/health' | '/' | '/slide/$fileId' | '/api/auth/$'
+  to:
+    | '/api/health'
+    | '/'
+    | '/slide/$fileId'
+    | '/api/auth/$'
+    | '/api/slides/media'
+    | '/api/slides/upload'
   id:
     | '__root__'
     | '/_app'
@@ -72,12 +102,16 @@ export interface FileRouteTypes {
     | '/_app/'
     | '/_app/slide/$fileId'
     | '/api/auth/$'
+    | '/api/slides/media'
+    | '/api/slides/upload'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   AppRoute: typeof AppRouteWithChildren
   ApiHealthRoute: typeof ApiHealthRoute
   ApiAuthSplatRoute: typeof ApiAuthSplatRoute
+  ApiSlidesMediaRoute: typeof ApiSlidesMediaRoute
+  ApiSlidesUploadRoute: typeof ApiSlidesUploadRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -117,6 +151,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiAuthSplatRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/slides/media': {
+      id: '/api/slides/media'
+      path: '/api/slides/media'
+      fullPath: '/api/slides/media'
+      preLoaderRoute: typeof ApiSlidesMediaRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/slides/upload': {
+      id: '/api/slides/upload'
+      path: '/api/slides/upload'
+      fullPath: '/api/slides/upload'
+      preLoaderRoute: typeof ApiSlidesUploadRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
@@ -136,16 +184,9 @@ const rootRouteChildren: RootRouteChildren = {
   AppRoute: AppRouteWithChildren,
   ApiHealthRoute: ApiHealthRoute,
   ApiAuthSplatRoute: ApiAuthSplatRoute,
+  ApiSlidesMediaRoute: ApiSlidesMediaRoute,
+  ApiSlidesUploadRoute: ApiSlidesUploadRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
   ._addFileTypes<FileRouteTypes>()
-
-import type { getRouter } from './router.tsx'
-import type { createStart } from '@tanstack/react-start'
-declare module '@tanstack/react-start' {
-  interface Register {
-    ssr: true
-    router: Awaited<ReturnType<typeof getRouter>>
-  }
-}

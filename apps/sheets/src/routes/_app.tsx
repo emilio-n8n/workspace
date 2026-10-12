@@ -12,6 +12,7 @@ import {
   getAppUrlsFn,
   getSessionFn,
   getWorkspaceFn,
+  searchFn,
   signOutFn,
   switchOrgFn,
   type WorkspaceInfo,
@@ -97,6 +98,7 @@ function AppLayout() {
     <AppShell
       activeAppId={"sheets" as SuiteAppId}
       apps={resolveSuiteApps(urls)}
+      search={async (query) => await searchFn({ data: { query } })}
       homeHref={`${urls.home}/app`}
       tokensHref={`${urls.home}/app/settings/tokens`}
       user={{ name: workspace.user.name, email: workspace.user.email }}

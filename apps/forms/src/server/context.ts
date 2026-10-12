@@ -1,8 +1,15 @@
 import { createServerFn } from "@tanstack/react-start";
 import { getRequest } from "@tanstack/react-start/server";
-import { auth, ensurePersonalOrganization, getSession, listMyOrganizations } from "@workspace/auth";
+import {
+  auth,
+  ensurePersonalOrganization,
+  getSession,
+  listMyOrganizations,
+  requireActor,
+} from "@workspace/auth";
 import { getAppUrls } from "@workspace/config";
 import { schema as coreSchema, getDb } from "@workspace/database";
+import { searchEverything } from "@workspace/search";
 import { eq } from "drizzle-orm";
 import { z } from "zod";
 
@@ -92,3 +99,26 @@ export const signOutFn = createServerFn({ method: "POST" }).handler(async () => 
   await auth.api.signOut({ headers: request.headers });
   return { ok: true };
 });
+
+/** Recherche globale de la suite (le même service que l'écran /app/recherche). */
+export const searchFn = createServerFn({ method: "GET" })
+  .validator((input: unknown) => z.object({ query: z.string().min(2).max(100) }).parse(input))
+  .handler(async ({ data }) => {
+    const request = getRequest();
+    const { actor } = await requireActor(request.headers);
+    const urls = getAppUrls();
+    const results = await searchEverything(actor, { query: data.query, limit: 8 });
+    return results.map((r) => ({
+      id: r.id,
+      title: r.title,
+      subtitle: r.subtitle,
+      href:
+        r.appId === "drive"
+          ? urls.drive
+          : r.appId === "forms"
+            ? `${urls.forms}/form/${r.id}`
+            : r.appId === "tasks"
+              ? urls.tasks
+              : `${urls.calendar}`,
+    }));
+  });

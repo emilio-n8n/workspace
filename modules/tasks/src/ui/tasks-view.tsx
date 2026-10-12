@@ -11,6 +11,7 @@ import {
   Input,
   Label,
   PageHeader,
+  SegmentedTabs,
   Toasts,
   useToasts,
 } from "@workspace/ui";
@@ -21,9 +22,12 @@ import {
   deleteTaskFn,
   deleteTaskListFn,
   listMembersFn,
+  listMyTasksFn,
   listTaskListsFn,
   listTasksFn,
   type MemberView,
+  type MyTasksWindow,
+  type MyTaskView,
   renameTaskListFn,
   type TaskListView,
   type TaskView,
@@ -39,6 +43,12 @@ const FILTERS: { id: Filter; label: string }[] = [
   { id: "in_progress", label: "En cours" },
   { id: "done", label: "Terminées" },
   { id: "overdue", label: "En retard" },
+];
+
+const MY_TASKS_WINDOWS: { id: MyTasksWindow; label: string }[] = [
+  { id: "today", label: "Aujourd'hui" },
+  { id: "week", label: "Cette semaine" },
+  { id: "all", label: "Tout" },
 ];
 
 const PRIORITY_LABELS: Record<string, string> = {
@@ -86,6 +96,14 @@ export function TasksView() {
   const [listsError, setListsError] = useState<string | null>(null);
   const [tasksError, setTasksError] = useState<string | null>(null);
   const tasksRequestRef = useRef(0);
+
+  // Vue agrégée « Mes tâches » — simple bascule d'affichage, pas de route.
+  const [showMyTasks, setShowMyTasks] = useState(false);
+  const [myTasksWindow, setMyTasksWindow] = useState<MyTasksWindow>("today");
+  const [myTasks, setMyTasks] = useState<MyTaskView[] | null>(null);
+  const [myTasksError, setMyTasksError] = useState<string | null>(null);
+  const [busyTaskIds, setBusyTaskIds] = useState<ReadonlySet<string>>(new Set());
+  const myTasksRequestRef = useRef(0);
 
   const [newListOpen, setNewListOpen] = useState(false);
   const [newListName, setNewListName] = useState("");
@@ -139,9 +157,27 @@ export function TasksView() {
     }
   }, []);
 
+  const loadMyTasks = useCallback(async (window: MyTasksWindow) => {
+    const requestId = ++myTasksRequestRef.current;
+    setMyTasksError(null);
+    try {
+      const rows = await listMyTasksFn({ data: { window } });
+      if (myTasksRequestRef.current !== requestId) return;
+      setMyTasks(rows);
+    } catch {
+      if (myTasksRequestRef.current !== requestId) return;
+      setMyTasks(null);
+      setMyTasksError("Impossible de charger vos tâches.");
+    }
+  }, []);
+
   const retryTasks = useCallback(() => {
     if (activeListId) void loadTasks(activeListId);
   }, [activeListId, loadTasks]);
+
+  const retryMyTasks = useCallback(() => {
+    void loadMyTasks(myTasksWindow);
+  }, [loadMyTasks, myTasksWindow]);
 
   useEffect(() => {
     void loadWorkspace();
@@ -157,8 +193,31 @@ export function TasksView() {
     void loadTasks(activeListId);
   }, [activeListId, loadTasks]);
 
+  useEffect(() => {
+    if (!showMyTasks) return;
+    void loadMyTasks(myTasksWindow);
+  }, [showMyTasks, myTasksWindow, loadMyTasks]);
+
   const memberOf = (userId: string | null): MemberView | undefined =>
     userId ? members.find((member) => member.userId === userId) : undefined;
+
+  function markTaskBusy(taskId: string, busy: boolean) {
+    setBusyTaskIds((current) => {
+      const next = new Set(current);
+      if (busy) next.add(taskId);
+      else next.delete(taskId);
+      return next;
+    });
+  }
+
+  /** Rafraîchit la vue affichée (liste active ou agrégat « Mes tâches »). */
+  async function refreshActiveView() {
+    if (showMyTasks) {
+      await loadMyTasks(myTasksWindow);
+    } else if (activeListId) {
+      await loadTasks(activeListId);
+    }
+  }
 
   const visibleTasks = useMemo(() => {
     if (!tasks) return null;
@@ -215,6 +274,7 @@ export function TasksView() {
 
   async function onToggleDone(task: TaskView) {
     const next = task.status === "done" ? "todo" : "done";
+    markTaskBusy(task.id, true);
     setTasks(
       (current) =>
         current?.map((row) => (row.id === task.id ? { ...row, status: next } : row)) ?? current,
@@ -224,7 +284,21 @@ export function TasksView() {
     } catch (caught) {
       push("danger", caught instanceof Error ? caught.message : "Mise à jour impossible.");
     } finally {
+      markTaskBusy(task.id, false);
       if (activeListId) await loadTasks(activeListId);
+    }
+  }
+
+  /** Terminer depuis « Mes tâches » : la tâche quitte l'agrégat après rechargement. */
+  async function onToggleMyTask(task: MyTaskView) {
+    markTaskBusy(task.id, true);
+    try {
+      await updateTaskFn({ data: { taskId: task.id, status: "done" } });
+      await loadMyTasks(myTasksWindow);
+    } catch (caught) {
+      push("danger", caught instanceof Error ? caught.message : "Mise à jour impossible.");
+    } finally {
+      markTaskBusy(task.id, false);
     }
   }
 
@@ -246,7 +320,7 @@ export function TasksView() {
         },
       });
       setEditTarget(null);
-      if (activeListId) await loadTasks(activeListId);
+      await refreshActiveView();
     } catch (caught) {
       push("danger", caught instanceof Error ? caught.message : "Enregistrement impossible.");
     } finally {
@@ -261,7 +335,7 @@ export function TasksView() {
       await deleteTaskFn({ data: { taskId: editTarget.id } });
       setConfirmDeleteTask(false);
       setEditTarget(null);
-      if (activeListId) await loadTasks(activeListId);
+      await refreshActiveView();
     } catch (caught) {
       push("danger", caught instanceof Error ? caught.message : "Suppression impossible.");
     } finally {
@@ -297,6 +371,22 @@ export function TasksView() {
               Nouvelle liste
             </Button>
           </div>
+          <div className="border-b border-border p-2">
+            <button
+              type="button"
+              onClick={() => setShowMyTasks(true)}
+              aria-pressed={showMyTasks}
+              className={cn(
+                "flex w-full items-center gap-2 rounded-md border px-2.5 py-2 text-left text-sm font-medium transition-colors",
+                showMyTasks
+                  ? "border-primary bg-accent text-accent-foreground"
+                  : "border-border bg-background hover:bg-muted",
+              )}
+            >
+              <IconCheckSquare className="text-muted-foreground" />
+              <span className="min-w-0 flex-1 truncate">Mes tâches</span>
+            </button>
+          </div>
           <nav className="flex-1 overflow-y-auto p-2" aria-label="Listes de tâches">
             {lists === null ? (
               listsError ? (
@@ -324,6 +414,7 @@ export function TasksView() {
                       onClick={() => {
                         setActiveListId(list.id);
                         setFilter("all");
+                        setShowMyTasks(false);
                       }}
                       className={cn(
                         "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm",
@@ -346,9 +437,21 @@ export function TasksView() {
           </nav>
         </aside>
 
-        {/* Panneau de la liste active */}
+        {/* Panneau : agrégat « Mes tâches » ou liste active */}
         <section className="flex min-w-0 flex-1 flex-col rounded-lg border border-border bg-card">
-          {activeList === null ? (
+          {showMyTasks ? (
+            <MyTasksPanel
+              tasks={myTasks}
+              error={myTasksError}
+              window={myTasksWindow}
+              onWindowChange={setMyTasksWindow}
+              onRetry={retryMyTasks}
+              busyTaskIds={busyTaskIds}
+              assigneeNameOf={(userId) => memberOf(userId)?.name}
+              onToggle={(task) => void onToggleMyTask(task)}
+              onOpen={(task) => setEditTarget({ ...task })}
+            />
+          ) : activeList === null ? (
             <EmptyState
               icon={<IconGrid />}
               title="Aucune liste sélectionnée"
@@ -447,88 +550,16 @@ export function TasksView() {
                   </div>
                 ) : (
                   <ul className="flex flex-col">
-                    {visibleTasks.map((task) => {
-                      const assignee = memberOf(task.assigneeId);
-                      const overdue = isOverdue(task);
-                      return (
-                        <li
-                          key={task.id}
-                          className="flex items-center gap-3 border-b border-border/60 px-3 py-2 last:border-b-0 hover:bg-muted/30"
-                        >
-                          <input
-                            type="checkbox"
-                            className="accent-primary"
-                            checked={task.status === "done"}
-                            aria-label={
-                              task.status === "done"
-                                ? `Réouvrir « ${task.title} »`
-                                : `Marquer « ${task.title} » terminée`
-                            }
-                            onChange={() => void onToggleDone(task)}
-                          />
-                          <button
-                            type="button"
-                            onClick={() => setEditTarget({ ...task })}
-                            className="min-w-0 flex-1 text-left"
-                          >
-                            <span
-                              className={cn(
-                                "block truncate text-sm",
-                                task.status === "done" && "text-muted-foreground line-through",
-                              )}
-                            >
-                              {task.title}
-                            </span>
-                          </button>
-
-                          {task.status === "in_progress" ? (
-                            <Badge variant="accent">En cours</Badge>
-                          ) : null}
-
-                          <span
-                            role="img"
-                            aria-label={`Priorité ${PRIORITY_LABELS[task.priority] ?? task.priority}`}
-                            title={`Priorité ${PRIORITY_LABELS[task.priority] ?? task.priority}`}
-                            className="flex shrink-0 items-center gap-1"
-                          >
-                            <span
-                              aria-hidden
-                              className={cn(
-                                "size-2 shrink-0 rounded-full",
-                                task.priority === "high"
-                                  ? "bg-destructive"
-                                  : task.priority === "medium"
-                                    ? "bg-primary"
-                                    : "bg-muted-foreground",
-                              )}
-                            />
-                            <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
-                              {PRIORITY_LABELS[task.priority] ?? task.priority}
-                            </span>
-                          </span>
-
-                          {task.dueAt ? (
-                            <span
-                              className={cn(
-                                "shrink-0 text-xs",
-                                overdue ? "font-medium text-destructive" : "text-muted-foreground",
-                              )}
-                            >
-                              {formatDue(task.dueAt)}
-                            </span>
-                          ) : null}
-
-                          {assignee ? (
-                            <span
-                              title={`Assignée à ${assignee.name}`}
-                              className="flex size-6 shrink-0 items-center justify-center rounded-full bg-accent text-[10px] font-semibold text-accent-foreground"
-                            >
-                              {assignee.name.slice(0, 1).toUpperCase()}
-                            </span>
-                          ) : null}
-                        </li>
-                      );
-                    })}
+                    {visibleTasks.map((task) => (
+                      <TaskRow
+                        key={task.id}
+                        task={task}
+                        busy={busyTaskIds.has(task.id)}
+                        assigneeName={memberOf(task.assigneeId)?.name}
+                        onToggle={() => void onToggleDone(task)}
+                        onOpen={() => setEditTarget({ ...task })}
+                      />
+                    ))}
                   </ul>
                 )}
               </div>
@@ -725,6 +756,188 @@ export function TasksView() {
         onShared={loadLists}
       />
     </div>
+  );
+}
+
+/** Ligne de tâche partagée entre une liste et l'agrégat « Mes tâches ». */
+function TaskRow({
+  task,
+  subtitle,
+  busy,
+  assigneeName,
+  onToggle,
+  onOpen,
+}: {
+  task: TaskView;
+  subtitle?: string;
+  busy: boolean;
+  assigneeName?: string;
+  onToggle: () => void;
+  onOpen: () => void;
+}) {
+  const overdue = isOverdue(task);
+  return (
+    <li className="flex items-center gap-3 border-b border-border/60 px-3 py-2 last:border-b-0 hover:bg-muted/30">
+      <input
+        type="checkbox"
+        className="accent-primary"
+        checked={task.status === "done"}
+        disabled={busy}
+        aria-busy={busy || undefined}
+        aria-label={
+          task.status === "done"
+            ? `Réouvrir « ${task.title} »`
+            : `Marquer « ${task.title} » terminée`
+        }
+        onChange={onToggle}
+      />
+      <button type="button" onClick={onOpen} className="min-w-0 flex-1 text-left">
+        <span
+          className={cn(
+            "block truncate text-sm",
+            task.status === "done" && "text-muted-foreground line-through",
+          )}
+        >
+          {task.title}
+        </span>
+        {subtitle ? (
+          <span className="block truncate text-xs text-muted-foreground">{subtitle}</span>
+        ) : null}
+      </button>
+
+      {task.status === "in_progress" ? <Badge variant="accent">En cours</Badge> : null}
+
+      <span
+        role="img"
+        aria-label={`Priorité ${PRIORITY_LABELS[task.priority] ?? task.priority}`}
+        title={`Priorité ${PRIORITY_LABELS[task.priority] ?? task.priority}`}
+        className="flex shrink-0 items-center gap-1"
+      >
+        <span
+          aria-hidden
+          className={cn(
+            "size-2 shrink-0 rounded-full",
+            task.priority === "high"
+              ? "bg-destructive"
+              : task.priority === "medium"
+                ? "bg-primary"
+                : "bg-muted-foreground",
+          )}
+        />
+        <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
+          {PRIORITY_LABELS[task.priority] ?? task.priority}
+        </span>
+      </span>
+
+      {task.dueAt ? (
+        <span
+          className={cn(
+            "shrink-0 text-xs",
+            overdue ? "font-medium text-destructive" : "text-muted-foreground",
+          )}
+        >
+          {formatDue(task.dueAt)}
+        </span>
+      ) : null}
+
+      {assigneeName ? (
+        <span
+          title={`Assignée à ${assigneeName}`}
+          className="flex size-6 shrink-0 items-center justify-center rounded-full bg-accent text-[10px] font-semibold text-accent-foreground"
+        >
+          {assigneeName.slice(0, 1).toUpperCase()}
+        </span>
+      ) : null}
+    </li>
+  );
+}
+
+/** Agrégat « Mes tâches » : assignées à moi (ou sans assigné si j'ai l'écriture), toutes listes. */
+function MyTasksPanel({
+  tasks,
+  error,
+  window: selectedWindow,
+  onWindowChange,
+  onRetry,
+  busyTaskIds,
+  assigneeNameOf,
+  onToggle,
+  onOpen,
+}: {
+  tasks: MyTaskView[] | null;
+  error: string | null;
+  window: MyTasksWindow;
+  onWindowChange: (window: MyTasksWindow) => void;
+  onRetry: () => void;
+  busyTaskIds: ReadonlySet<string>;
+  assigneeNameOf: (userId: string | null) => string | undefined;
+  onToggle: (task: MyTaskView) => void;
+  onOpen: (task: MyTaskView) => void;
+}) {
+  return (
+    <>
+      <header className="flex flex-wrap items-center gap-2 border-b border-border px-3 py-2">
+        <h2 className="min-w-0 flex-1 truncate text-sm font-semibold">Mes tâches</h2>
+        {tasks ? (
+          <span className="text-xs text-muted-foreground">
+            {tasks.length} tâche{tasks.length > 1 ? "s" : ""}
+          </span>
+        ) : null}
+      </header>
+
+      <div className="flex flex-wrap items-center gap-2 border-b border-border px-3 py-2">
+        <SegmentedTabs
+          items={MY_TASKS_WINDOWS}
+          value={selectedWindow}
+          onChange={onWindowChange}
+          ariaLabel="Fenêtre"
+        />
+      </div>
+
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        {error ? (
+          <div className="p-4">
+            <Alert tone="danger" className="flex flex-col items-start gap-2">
+              <span>{error}</span>
+              <Button variant="outline" size="sm" onClick={onRetry}>
+                Réessayer
+              </Button>
+            </Alert>
+          </div>
+        ) : tasks === null ? (
+          <p className="p-4 text-sm text-muted-foreground">Chargement…</p>
+        ) : tasks.length === 0 ? (
+          <div className="p-4">
+            <EmptyState
+              icon={<IconCheckSquare />}
+              title="Rien à faire — profitez-en."
+              hint={
+                selectedWindow === "today"
+                  ? "Aucune échéance aujourd'hui. Regardez « Cette semaine » ou « Tout »."
+                  : selectedWindow === "week"
+                    ? "Aucune échéance cette semaine. Regardez « Tout »."
+                    : undefined
+              }
+              className="border-0 bg-transparent p-0"
+            />
+          </div>
+        ) : (
+          <ul className="flex flex-col">
+            {tasks.map((task) => (
+              <TaskRow
+                key={task.id}
+                task={task}
+                subtitle={task.listName}
+                busy={busyTaskIds.has(task.id)}
+                assigneeName={assigneeNameOf(task.assigneeId)}
+                onToggle={() => onToggle(task)}
+                onOpen={() => onOpen(task)}
+              />
+            ))}
+          </ul>
+        )}
+      </div>
+    </>
   );
 }
 

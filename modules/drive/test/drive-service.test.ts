@@ -12,8 +12,10 @@ import {
   effectiveRole,
   getAncestors,
   listEntries,
+  listEntryGrants,
   listTrash,
   listVersions,
+  pruneVersions,
   purge,
   rename,
   replaceContent,
@@ -239,6 +241,62 @@ describe("drive — partage et héritage", () => {
     const chain = await getAncestors(f.actorAlice, entry.id);
     expect(chain.map((row) => row.name)).toEqual(["Privé", "secret.txt"]);
   });
+
+  it("partage externe : désactivé par le réglage, membres internes toujours servis", async () => {
+    const db = getDb();
+    await db.insert(coreSchema.orgSettings).values({ orgId: f.orgId, allowExternalSharing: false });
+
+    // Chloé est membre d'une autre organisation : un sujet externe.
+    await db.insert(coreSchema.member).values({
+      id: tag("mem"),
+      organizationId: f.otherOrgId,
+      userId: f.chloe,
+      role: "member",
+      createdAt: new Date(),
+    });
+
+    const { entry } = await uploadFile(f.actorAlice, {
+      name: "interne.txt",
+      body: bufferOf("secret"),
+    });
+
+    await expect(
+      shareEntry(f.actorAlice, entry.id, {
+        subject: { kind: "user", id: f.chloe },
+        role: "viewer",
+      }),
+    ).rejects.toMatchObject({
+      name: "DriveError",
+      code: "validation",
+      message: "Le partage externe est désactivé pour cette organisation.",
+    });
+
+    // Un identifiant inconnu (jamais membre) est externe lui aussi.
+    await expect(
+      shareEntry(f.actorAlice, entry.id, {
+        subject: { kind: "user", id: `usr_inconnu_${randomUUID()}` },
+        role: "viewer",
+      }),
+    ).rejects.toMatchObject({ code: "validation" });
+
+    // Aucun grant n'a été créé par les tentatives refusées.
+    expect(await listEntryGrants(f.actorAlice, entry.id)).toEqual([]);
+
+    // Un membre de l'organisation reste partageable malgré le réglage.
+    await db.insert(coreSchema.member).values({
+      id: tag("mem"),
+      organizationId: f.orgId,
+      userId: f.bruno,
+      role: "member",
+      createdAt: new Date(),
+    });
+    const grant = await shareEntry(f.actorAlice, entry.id, {
+      subject: { kind: "user", id: f.bruno },
+      role: "viewer",
+    });
+    expect(grant).not.toBeNull();
+    expect((await download(f.actorBruno, entry.id)).body.toString()).toBe("secret");
+  });
 });
 
 describe("drive — corbeille, versions et purge", () => {
@@ -283,6 +341,43 @@ describe("drive — corbeille, versions et purge", () => {
 
     const versions = await listVersions(f.actorAlice, entry.id);
     expect(versions.map((version) => version.version)).toEqual([2, 1]);
+  });
+
+  it("rétention : pruneVersions supprime l'ancienne version, jamais la courante", async () => {
+    const db = getDb();
+    const { entry } = await uploadFile(f.actorAlice, {
+      name: "versions.txt",
+      body: bufferOf("v1"),
+    });
+    await replaceContent(f.actorAlice, entry.id, { body: bufferOf("v2") });
+
+    // Laisse le prune d'arrière-plan déclenché par replaceContent se terminer :
+    // la suppression attendue doit venir de l'appel explicite ci-dessous.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    const versionsBefore = await listVersions(f.actorAlice, entry.id);
+    const old = versionsBefore.find((version) => version.version === 1);
+    if (!old) throw new Error("version 1 attendue");
+    await db
+      .update(driveFileVersions)
+      .set({ createdAt: new Date(Date.now() - 200 * 24 * 60 * 60 * 1000) })
+      .where(eq(driveFileVersions.id, old.id));
+
+    expect(await pruneVersions(f.actorAlice, entry.id)).toEqual({ removed: 1 });
+
+    const versions = await listVersions(f.actorAlice, entry.id);
+    expect(versions.map((version) => version.version)).toEqual([2]);
+    expect((await download(f.actorAlice, entry.id)).body.toString()).toBe("v2");
+    // Le blob de la version purgée est nettoyé (best effort).
+    expect(await getStorage().get(old.storageKey)).toBeNull();
+
+    // La version courante n'est jamais purgée, même expirée : purge idempotente.
+    await db
+      .update(driveFileVersions)
+      .set({ createdAt: new Date(Date.now() - 200 * 24 * 60 * 60 * 1000) })
+      .where(eq(driveFileVersions.fileId, entry.id));
+    expect(await pruneVersions(f.actorAlice, entry.id)).toEqual({ removed: 0 });
+    expect((await download(f.actorAlice, entry.id)).body.toString()).toBe("v2");
   });
 
   it("purge impossible si l'élément n'est pas dans la corbeille", async () => {

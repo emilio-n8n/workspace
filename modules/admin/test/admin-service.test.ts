@@ -7,15 +7,18 @@ import {
   AdminError,
   addMemberByEmail,
   getOverview,
+  listActiveSessions,
   listAudit,
   listMembers,
   removeMember,
+  revokeAllSessions,
+  revokeSession,
   updateMemberRole,
   updateOrgProfile,
   updateQuota,
 } from "../src/index.ts";
 
-const { user, organization, member, auditEvents } = coreSchema;
+const { user, session, organization, member, auditEvents } = coreSchema;
 
 let counter = 0;
 const tag = (prefix: string) => `${prefix}${++counter}_${randomUUID().slice(0, 8)}`;
@@ -88,6 +91,25 @@ async function cleanup(f: Fixtures): Promise<void> {
   }
 }
 
+/** Insère une session directement (le fournisseur d'authentification est hors périmètre). */
+async function addSession(
+  userId: string,
+  overrides: { expiresAt?: Date; ipAddress?: string; userAgent?: string } = {},
+): Promise<{ id: string }> {
+  const id = tag("ses");
+  await getDb()
+    .insert(session)
+    .values({
+      id,
+      token: tag("tok"),
+      userId,
+      expiresAt: overrides.expiresAt ?? new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+      ipAddress: overrides.ipAddress ?? "203.0.113.7",
+      userAgent: overrides.userAgent ?? "Mozilla/5.0 (Test)",
+    });
+  return { id };
+}
+
 let f: Fixtures;
 
 beforeEach(async () => {
@@ -109,6 +131,9 @@ describe("admin — autorisations", () => {
     await expect(updateOrgProfile(f.actorSimple, { name: "Détournement" })).rejects.toThrow(
       AdminError,
     );
+    await expect(listActiveSessions(f.actorSimple)).rejects.toThrow(AdminError);
+    await expect(revokeSession(f.actorSimple, "ses_inconnu")).rejects.toThrow(AdminError);
+    await expect(revokeAllSessions(f.actorSimple, f.owner)).rejects.toThrow(AdminError);
   });
 
   it("liste les membres avec leurs rôles", async () => {
@@ -169,5 +194,63 @@ describe("admin — organisation", () => {
     const entries = await listAudit(f.actorOwner, 10);
     expect(entries).toHaveLength(1);
     expect(entries[0]?.action).toBe("test.action");
+  });
+});
+
+describe("admin — sessions actives", () => {
+  it("liste les sessions actives des membres uniquement", async () => {
+    const active = await addSession(f.simpleUser, {
+      ipAddress: "198.51.100.4",
+      userAgent: "Firefox/128.0",
+    });
+    await addSession(f.simpleUser, { expiresAt: new Date(Date.now() - 60_000) });
+    await addSession(f.outsider);
+
+    const sessions = await listActiveSessions(f.actorAdmin);
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0]).toMatchObject({
+      id: active.id,
+      userId: f.simpleUser,
+      userName: "Simple",
+      userEmail: `${f.simpleUser}@example.org`,
+      ipAddress: "198.51.100.4",
+      userAgent: "Firefox/128.0",
+    });
+    expect(new Date(sessions[0]?.expiresAt ?? 0).getTime()).toBeGreaterThan(Date.now());
+  });
+
+  it("révoque une session de membre et refuse étrangère ou personnelle", async () => {
+    const db = getDb();
+    const target = await addSession(f.simpleUser);
+    await revokeSession(f.actorOwner, target.id);
+    expect(await db.select().from(session).where(eq(session.id, target.id))).toHaveLength(0);
+
+    const foreign = await addSession(f.outsider);
+    await expect(revokeSession(f.actorOwner, foreign.id)).rejects.toThrow(AdminError);
+    await expect(revokeSession(f.actorOwner, "ses_inconnu")).rejects.toThrow(AdminError);
+
+    const own = await addSession(f.owner);
+    await expect(revokeSession(f.actorOwner, own.id)).rejects.toThrow(/Se déconnecter/);
+    expect(await db.select().from(session).where(eq(session.id, own.id))).toHaveLength(1);
+  });
+
+  it("révoque toutes les sessions d'un membre sauf celle de l'acteur", async () => {
+    const db = getDb();
+    await addSession(f.simpleUser);
+    await addSession(f.simpleUser);
+    const peer = await addSession(f.owner);
+    const own = await addSession(f.adminUser);
+
+    const result = await revokeAllSessions(f.actorAdmin, f.simpleUser);
+    expect(result.revoked).toBe(2);
+    expect(await db.select().from(session).where(eq(session.userId, f.simpleUser))).toHaveLength(0);
+    expect(await db.select().from(session).where(eq(session.id, peer.id))).toHaveLength(1);
+    expect(await db.select().from(session).where(eq(session.id, own.id))).toHaveLength(1);
+
+    // Cibler l'acteur lui-même ne touche jamais ses propres sessions.
+    expect(await revokeAllSessions(f.actorAdmin, f.adminUser)).toEqual({ revoked: 0 });
+    expect(await db.select().from(session).where(eq(session.id, own.id))).toHaveLength(1);
+
+    await expect(revokeAllSessions(f.actorAdmin, f.outsider)).rejects.toThrow(AdminError);
   });
 });

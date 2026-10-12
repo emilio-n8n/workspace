@@ -7,6 +7,7 @@ import {
   ChatError,
   chatChannels,
   chatMembers,
+  chatMessages,
   createChannel,
   listChannels,
   listMessages,
@@ -297,6 +298,12 @@ describe("chat — messages", () => {
     await expect(
       listMessages(f.actorAlice, channel.id, { beforeId: "pas-un-uuid" }),
     ).rejects.toMatchObject({ code: "validation" });
+    await expect(
+      listMessages(f.actorAlice, channel.id, { since: "pas-une-date" }),
+    ).rejects.toMatchObject({ code: "validation" });
+    await expect(
+      listMessages(f.actorAlice, channel.id, { sinceId: "pas-un-uuid" }),
+    ).rejects.toMatchObject({ code: "validation" });
   });
 
   it("pagine avec beforeId sur la clé (created_at, id)", async () => {
@@ -316,6 +323,98 @@ describe("chat — messages", () => {
       limit: 2,
     });
     expect(secondPage.map((message) => message.body)).toEqual(["message 2", "message 3"]);
+  });
+
+  it("ne retourne que les messages postérieurs au curseur since", async () => {
+    const db = getDb();
+    const channel = await createChannel(f.actorAlice, "flux");
+    const base = Date.now();
+    await db.insert(chatMessages).values([
+      { channelId: channel.id, authorId: f.alice, body: "un", createdAt: new Date(base) },
+      { channelId: channel.id, authorId: f.alice, body: "deux", createdAt: new Date(base + 1000) },
+      {
+        channelId: channel.id,
+        authorId: f.alice,
+        body: "trois",
+        createdAt: new Date(base + 2000),
+      },
+    ]);
+
+    const history = await listMessages(f.actorAlice, channel.id);
+    const first = history[0];
+    const last = history[history.length - 1];
+    if (!first || !last) throw new Error("Historique incomplet.");
+
+    const fresh = await listMessages(f.actorAlice, channel.id, {
+      since: first.createdAt,
+      sinceId: first.id,
+    });
+    expect(fresh.map((message) => message.body)).toEqual(["deux", "trois"]);
+
+    // Les plus anciens nouveaux messages d'abord : la limite s'applique après tri.
+    const page = await listMessages(f.actorAlice, channel.id, {
+      since: first.createdAt,
+      sinceId: first.id,
+      limit: 1,
+    });
+    expect(page.map((message) => message.body)).toEqual(["deux"]);
+
+    // Borne haute dédiée au flux : 200 (500 est plafonné sans erreur).
+    const clamped = await listMessages(f.actorAlice, channel.id, {
+      since: first.createdAt,
+      sinceId: first.id,
+      limit: 500,
+    });
+    expect(clamped).toHaveLength(2);
+
+    // Plus rien après le dernier message.
+    expect(
+      await listMessages(f.actorAlice, channel.id, { since: last.createdAt, sinceId: last.id }),
+    ).toHaveLength(0);
+  });
+
+  it("départage les ex æquo du curseur since par identifiant", async () => {
+    const db = getDb();
+    const channel = await createChannel(f.actorAlice, "ex aequo");
+    const at = new Date();
+    const ids = [
+      "00000000-0000-7000-8000-000000000001",
+      "00000000-0000-7000-8000-000000000002",
+      "00000000-0000-7000-8000-000000000003",
+    ] as const;
+    await db.insert(chatMessages).values(
+      ids.map((id, index) => ({
+        id,
+        channelId: channel.id,
+        authorId: f.alice,
+        body: `égal ${index + 1}`,
+        createdAt: at,
+      })),
+    );
+
+    // Même microseconde : seul l'identifiant départage le curseur.
+    const fromFirst = await listMessages(f.actorAlice, channel.id, {
+      since: at.toISOString(),
+      sinceId: ids[0],
+    });
+    expect(fromFirst.map((message) => message.id)).toEqual([ids[1], ids[2]]);
+
+    const fromLast = await listMessages(f.actorAlice, channel.id, {
+      since: at.toISOString(),
+      sinceId: ids[2],
+    });
+    expect(fromLast).toHaveLength(0);
+
+    // Sans sinceId, le curseur temporel seul exclut les ex æquo (compatibilité).
+    expect(await listMessages(f.actorAlice, channel.id, { since: at.toISOString() })).toHaveLength(
+      0,
+    );
+
+    // Curseur antérieur : les trois ex æquo reviennent, ordonnés par identifiant.
+    const all = await listMessages(f.actorAlice, channel.id, {
+      since: new Date(at.getTime() - 1).toISOString(),
+    });
+    expect(all.map((message) => message.id)).toEqual(ids);
   });
 
   it("valide le corps du message", async () => {

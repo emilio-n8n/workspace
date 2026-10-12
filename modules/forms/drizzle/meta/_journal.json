@@ -15,6 +15,13 @@
       "when": 1791828593133,
       "tag": "0001_sour_infant_terrible",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1791831719596,
+      "tag": "0002_youthful_texas_twister",
+      "breakpoints": true
     }
   ]
 }

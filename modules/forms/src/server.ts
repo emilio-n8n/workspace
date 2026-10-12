@@ -1,6 +1,7 @@
 import { createServerFn } from "@tanstack/react-start";
 import { getRequest } from "@tanstack/react-start/server";
 import { requireActor } from "@workspace/auth";
+import { createRateLimiter } from "@workspace/ratelimit";
 import { z } from "zod";
 import {
   createForm,
@@ -83,6 +84,14 @@ export const listResponsesFn = createServerFn({ method: "GET" })
 
 // --- Collecte publique : pas de session (autorisation par le statut `open`). --
 
+/**
+ * Garde-fou anti-abus (audit) : 10 envois par minute et par IP, avant d'écrire
+ * quoi que ce soit. Le plafond métier par formulaire (`MAX_RESPONSES`, service)
+ * reste la limite dure du nombre de réponses ; ce limiteur borne la cadence.
+ * Compteur en mémoire : mono-instance (voir @workspace/ratelimit).
+ */
+const submitLimiter = createRateLimiter({ windowMs: 60_000, max: 10 });
+
 export const getPublicFormFn = createServerFn({ method: "GET" })
   .validator((input: unknown) => z.object({ slug: z.string().min(1).max(64) }).parse(input))
   .handler(async ({ data }) => getPublicForm(data.slug));
@@ -99,4 +108,16 @@ export const submitResponseFn = createServerFn({ method: "POST" })
       })
       .parse(input),
   )
-  .handler(async ({ data }) => submitResponse(data.slug, data.answers));
+  .handler(async ({ data }) => {
+    // L'IP vient du proxy (en-têtes normalisés) ; accès direct en dev : « local ».
+    const request = getRequest();
+    const ip =
+      request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ??
+      request.headers.get("x-real-ip") ??
+      "local";
+    const limit = submitLimiter.check(`submit:${ip}`);
+    if (!limit.allowed) {
+      throw new Error("Trop de réponses envoyées — réessayez dans un instant.");
+    }
+    return submitResponse(data.slug, data.answers);
+  });

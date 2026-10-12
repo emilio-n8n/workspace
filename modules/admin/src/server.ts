@@ -5,15 +5,18 @@ import { z } from "zod";
 import {
   addMemberByEmail,
   getOverview,
+  listActiveSessions,
   listAudit,
   listMembers,
   removeMember,
+  revokeAllSessions,
+  revokeSession,
   updateMemberRole,
   updateOrgProfile,
   updateQuota,
 } from "./index.ts";
 
-export type { AuditEntry, MemberFull, OrgOverview } from "./index.ts";
+export type { ActiveSession, AuditEntry, MemberFull, OrgOverview } from "./index.ts";
 
 export const getOverviewFn = createServerFn({ method: "GET" }).handler(async () => {
   const { actor } = await requireActor(getRequest().headers);
@@ -74,3 +77,23 @@ export const listAuditFn = createServerFn({ method: "GET" }).handler(async () =>
   const { actor } = await requireActor(getRequest().headers);
   return listAudit(actor, 100);
 });
+
+export const listActiveSessionsFn = createServerFn({ method: "GET" }).handler(async () => {
+  const { actor } = await requireActor(getRequest().headers);
+  return listActiveSessions(actor);
+});
+
+export const revokeSessionFn = createServerFn({ method: "POST" })
+  .validator((input: unknown) => z.object({ sessionId: z.string().min(1) }).parse(input))
+  .handler(async ({ data }) => {
+    const { actor } = await requireActor(getRequest().headers);
+    await revokeSession(actor, data.sessionId);
+    return { ok: true };
+  });
+
+export const revokeAllSessionsFn = createServerFn({ method: "POST" })
+  .validator((input: unknown) => z.object({ userId: z.string().min(1) }).parse(input))
+  .handler(async ({ data }) => {
+    const { actor } = await requireActor(getRequest().headers);
+    return revokeAllSessions(actor, data.userId);
+  });

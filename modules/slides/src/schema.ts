@@ -16,8 +16,10 @@ import {
 /**
  * Schéma du module Slides — voir docs/modules/slides.md.
  * Une présentation est un fichier Drive lié ; les diapositives et leurs
- * éléments (texte, forme) vivent ici. Les positions sont des pourcentages
- * de la diapositive (0-100), le corps de texte est en pixels base 960.
+ * éléments (texte, forme, image) vivent ici. Les positions sont des
+ * pourcentages de la diapositive (0-100), le corps de texte est en pixels
+ * base 960. Les images stockent leur binaire dans le stockage objet
+ * (`media_key`, préfixe `slides/<presentationId>/`) et gardent `text` vide.
  */
 
 export const presentations = pgTable(
@@ -68,6 +70,8 @@ export const slideElements = pgTable(
     w: real("w").notNull(),
     h: real("h").notNull(),
     text: text("text").notNull().default(""),
+    /** Clé de stockage du binaire pour kind "image" ; null sinon. */
+    mediaKey: text("media_key"),
     fontSize: integer("font_size").notNull().default(24),
     bold: boolean("bold").notNull().default(false),
     align: text("align").notNull().default("left"),

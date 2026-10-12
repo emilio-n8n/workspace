@@ -196,6 +196,95 @@ export async function listTasks(actor: Actor, input: { listId: string }): Promis
     );
 }
 
+export type MyTasksWindow = "today" | "week" | "all";
+
+export type MyTaskEntry = { task: Task; listName: string };
+
+/** Bornes de l'agrégat « Mes tâches » : on ne parcourt jamais tout l'espace de travail. */
+const MY_TASKS_MAX_LISTS = 30;
+const MY_TASKS_MAX_SCAN = 500;
+const MY_TASKS_DEFAULT_LIMIT = 200;
+const MY_TASKS_MAX_LIMIT = 500;
+
+const PRIORITY_RANK: Record<TaskPriority, number> = { low: 0, medium: 1, high: 2 };
+
+/** Fin de la journée locale du serveur (23:59:59.999). */
+function endOfDay(reference: Date): Date {
+  const end = new Date(reference);
+  end.setHours(23, 59, 59, 999);
+  return end;
+}
+
+/**
+ * « Mes tâches » transverses : tout ce qui m'est assigné ou à prendre, toutes
+ * listes visibles confondues (`listLists` puis `listTasks` par liste).
+ *
+ * Règle de sélection, par liste : une tâche est retenue si elle m'est assignée,
+ * ou bien si elle n'est assignée à personne, n'est pas terminée et que mon rôle
+ * sur la liste autorise l'écriture (editor/owner — `listLists` renvoie déjà le
+ * rôle). Les tâches terminées sont toujours exclues : elles appartiennent à
+ * l'historique.
+ *
+ * Fenêtres : « today » garde les échéances jusqu'à la fin de la journée (les
+ * tâches sans échéance sont écartées), « week » jusqu'à maintenant + 7 jours,
+ * « all » ne filtre pas les dates.
+ *
+ * Tri : échéance croissante (les retards d'abord, sans échéance en dernier),
+ * puis priorité haute → basse, puis création croissante. Bornes : 30 listes et
+ * 500 tâches scannées au maximum ; `limit` résultats (défaut 200, max 500).
+ */
+export async function listMyTasks(
+  actor: Actor,
+  input?: { window?: MyTasksWindow; limit?: number },
+): Promise<MyTaskEntry[]> {
+  const window = input?.window ?? "all";
+  const limit = input?.limit ?? MY_TASKS_DEFAULT_LIMIT;
+  if (!Number.isInteger(limit) || limit < 1 || limit > MY_TASKS_MAX_LIMIT) {
+    throw new TasksError(
+      "validation",
+      `La limite doit être un entier entre 1 et ${MY_TASKS_MAX_LIMIT}.`,
+    );
+  }
+
+  const now = new Date();
+  const cutoff =
+    window === "today"
+      ? endOfDay(now)
+      : window === "week"
+        ? new Date(now.getTime() + 7 * 86_400_000)
+        : null;
+
+  const visibleLists = (await listLists(actor)).slice(0, MY_TASKS_MAX_LISTS);
+
+  const entries: MyTaskEntry[] = [];
+  let scanned = 0;
+  for (const { list, role } of visibleLists) {
+    if (scanned >= MY_TASKS_MAX_SCAN) break;
+    const canAssume = roleSatisfies(role, "write");
+    for (const task of await listTasks(actor, { listId: list.id })) {
+      if (scanned >= MY_TASKS_MAX_SCAN) break;
+      scanned += 1;
+      if (task.status === "done") continue;
+      const mine = task.assigneeId === actor.userId;
+      const assumable = task.assigneeId === null && canAssume;
+      if (!mine && !assumable) continue;
+      if (cutoff !== null && (task.dueAt === null || task.dueAt > cutoff)) continue;
+      entries.push({ task, listName: list.name });
+    }
+  }
+
+  entries.sort((a, b) => {
+    const aDue = a.task.dueAt?.getTime() ?? Number.POSITIVE_INFINITY;
+    const bDue = b.task.dueAt?.getTime() ?? Number.POSITIVE_INFINITY;
+    if (aDue !== bDue) return aDue - bDue;
+    const byPriority = PRIORITY_RANK[b.task.priority] - PRIORITY_RANK[a.task.priority];
+    if (byPriority !== 0) return byPriority;
+    return a.task.createdAt.getTime() - b.task.createdAt.getTime();
+  });
+
+  return entries.slice(0, limit);
+}
+
 export async function createTask(
   actor: Actor,
   input: {

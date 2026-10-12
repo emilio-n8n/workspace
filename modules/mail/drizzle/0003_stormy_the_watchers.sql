@@ -1,0 +1,1 @@
+DROP INDEX "mail_messages_mailbox_folder_idx";

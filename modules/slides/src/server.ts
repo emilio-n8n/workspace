@@ -14,12 +14,13 @@ export type { ElementView, PresentationDetail, SlideView } from "./index.ts";
 
 const elementSchema = z.object({
   id: z.string().optional(),
-  kind: z.enum(["text", "shape"]),
+  kind: z.enum(["text", "shape", "image"]),
   x: z.number(),
   y: z.number(),
   w: z.number(),
   h: z.number(),
   text: z.string().max(2000),
+  mediaKey: z.string().max(512).nullish(),
   fontSize: z.number().int().min(8).max(200),
   bold: z.boolean(),
   align: z.enum(["left", "center", "right"]),

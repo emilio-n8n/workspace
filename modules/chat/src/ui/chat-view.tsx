@@ -32,10 +32,21 @@ function fmtTime(iso: string): string {
   return date.toLocaleDateString("fr-FR", { day: "numeric", month: "short" });
 }
 
+/** Lots d'un événement SSE `messages` : données JSON non fiables, jamais de throw. */
+function parseMessageRows(raw: string): MessageView[] {
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return Array.isArray(parsed) ? (parsed as MessageView[]) : [];
+  } catch {
+    return [];
+  }
+}
+
 /**
- * Chat — canaux d'organisation et discussions directes. Rafraîchissement par
- * interrogation courte (2,5 s) : suffisant pour une instance auto-hébergée, le
- * passage aux WebSockets est un chantier documenté (docs/modules/chat.md).
+ * Chat — canaux d'organisation et discussions directes. Temps réel par
+ * Server-Sent Events (`/api/chat/stream`) avec repli automatique sur
+ * l'interrogation courte (2,5 s) si le flux échoue ; la liste des canaux reste
+ * rafraîchie toutes les 5 s.
  */
 export function ChatView() {
   const [channels, setChannels] = useState<ChannelView[]>([]);
@@ -52,6 +63,9 @@ export function ChatView() {
   const [membersError, setMembersError] = useState<string | null>(null);
   const { toasts, push, dismiss } = useToasts();
   const scrollRef = useRef<HTMLDivElement>(null);
+  /** Transport temps réel : SSE tant qu'il fonctionne, sinon interrogation. */
+  const [useSse, setUseSse] = useState(true);
+  const previousChannelRef = useRef<string | null>(null);
 
   const refreshChannels = useCallback(async () => {
     try {
@@ -84,16 +98,82 @@ export function ChatView() {
 
   useEffect(() => {
     if (!activeId) {
+      previousChannelRef.current = null;
       setMessages([]);
       return;
     }
-    void refreshMessages(activeId);
-    void markReadFn({ data: { channelId: activeId } })
-      .then(() => refreshChannels().catch(() => undefined))
-      .catch(() => undefined);
-    const interval = setInterval(() => void refreshMessages(activeId), 2500);
-    return () => clearInterval(interval);
-  }, [activeId, refreshMessages, refreshChannels]);
+    // Changement de canal : on retente SSE (le précédent a pu échouer).
+    if (previousChannelRef.current !== activeId) {
+      previousChannelRef.current = activeId;
+      if (!useSse) {
+        setUseSse(true);
+        return;
+      }
+    }
+
+    let cancelled = false;
+    let source: EventSource | null = null;
+    let interval: ReturnType<typeof setInterval> | null = null;
+
+    const markReadNow = () => {
+      void markReadFn({ data: { channelId: activeId } })
+        .then(() => refreshChannels())
+        .catch(() => undefined);
+    };
+
+    void (async () => {
+      let initial: MessageView[] = [];
+      try {
+        initial = await listMessagesFn({ data: { channelId: activeId } });
+        if (!cancelled) setMessages(initial);
+      } catch {
+        // silencieux pendant l'interrogation
+      }
+      if (cancelled) return;
+      markReadNow();
+
+      // Repli : sans SSE (navigateur ou flux en échec), interrogation courte.
+      if (!useSse || typeof EventSource === "undefined") {
+        interval = setInterval(() => void refreshMessages(activeId), 2500);
+        return;
+      }
+
+      // Curseur `(created_at, id)` du dernier message connu : le flux ne
+      // rediffuse que ce qui suit.
+      const last = initial[initial.length - 1];
+      const query = new URLSearchParams({ channelId: activeId });
+      if (last) {
+        query.set("since", last.createdAt);
+        query.set("sinceId", last.id);
+      }
+      const nextSource = new EventSource(`/api/chat/stream?${query.toString()}`);
+      source = nextSource;
+      nextSource.addEventListener("messages", (event) => {
+        const rows = parseMessageRows((event as MessageEvent<string>).data);
+        if (rows.length === 0) return;
+        setMessages((current) => {
+          // Déduplication par identifiant : les échos de nos propres envois
+          // sont déjà dans la liste.
+          const known = new Set(current.map((message) => message.id));
+          const fresh = rows.filter((row) => !known.has(row.id));
+          return fresh.length === 0 ? current : [...current, ...fresh];
+        });
+        if (document.visibilityState === "visible") markReadNow();
+      });
+      nextSource.onerror = () => {
+        // Flux refusé ou coupé : on ferme et on repasse à l'interrogation ;
+        // le prochain canal retentera SSE.
+        nextSource.close();
+        setUseSse(false);
+      };
+    })();
+
+    return () => {
+      cancelled = true;
+      source?.close();
+      if (interval !== null) clearInterval(interval);
+    };
+  }, [activeId, refreshChannels, refreshMessages, useSse]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: défilement vers le bas à chaque nouveau message.
   useEffect(() => {

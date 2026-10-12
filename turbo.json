@@ -3,14 +3,8 @@
   "ui": "tui",
   "tasks": {
     "build": {
-      "dependsOn": [
-        "^build"
-      ],
-      "outputs": [
-        "dist/**",
-        ".output/**",
-        ".nitro/**"
-      ]
+      "dependsOn": ["^build"],
+      "outputs": ["dist/**", ".output/**", ".nitro/**"]
     },
     "dev": {
       "cache": false,
@@ -22,7 +16,5 @@
     "test": {}
   },
   "envMode": "loose",
-  "globalPassThroughEnv": [
-    "DEMO_SEED_ALLOW_REMOTE"
-  ]
+  "globalPassThroughEnv": ["DEMO_SEED_ALLOW_REMOTE"]
 }

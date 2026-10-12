@@ -1,6 +1,10 @@
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import { AppRail } from "./app-rail.tsx";
-import { CommandPalette, type PaletteAction } from "./command-palette.tsx";
+import {
+  CommandPalette,
+  type PaletteAction,
+  type PaletteSearchResult,
+} from "./command-palette.tsx";
 import type { ResolvedSuiteApp, SuiteAppId } from "./suite-apps.ts";
 import { TopBar } from "./top-bar.tsx";
 
@@ -19,6 +23,8 @@ export type AppShellProps = {
   /** Contenu additionnel dans la barre supérieure (ex. fil d'Ariane). */
   topBarContent?: ReactNode;
   headerActions?: PaletteAction[];
+  /** Recherche globale optionnelle (résultats injectés dans la palette). */
+  search?: (query: string) => Promise<PaletteSearchResult[]>;
   children: ReactNode;
 };
 
@@ -40,10 +46,42 @@ export function AppShell({
   onSignOut,
   topBarContent,
   headerActions = [],
+  search,
   children,
 }: AppShellProps) {
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [paletteQuery, setPaletteQuery] = useState("");
+  const [paletteResults, setPaletteResults] = useState<PaletteSearchResult[]>([]);
+  const [paletteSearching, setPaletteSearching] = useState(false);
+  const searchRequestId = useRef(0);
   const activeApp = apps.find((app) => app.id === activeAppId) ?? apps[0];
+
+  // Recherche globale débouncée (250 ms) : les requêtes de moins de 2 caractères
+  // ne partent pas, les réponses obsolètes sont ignorées et les erreurs restent
+  // muettes — la recherche ne doit jamais casser la palette.
+  useEffect(() => {
+    const query = paletteQuery.trim();
+    const requestId = ++searchRequestId.current;
+    if (!search || query.length < 2) {
+      setPaletteResults([]);
+      setPaletteSearching(false);
+      return;
+    }
+    setPaletteSearching(true);
+    const timer = window.setTimeout(() => {
+      search(query)
+        .then((found) => {
+          if (searchRequestId.current !== requestId) return;
+          setPaletteResults(found);
+          setPaletteSearching(false);
+        })
+        .catch(() => {
+          if (searchRequestId.current !== requestId) return;
+          setPaletteSearching(false);
+        });
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, [paletteQuery, search]);
 
   const paletteActions: PaletteAction[] = [
     {
@@ -121,7 +159,14 @@ export function AppShell({
         </main>
       </div>
 
-      <CommandPalette open={paletteOpen} onOpenChange={setPaletteOpen} actions={paletteActions} />
+      <CommandPalette
+        open={paletteOpen}
+        onOpenChange={setPaletteOpen}
+        actions={paletteActions}
+        results={paletteResults}
+        searching={paletteSearching}
+        onQueryChange={search ? setPaletteQuery : undefined}
+      />
     </div>
   );
 }

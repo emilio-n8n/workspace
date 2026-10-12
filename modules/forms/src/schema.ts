@@ -47,7 +47,6 @@ export const forms = pgTable(
   (table) => [
     uniqueIndex("forms_file_uidx").on(table.fileId),
     uniqueIndex("forms_slug_uidx").on(table.slug),
-    index("forms_org_idx").on(table.orgId),
     // listForms : filtre par org + tri updated_at décroissant.
     index("forms_org_updated_idx").on(table.orgId, table.updatedAt.desc()),
   ],
@@ -80,7 +79,6 @@ export const formResponses = pgTable(
     submittedAt: timestamp("submitted_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (table) => [
-    index("form_responses_form_idx").on(table.formId),
     // Liste paginée des réponses : filtre par form + tri submitted_at décroissant.
     index("form_responses_form_submitted_idx").on(table.formId, table.submittedAt.desc()),
   ],

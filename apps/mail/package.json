@@ -27,7 +27,9 @@
     "react-dom": "^19.2.0",
     "tailwindcss": "^4.1.18",
     "@workspace/mail": "workspace:*",
-    "zod": "^4.1.12"
+    "@workspace/ratelimit": "workspace:*",
+    "zod": "^4.1.12",
+    "@workspace/search": "workspace:*"
   },
   "devDependencies": {
     "@tanstack/devtools-vite": "0.8.5",

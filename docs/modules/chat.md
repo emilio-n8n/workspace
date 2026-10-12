@@ -10,8 +10,9 @@ directes, avec compteurs de non-lus.
 - Messages de 1 à 4 000 caractères, ordre chronologique, regroupés par auteur,
   horodatage local.
 - Non-lus calculés depuis `last_read_at` ; marquage à l'ouverture.
-- Rafraîchissement par interrogation courte (2,5 s messages, 5 s liste) —
-  suffisant pour une instance auto-hébergée.
+- Messages en **temps réel par SSE** (`/api/chat/stream`, curseurs `since`/`sinceId`,
+  keep-alive) avec **repli automatique** sur l'interrogation courte (2,5 s) si la
+  connexion échoue ; la liste des canaux se rafraîchit toutes les 5 s.
 - MCP : `chat.list`, `chat.send`.
 
 ## Modèle de données
@@ -29,5 +30,5 @@ zéro à la lecture, refus pour un non-membre et à l'échelle d'une autre
 organisation (tests de service + E2E).
 
 ## Hors périmètre (assumé)
-Temps réel WebSocket, réactions, fils de discussion, pièces jointes,
+Temps réel bidirectionnel WebSocket (SSE livré ; WebSocket réservé aux accusés de frappe et réactions futures), réactions, fils de discussion, pièces jointes,
 mentions.

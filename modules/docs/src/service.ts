@@ -1,4 +1,4 @@
-import { getDb, withTransaction } from "@workspace/database";
+import { schema as coreSchema, getDb, withTransaction } from "@workspace/database";
 import {
   createLinkedFile,
   type DriveEntry,
@@ -9,7 +9,7 @@ import {
   touchEntry,
 } from "@workspace/drive";
 import { type Actor, roleSatisfies } from "@workspace/permissions";
-import { desc, eq, sql } from "drizzle-orm";
+import { desc, eq, inArray, sql } from "drizzle-orm";
 import { escapeHtml, type PmNode, toHtml, toMarkdown } from "./export.ts";
 import { type DocsDocument, type DocsVersion, docsDocuments, docsVersions } from "./schema.ts";
 
@@ -39,6 +39,9 @@ export class DocsError extends Error {
 export type SaveMode = "replace-latest" | "append";
 
 const db = () => getDb();
+
+/** Rétention des versions (jours) par défaut, si l'organisation n'a pas de réglage. */
+const DEFAULT_VERSION_RETENTION_DAYS = 90;
 
 function assertTitle(title: string): string {
   const trimmed = title.trim();
@@ -283,6 +286,10 @@ export async function saveDocument(
   // Met à jour « modifié récemment » côté Drive (best-effort, non bloquant).
   await touchEntry(actor, fileId).catch(() => undefined);
 
+  // Rétention : purge au mieux des versions expirées (la version courante n'est
+  // jamais supprimée), sans bloquer la réponse.
+  void pruneDocumentVersions(actor, fileId).catch(() => undefined);
+
   return result;
 }
 
@@ -293,6 +300,68 @@ export async function listDocumentVersions(actor: Actor, fileId: string): Promis
     .from(docsVersions)
     .where(eq(docsVersions.documentId, document.id))
     .orderBy(desc(docsVersions.version));
+}
+
+/** Fenêtre de rétention des versions (jours) — réglage d'organisation, 90 par défaut. */
+async function loadVersionRetentionDays(orgId: string): Promise<number> {
+  const [settings] = await db()
+    .select({ versionRetentionDays: coreSchema.orgSettings.versionRetentionDays })
+    .from(coreSchema.orgSettings)
+    .where(eq(coreSchema.orgSettings.orgId, orgId))
+    .limit(1);
+
+  return settings?.versionRetentionDays ?? DEFAULT_VERSION_RETENTION_DAYS;
+}
+
+/**
+ * Rétention des versions : supprime les versions plus anciennes que la fenêtre
+ * de rétention de l'organisation (`orgSettings.versionRetentionDays`, 90 jours
+ * par défaut). La version la plus récente et celle référencée comme courante
+ * (`docsDocuments.currentVersion`) sont toujours conservées : au moins une
+ * version subsiste après purge.
+ *
+ * Appelée au mieux après `saveDocument` ; exportée pour un usage manuel/admin.
+ */
+export async function pruneDocumentVersions(
+  actor: Actor,
+  fileId: string,
+): Promise<{ removed: number }> {
+  const { document } = await requireDocument(actor, fileId);
+
+  const role = await effectiveRole(actor, fileId);
+  if (!roleSatisfies(role, "write")) {
+    throw new DocsError("forbidden", "Permission insuffisante pour modifier ce document.");
+  }
+
+  const retentionDays = await loadVersionRetentionDays(actor.orgId);
+  const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000);
+
+  const versions = await db()
+    .select({
+      id: docsVersions.id,
+      version: docsVersions.version,
+      createdAt: docsVersions.createdAt,
+    })
+    .from(docsVersions)
+    .where(eq(docsVersions.documentId, document.id));
+
+  if (versions.length <= 1) return { removed: 0 };
+
+  const latestVersion = Math.max(...versions.map((row) => row.version));
+  const kept = new Set([latestVersion, document.currentVersion]);
+  const stale = versions.filter((row) => !kept.has(row.version) && row.createdAt < cutoff);
+  if (stale.length === 0) return { removed: 0 };
+
+  await db()
+    .delete(docsVersions)
+    .where(
+      inArray(
+        docsVersions.id,
+        stale.map((row) => row.id),
+      ),
+    );
+
+  return { removed: stale.length };
 }
 
 export async function renameDocument(

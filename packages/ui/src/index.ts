@@ -51,6 +51,7 @@ export {
   CommandPalette,
   type CommandPaletteProps,
   type PaletteAction,
+  type PaletteSearchResult,
 } from "./shell/command-palette.tsx";
 export {
   type ResolvedSuiteApp,

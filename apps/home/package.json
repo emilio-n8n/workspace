@@ -30,7 +30,9 @@
     "@workspace/drive": "workspace:*",
     "@workspace/search": "workspace:*",
     "zod": "^4.1.12",
-    "drizzle-orm": "^0.45.4"
+    "drizzle-orm": "^0.45.4",
+    "@workspace/sheets": "workspace:*",
+    "@workspace/slides": "workspace:*"
   },
   "devDependencies": {
     "@tanstack/devtools-vite": "0.8.5",

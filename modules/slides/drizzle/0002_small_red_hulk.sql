@@ -1,0 +1,1 @@
+ALTER TABLE "slide_elements" ADD COLUMN "media_key" text;

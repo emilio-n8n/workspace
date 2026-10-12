@@ -65,7 +65,6 @@ export const mailMessages = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (table) => [
-    index("mail_messages_mailbox_folder_idx").on(table.mailboxId, table.folder),
     // Liste d'un dossier : filtre (mailbox, folder) + tri created_at décroissant.
     index("mail_messages_mailbox_folder_created_idx").on(
       table.mailboxId,

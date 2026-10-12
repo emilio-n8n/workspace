@@ -115,3 +115,120 @@ body {
   height: 0;
   pointer-events: none;
 }
+
+/* ---------------------------------------------------------------------------
+ * Impression / export PDF (Ctrl+P).
+ * Seule la surface du document sort sur le papier : `.print-hide` masque le
+ * chrome applicatif, `.print-flow` / `.print-surface` marquent le contenu dans
+ * la route doc.$fileId (seule page où ces règles s'activent via `:has()`).
+ * ------------------------------------------------------------------------- */
+@media print {
+  /* --- Chrome : tout ce qui n'est pas le document --- */
+  .print-hide {
+    display: none !important;
+  }
+
+  /* Coque de la suite (rail d'apps + barre supérieure), rendue hors route. */
+  body:has(.print-flow) header,
+  body:has(.print-flow) nav[aria-label="Applications de la suite"] {
+    display: none !important;
+  }
+
+  /* --- Mise en page : le contenu coule sur plusieurs pages --- */
+  body:has(.print-flow) > div,
+  body:has(.print-flow) > div > div,
+  body:has(.print-flow) main#contenu,
+  .print-flow,
+  .print-surface,
+  .print-surface > div,
+  .print-surface > div > :last-child {
+    display: block !important;
+    height: auto !important;
+    min-height: 0 !important;
+    overflow: visible !important;
+  }
+
+  body:has(.print-flow) main#contenu {
+    padding: 0 !important;
+  }
+
+  /* La surface du document devient une simple feuille : ni cadre, ni ombre. */
+  .print-surface {
+    border: none !important;
+    box-shadow: none !important;
+    background: white !important;
+    padding: 0 !important;
+  }
+
+  /* Barre d'outils, alertes et état de sauvegarde de l'éditeur (composant partagé). */
+  .print-surface > div > :not(:last-child) {
+    display: none !important;
+  }
+
+  /* Cadre de page de l'éditeur : plus de largeur max ni de padding écran. */
+  .print-surface > div > :last-child > :first-child {
+    max-width: none !important;
+    margin: 0 !important;
+    padding: 0 !important;
+  }
+
+  /* --- Papier --- */
+  html,
+  body {
+    background: white !important;
+  }
+
+  html {
+    color-scheme: light !important;
+  }
+
+  @page {
+    margin: 20mm 18mm;
+  }
+
+  /* --- Typographie du document --- */
+  .workspace-editor {
+    font-size: 11.5pt;
+    line-height: 1.6;
+    color: black;
+  }
+
+  .workspace-editor a {
+    color: black;
+    text-decoration: underline;
+  }
+
+  /* Pas de coupure au milieu des blocs. */
+  .workspace-editor p,
+  .workspace-editor li,
+  .workspace-editor blockquote {
+    break-inside: avoid;
+  }
+
+  .workspace-editor h1,
+  .workspace-editor h2,
+  .workspace-editor h3 {
+    break-after: avoid;
+  }
+
+  /* Le thème sombre ne s'imprime pas : fonds et filets reviennent au papier. */
+  .workspace-editor pre,
+  .workspace-editor code {
+    background: #f4f4f5;
+  }
+
+  .workspace-editor pre,
+  .workspace-editor hr {
+    border-color: #d4d4d8;
+  }
+
+  .workspace-editor blockquote {
+    border-left-color: #d4d4d8;
+    color: #3f3f46;
+  }
+
+  /* Le libellé « Commencez à écrire… » ne doit pas finir sur le papier. */
+  .workspace-editor p.is-editor-empty:first-child::before {
+    content: none;
+  }
+}

@@ -40,6 +40,9 @@ const LINK_ROLES: readonly GrantRole[] = ["viewer", "editor"];
 const db = () => getDb();
 const storage = () => getStorage();
 
+/** Rétention des versions (jours) par défaut, si l'organisation n'a pas de réglage. */
+const DEFAULT_VERSION_RETENTION_DAYS = 90;
+
 /** Limite d'upload configurée (octets) — lecture paresseuse de l'environnement. */
 export function getMaxUploadBytes(): number {
   return getServerEnv().MAX_UPLOAD_BYTES;
@@ -639,7 +642,7 @@ export async function download(
   return { entry, body };
 }
 
-/** Remplace le contenu d'un fichier → nouvelle version (les anciennes restent accessibles). */
+/** Remplace le contenu d'un fichier → nouvelle version (les anciennes suivent la rétention). */
 export async function replaceContent(
   actor: Actor,
   fileId: string,
@@ -660,7 +663,7 @@ export async function replaceContent(
   const key = orgKey(actor.orgId, randomUUID(), entry.name);
   await storage().put({ key, body: input.body, contentType: input.contentType });
 
-  return withTransaction(async (tx) => {
+  const result = await withTransaction(async (tx) => {
     const [highest] = await tx
       .select({ max: sql<number>`coalesce(max(${driveFileVersions.version}), 0)`.mapWith(Number) })
       .from(driveFileVersions)
@@ -695,6 +698,12 @@ export async function replaceContent(
 
     return { entry: updated, version };
   });
+
+  // Rétention : purge au mieux des versions expirées (la version courante n'est
+  // jamais supprimée), sans bloquer la réponse.
+  void pruneVersions(actor, fileId).catch(() => undefined);
+
+  return result;
 }
 
 export async function rename(actor: Actor, entryId: string, name: string): Promise<DriveEntry> {
@@ -825,6 +834,77 @@ export async function listVersions(actor: Actor, fileId: string): Promise<DriveV
     .orderBy(desc(driveFileVersions.version));
 }
 
+/** Fenêtre de rétention des versions (jours) — réglage d'organisation, 90 par défaut. */
+async function loadVersionRetentionDays(orgId: string): Promise<number> {
+  const [settings] = await db()
+    .select({ versionRetentionDays: coreSchema.orgSettings.versionRetentionDays })
+    .from(coreSchema.orgSettings)
+    .where(eq(coreSchema.orgSettings.orgId, orgId))
+    .limit(1);
+
+  return settings?.versionRetentionDays ?? DEFAULT_VERSION_RETENTION_DAYS;
+}
+
+/**
+ * Rétention des versions : supprime les versions plus anciennes que la fenêtre
+ * de rétention de l'organisation (`orgSettings.versionRetentionDays`, 90 jours
+ * par défaut). La version courante — la plus récente, celle servie par
+ * `driveFiles.storageKey` — n'est jamais supprimée, même expirée. Les blobs
+ * orphelins sont nettoyés au mieux : une erreur de stockage ne fait pas échouer
+ * la purge (les lignes, elles, sont déjà supprimées).
+ *
+ * Appelée au mieux après `replaceContent` ; exportée pour un usage manuel/admin.
+ */
+export async function pruneVersions(actor: Actor, entryId: string): Promise<{ removed: number }> {
+  const entry = await assertDrive(actor, "write", entryId);
+  if (entry.kind !== "file") return { removed: 0 };
+
+  const retentionDays = await loadVersionRetentionDays(actor.orgId);
+  const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000);
+
+  const versions = await db()
+    .select({
+      id: driveFileVersions.id,
+      version: driveFileVersions.version,
+      storageKey: driveFileVersions.storageKey,
+      createdAt: driveFileVersions.createdAt,
+    })
+    .from(driveFileVersions)
+    .where(eq(driveFileVersions.fileId, entryId));
+
+  if (versions.length <= 1) return { removed: 0 };
+
+  const latestVersion = Math.max(...versions.map((row) => row.version));
+  // Garde le numéro le plus élevé et toute clé encore référencée par le fichier :
+  // la version servie ne peut pas être purgée même si l'invariant est rompu.
+  const stale = versions.filter(
+    (row) =>
+      row.version !== latestVersion &&
+      row.storageKey !== entry.storageKey &&
+      row.createdAt < cutoff,
+  );
+  if (stale.length === 0) return { removed: 0 };
+
+  await db()
+    .delete(driveFileVersions)
+    .where(
+      inArray(
+        driveFileVersions.id,
+        stale.map((row) => row.id),
+      ),
+    );
+
+  await Promise.all(
+    stale.map((row) =>
+      storage()
+        .delete(row.storageKey)
+        .catch(() => undefined),
+    ),
+  );
+
+  return { removed: stale.length };
+}
+
 /** Chaîne d'ancêtres (du plus haut au plus proche) — affichage du fil d'Ariane. */
 export async function getAncestors(actor: Actor, entryId: string): Promise<DriveEntry[]> {
   await assertDrive(actor, "read", entryId);
@@ -853,12 +933,46 @@ export async function getAncestors(actor: Actor, entryId: string): Promise<Drive
 // Partage (utilisateurs, groupes, liens)
 // ---------------------------------------------------------------------------
 
+/**
+ * Un sujet utilisateur qui n'est pas membre de l'organisation de l'acteur est
+ * « externe » (membre d'une autre organisation ou identifiant inconnu) : le
+ * partage direct est alors soumis à `orgSettings.allowExternalSharing` (true
+ * par défaut quand aucune ligne de réglages n'existe). Groupes et organisation
+ * entière sont internes par construction et ne sont pas concernés.
+ */
+async function assertSharingSubjectAllowed(actor: Actor, subject: GrantSubject): Promise<void> {
+  if (subject.kind !== "user") return;
+
+  const [membership] = await db()
+    .select({ userId: coreSchema.member.userId })
+    .from(coreSchema.member)
+    .where(
+      and(
+        eq(coreSchema.member.userId, subject.id),
+        eq(coreSchema.member.organizationId, actor.orgId),
+      ),
+    )
+    .limit(1);
+  if (membership) return;
+
+  const [settings] = await db()
+    .select({ allowExternalSharing: coreSchema.orgSettings.allowExternalSharing })
+    .from(coreSchema.orgSettings)
+    .where(eq(coreSchema.orgSettings.orgId, actor.orgId))
+    .limit(1);
+
+  if (settings?.allowExternalSharing === false) {
+    throw new DriveError("validation", "Le partage externe est désactivé pour cette organisation.");
+  }
+}
+
 export async function shareEntry(
   actor: Actor,
   entryId: string,
   input: { subject: GrantSubject; role: GrantRole },
 ): Promise<ResourceGrantRow | null> {
   await assertDrive(actor, "share", entryId);
+  await assertSharingSubjectAllowed(actor, input.subject);
   return createGrant({
     resource: { type: "file", id: entryId, orgId: actor.orgId },
     subject: input.subject,

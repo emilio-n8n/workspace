@@ -1,6 +1,6 @@
 import { schema as core, type Database, getDb, withTransaction } from "@workspace/database";
 import type { Actor } from "@workspace/permissions";
-import { and, asc, desc, eq, inArray, isNull, lt, ne, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNull, lt, ne, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { chatChannels, chatMembers, chatMessages } from "./schema.ts";
 
@@ -302,13 +302,30 @@ export async function listOrgMembers(actor: Actor): Promise<OrgMemberView[]> {
 // Messages
 // ---------------------------------------------------------------------------
 
+/**
+ * Messages d'un canal. Deux sens de pagination :
+ * - `before`/`beforeId` remonte l'historique (les plus récents d'abord, retournés
+ *   en ordre croissant), plafonné à 100 ;
+ * - `since`/`sinceId` (flux temps réel) renvoie les plus **anciens** messages
+ *   postérieurs au curseur `(created_at, id)`, plafonné à 200. `since` a la
+ *   priorité sur `before` si les deux sont fournis.
+ * Le départage par identifiant tranche les ex æquo (même microseconde). Le
+ * curseur ISO étant à la milliseconde, un message de la même milliseconde que
+ * le curseur peut être rediffusé (au pire une fois) : jamais de saut, le client
+ * déduplique par identifiant.
+ */
 export async function listMessages(
   actor: Actor,
   channelId: string,
-  input: { before?: string; beforeId?: string; limit?: number } = {},
+  input: {
+    before?: string;
+    beforeId?: string;
+    since?: string;
+    sinceId?: string;
+    limit?: number;
+  } = {},
 ): Promise<MessageView[]> {
   await requireMembership(actor, channelId);
-  const limit = Math.max(1, Math.min(input.limit ?? 50, 100));
 
   let before: Date | null = null;
   if (input.before !== undefined) {
@@ -317,12 +334,36 @@ export async function listMessages(
       throw new ChatError("validation", "Paramètre « before » invalide.");
     }
   }
+  let since: Date | null = null;
+  if (input.since !== undefined) {
+    since = new Date(input.since);
+    if (Number.isNaN(since.getTime())) {
+      throw new ChatError("validation", "Paramètre « since » invalide.");
+    }
+  }
   if (input.beforeId !== undefined && !UUID_PATTERN.test(input.beforeId)) {
     throw new ChatError("validation", "Paramètre « beforeId » invalide.");
   }
+  if (input.sinceId !== undefined && !UUID_PATTERN.test(input.sinceId)) {
+    throw new ChatError("validation", "Paramètre « sinceId » invalide.");
+  }
+
+  const limit = Math.max(1, Math.min(input.limit ?? 50, since ? 200 : 100));
 
   const conditions = [eq(chatMessages.channelId, channelId)];
-  if (before && input.beforeId) {
+  if (since) {
+    // Flux temps réel : on part du curseur vers l'avant, en gardant les plus
+    // anciens nouveaux messages (le tri croissant précède la limite).
+    if (input.sinceId) {
+      conditions.push(
+        sql`(${chatMessages.createdAt}, ${chatMessages.id}) > (${since.toISOString()}::timestamptz, ${input.sinceId}::uuid)`,
+      );
+    } else {
+      // Compatibilité : sans sinceId, curseur temporel seul (les messages à la
+      // même microseconde que le curseur sont ignorés).
+      conditions.push(gt(chatMessages.createdAt, since));
+    }
+  } else if (before && input.beforeId) {
     // Départage d'égalité : (created_at, id) < (curseur, curseur) — même ordre
     // décroissant que le tri, sans quoi des messages à la milliseconde près
     // pouvaient être sautés ou répétés.
@@ -334,7 +375,7 @@ export async function listMessages(
     conditions.push(lt(chatMessages.createdAt, before));
   }
 
-  const rows = await db()
+  const query = db()
     .select({
       id: chatMessages.id,
       body: chatMessages.body,
@@ -344,11 +385,17 @@ export async function listMessages(
     })
     .from(chatMessages)
     .innerJoin(core.user, eq(core.user.id, chatMessages.authorId))
-    .where(and(...conditions))
-    .orderBy(desc(chatMessages.createdAt), desc(chatMessages.id))
-    .limit(limit);
+    .where(and(...conditions));
 
-  return rows.reverse().map((row) => ({
+  // Le tri croissant (`since`) rend déjà la page dans l'ordre d'affichage ; le
+  // tri décroissant (`before`) doit être inversé pour repartir du plus ancien.
+  const rows = since
+    ? await query.orderBy(asc(chatMessages.createdAt), asc(chatMessages.id)).limit(limit)
+    : (
+        await query.orderBy(desc(chatMessages.createdAt), desc(chatMessages.id)).limit(limit)
+      ).reverse();
+
+  return rows.map((row) => ({
     id: row.id,
     body: row.body,
     createdAt: row.createdAt.toISOString(),

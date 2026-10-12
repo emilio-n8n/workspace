@@ -1,4 +1,4 @@
-import { Alert, Button, ConfirmDialog, cn, Input, Label } from "@workspace/ui";
+import { Alert, Button, ConfirmDialog, cn, Dialog, Input, Label } from "@workspace/ui";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   type ElementView,
@@ -86,6 +86,9 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
   const [presenting, setPresenting] = useState(false);
   const [presentIndex, setPresentIndex] = useState(0);
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [imageOpen, setImageOpen] = useState(false);
+  const [imageBusy, setImageBusy] = useState(false);
+  const [imageError, setImageError] = useState<string | null>(null);
   const canvasRef = useRef<HTMLDivElement>(null);
   const slidesRef = useRef<EditorSlide[]>([]);
   const canEditRef = useRef(false);
@@ -200,6 +203,51 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
           };
     mutateSlide(selectedSlide, (slide) => ({ ...slide, elements: [...slide.elements, element] }));
     setSelectedElementKey(element.key);
+  }
+
+  /**
+   * Téléverse l'image choisie, puis l'ajoute à la diapositive courante.
+   * Le binaire vit dans le stockage du module ; l'élément ne garde que la clé.
+   */
+  async function onImageSelected(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    setImageBusy(true);
+    setImageError(null);
+    try {
+      const form = new FormData();
+      form.append("file", file);
+      const response = await fetch(`/api/slides/upload?fileId=${encodeURIComponent(fileId)}`, {
+        method: "POST",
+        body: form,
+      });
+      if (!response.ok) {
+        const payload = (await response.json().catch(() => null)) as { message?: string } | null;
+        throw new Error(payload?.message ?? "Téléversement impossible.");
+      }
+      const { mediaKey } = (await response.json()) as { mediaKey: string };
+      const element: EditorElement = {
+        key: crypto.randomUUID(),
+        kind: "image",
+        x: 20,
+        y: 20,
+        w: 30,
+        h: 25,
+        text: "",
+        mediaKey,
+        fontSize: 24,
+        bold: false,
+        align: "left",
+      };
+      mutateSlide(selectedSlide, (slide) => ({ ...slide, elements: [...slide.elements, element] }));
+      setSelectedElementKey(element.key);
+      setImageOpen(false);
+    } catch (caught) {
+      setImageError(caught instanceof Error ? caught.message : "Téléversement impossible.");
+    } finally {
+      setImageBusy(false);
+    }
   }
 
   function deleteElement() {
@@ -371,6 +419,7 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
           const className = cn(
             "absolute select-none whitespace-pre-wrap rounded",
             element.kind === "shape" && "border border-border bg-accent",
+            element.kind === "image" && "bg-muted",
           );
           const style = {
             left: `${element.x}%`,
@@ -382,10 +431,23 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
             textAlign: element.align,
             lineHeight: 1.25,
           } as const;
+          // Image : le binaire est servi par la route média (clé anti-IDOR) ;
+          // la zone garde ses poignées de déplacement/redimensionnement.
+          const content =
+            element.kind === "image" && element.mediaKey ? (
+              <img
+                src={`/api/slides/media?fileId=${fileId}&key=${encodeURIComponent(element.mediaKey)}`}
+                className="size-full object-contain"
+                draggable={false}
+                alt=""
+              />
+            ) : (
+              element.text
+            );
           if (!interactive) {
             return (
               <div key={element.key} className={className} style={style}>
-                {element.text}
+                {content}
               </div>
             );
           }
@@ -394,9 +456,11 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
               key={element.key}
               type="button"
               aria-label={
-                element.text
-                  ? `Élément ${element.text}`
-                  : `Élément ${element.kind === "shape" ? "forme" : "texte"}`
+                element.kind === "image"
+                  ? "Élément image"
+                  : element.text
+                    ? `Élément ${element.text}`
+                    : `Élément ${element.kind === "shape" ? "forme" : "texte"}`
               }
               onPointerDown={(event) => startElementDrag(event, element)}
               onClick={(event) => {
@@ -411,7 +475,7 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
               )}
               style={style}
             >
-              {element.text}
+              {content}
               {selectedElementKey === element.key ? (
                 <span
                   aria-hidden
@@ -524,6 +588,16 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
                   <Button size="sm" variant="outline" onClick={() => addElement("shape")}>
                     Ajouter une forme
                   </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => {
+                      setImageError(null);
+                      setImageOpen(true);
+                    }}
+                  >
+                    Ajouter une image
+                  </Button>
                   <span className="mx-1 h-5 w-px bg-border" />
                   <Button size="sm" variant="outline" onClick={addSlide}>
                     ＋ Diapositive
@@ -599,6 +673,9 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
                   <p className="text-xs font-medium uppercase tracking-widest text-muted-foreground">
                     Élément sélectionné
                   </p>
+                  {selectedElement.kind === "image" ? (
+                    <p className="text-sm font-medium">Image</p>
+                  ) : null}
                   {selectedElement.kind === "text" ? (
                     <div className="flex flex-col gap-1">
                       <Label htmlFor="element-text">Texte</Label>
@@ -689,6 +766,24 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
         message="Cette diapositive et ses éléments seront supprimés."
         destructive
       />
+
+      <Dialog open={imageOpen} onClose={() => setImageOpen(false)} title="Ajouter une image">
+        <div className="flex flex-col gap-3">
+          <input
+            type="file"
+            accept="image/*"
+            aria-label="Fichier image"
+            disabled={imageBusy}
+            onChange={(event) => void onImageSelected(event)}
+            className="text-sm"
+          />
+          <p className="text-xs text-muted-foreground">
+            PNG, JPEG, WebP, GIF ou AVIF — 8 Mo maximum.
+          </p>
+          {imageBusy ? <p className="text-xs text-muted-foreground">Téléversement…</p> : null}
+          {imageError ? <p className="text-xs text-destructive">{imageError}</p> : null}
+        </div>
+      </Dialog>
 
       {presenting ? (
         <div className="fixed inset-0 z-50 flex flex-col bg-rail text-rail-foreground">

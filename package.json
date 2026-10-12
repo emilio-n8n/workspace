@@ -21,6 +21,7 @@
     "seed:demo": "tsx scripts/seed-demo.mts"
   },
   "devDependencies": {
+    "@axe-core/playwright": "^4.13.0",
     "@biomejs/biome": "^2.5.15",
     "@playwright/test": "^1.64.0",
     "@workspace/config": "workspace:*",

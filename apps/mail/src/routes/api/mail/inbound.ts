@@ -5,6 +5,7 @@ import {
   MAX_INBOUND_BODY_LENGTH,
   type MailError,
 } from "@workspace/mail";
+import { createRateLimiter } from "@workspace/ratelimit";
 
 type InboundBody = {
   to?: string;
@@ -22,6 +23,13 @@ type InboundBody = {
  * par @workspace/mail, qui renvoie une MailError « validation ».
  */
 const MAX_REQUEST_LENGTH = MAX_INBOUND_BODY_LENGTH + 64 * 1024;
+
+/**
+ * Garde-fou anti-abus (audit) : 30 ingestions par minute et par IP, vérifié
+ * avant toute lecture du corps. Compteur en mémoire : mono-instance
+ * (voir @workspace/ratelimit).
+ */
+const inboundLimiter = createRateLimiter({ windowMs: 60_000, max: 30 });
 
 function statusForError(error: MailError): number {
   switch (error.code) {
@@ -41,6 +49,19 @@ export const Route = createFileRoute("/api/mail/inbound")({
   server: {
     handlers: {
       POST: async ({ request }) => {
+        // L'IP vient du proxy (en-têtes normalisés) ; accès direct en dev : « local ».
+        const ip =
+          request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ??
+          request.headers.get("x-real-ip") ??
+          "local";
+        const limit = inboundLimiter.check(`inbound:${ip}`);
+        if (!limit.allowed) {
+          return new Response("Trop de requêtes — réessayez dans un instant.", {
+            status: 429,
+            headers: { "retry-after": String(limit.retryAfterSeconds) },
+          });
+        }
+
         const raw = await request.text();
         if (raw.length > MAX_REQUEST_LENGTH) {
           return new Response("Corps trop volumineux (1 Mo maximum).", { status: 400 });

@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { getDb, withTransaction } from "@workspace/database";
 import {
   createLinkedFile,
@@ -24,6 +25,28 @@ const MAX_ELEMENTS_PER_SLIDE = 100;
 const MAX_TEXT_CHARS = 2000;
 const MAX_NOTES_CHARS = 5000;
 
+/** Taille maximale d'une image de diapositive (8 Mo). */
+export const MAX_SLIDE_IMAGE_BYTES = 8 * 1024 * 1024;
+/** Préfixe des clés média gérées par le module. */
+const MEDIA_KEY_PREFIX = "slides/";
+/** Types MIME image acceptés à l'upload → extension de la clé. */
+const IMAGE_CONTENT_TYPES: Record<string, string> = {
+  "image/png": "png",
+  "image/jpeg": "jpg",
+  "image/webp": "webp",
+  "image/gif": "gif",
+  "image/avif": "avif",
+};
+/** Extension → type MIME servi (petit map inverse, lecture). */
+const IMAGE_EXTENSION_TYPES: Record<string, string> = {
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  webp: "image/webp",
+  gif: "image/gif",
+  avif: "image/avif",
+};
+
 export type SlidesErrorCode = "not_found" | "forbidden" | "validation" | "conflict";
 
 export class SlidesError extends Error {
@@ -35,7 +58,7 @@ export class SlidesError extends Error {
   }
 }
 
-export type ElementKind = "text" | "shape";
+export type ElementKind = "text" | "shape" | "image";
 export type ElementAlign = "left" | "center" | "right";
 
 export type ElementView = {
@@ -46,6 +69,8 @@ export type ElementView = {
   w: number;
   h: number;
   text: string;
+  /** Clé de stockage du binaire pour kind "image" ; null/absent sinon. */
+  mediaKey?: string | null;
   fontSize: number;
   bold: boolean;
   align: ElementAlign;
@@ -108,7 +133,7 @@ function assertRevision(revision: unknown): number {
   return revision;
 }
 
-const ELEMENT_KINDS = ["text", "shape"] as const;
+const ELEMENT_KINDS = ["text", "shape", "image"] as const;
 const ELEMENT_ALIGNS = ["left", "center", "right"] as const;
 
 function assertSlides(input: unknown): SlideInput[] {
@@ -162,6 +187,29 @@ function assertSlides(input: unknown): SlideInput[] {
         if (element.text.length > MAX_TEXT_CHARS) {
           throw new SlidesError("validation", `Texte limité à ${MAX_TEXT_CHARS} caractères.`);
         }
+        // Le binaire des images vit dans le stockage objet : l'élément ne
+        // référence que la clé. Les autres types n'en portent jamais.
+        const trimmedMediaKey =
+          element.mediaKey == null || element.mediaKey === "" ? null : element.mediaKey;
+        if (element.kind === "image") {
+          if (
+            typeof trimmedMediaKey !== "string" ||
+            !trimmedMediaKey.startsWith(MEDIA_KEY_PREFIX)
+          ) {
+            throw new SlidesError(
+              "validation",
+              "Une image doit référencer un média (clé démarrant par slides/).",
+            );
+          }
+          if (trimmedMediaKey.length > 512) {
+            throw new SlidesError("validation", "Clé média trop longue (512 caractères maximum).");
+          }
+          if (element.text.length > 0) {
+            throw new SlidesError("validation", "Une image ne peut pas porter de texte.");
+          }
+        } else if (trimmedMediaKey !== null) {
+          throw new SlidesError("validation", "Seules les images portent une clé média.");
+        }
         if (!ELEMENT_ALIGNS.includes(element.align as (typeof ELEMENT_ALIGNS)[number])) {
           throw new SlidesError("validation", "Alignement inconnu.");
         }
@@ -179,6 +227,7 @@ function assertSlides(input: unknown): SlideInput[] {
           w,
           h,
           text: element.text,
+          mediaKey: element.kind === "image" ? (trimmedMediaKey as string) : null,
           fontSize,
           bold: Boolean(element.bold),
           align: element.align as ElementAlign,
@@ -235,6 +284,7 @@ async function loadSlides(presentationId: string): Promise<SlideView[]> {
       w: element.w,
       h: element.h,
       text: element.text,
+      mediaKey: element.mediaKey,
       fontSize: element.fontSize,
       bold: element.bold,
       align: element.align as ElementAlign,
@@ -317,6 +367,18 @@ export async function savePresentation(
   const revision = assertRevision(input.revision);
   const slides = assertSlides(input.slides);
 
+  // Clés média encore référencées par le payload : sert à savoir quelles
+  // images retirées peuvent être supprimées du stockage après commit.
+  const keptMediaKeys = new Set<string>();
+  for (const slide of slides) {
+    for (const element of slide.elements) {
+      if (element.mediaKey) keptMediaKeys.add(element.mediaKey);
+    }
+  }
+  // Images présentes en base que le payload ne référence plus (remplies dans
+  // la transaction, supprimées seulement une fois le commit acquis).
+  const removedMediaKeys = new Set<string>();
+
   const nextRevision = await withTransaction(async (tx) => {
     const [bumped] = await tx
       .update(presentations)
@@ -337,7 +399,7 @@ export async function savePresentation(
     const knownSlideIds = new Set(existingSlides.map((row) => row.id));
 
     const existingElements = await tx
-      .select({ id: slideElements.id })
+      .select({ id: slideElements.id, mediaKey: slideElements.mediaKey })
       .from(slideElements)
       .innerJoin(presentationSlides, eq(slideElements.slideId, presentationSlides.id))
       .where(eq(presentationSlides.presentationId, presentationId));
@@ -377,6 +439,7 @@ export async function savePresentation(
           w: element.w,
           h: element.h,
           text: element.text,
+          mediaKey: element.mediaKey ?? null,
           fontSize: element.fontSize,
           bold: element.bold,
           align: element.align,
@@ -417,12 +480,100 @@ export async function savePresentation(
         ),
       );
 
+    // Images retirées du payload (leur objet de stockage sera nettoyé après
+    // le commit, en best-effort).
+    for (const row of existingElements) {
+      if (row.mediaKey && !keptMediaKeys.has(row.mediaKey)) removedMediaKeys.add(row.mediaKey);
+    }
+
     return bumped.revision;
   });
+
+  // Nettoyage best-effort des images retirées, APRÈS commit : un échec laisse
+  // un objet orphelin sans jamais défaire la sauvegarde, et seuls les objets
+  // de cette présentation sont visés (anti-IDOR sur les clés).
+  const ownPrefix = `slides/${presentationId}/`;
+  const removableMediaKeys = [...removedMediaKeys].filter((key) => key.startsWith(ownPrefix));
+  if (removableMediaKeys.length > 0) {
+    const { getStorage } = await import("@workspace/storage");
+    for (const key of removableMediaKeys) {
+      await getStorage()
+        .delete(key)
+        .catch(() => undefined);
+    }
+  }
 
   await touchEntry(actor, fileId).catch(() => undefined);
   const detail = await getPresentation(actor, fileId);
   return { ...detail, revision: nextRevision };
+}
+
+/**
+ * Téléverse une image d'illustration. Le binaire vit dans le stockage objet,
+ * la clé reste confinée à la présentation : `slides/<id>/<uuid>.<ext>`.
+ */
+export async function uploadSlideImage(
+  actor: Actor,
+  fileId: string,
+  input: { contentType: string; body: Buffer },
+): Promise<{ mediaKey: string }> {
+  const { presentationId } = await requirePresentation(actor, fileId);
+  const role = await effectiveRole(actor, fileId);
+  if (!roleSatisfies(role, "write")) {
+    throw new SlidesError("forbidden", "Permission insuffisante pour modifier cette présentation.");
+  }
+
+  const contentType = input.contentType.trim().toLowerCase();
+  const extension = IMAGE_CONTENT_TYPES[contentType];
+  if (!extension) {
+    throw new SlidesError(
+      "validation",
+      "Format d'image non pris en charge (PNG, JPEG, WebP, GIF ou AVIF).",
+    );
+  }
+  if (input.body.length === 0) {
+    throw new SlidesError("validation", "Image vide.");
+  }
+  if (input.body.length > MAX_SLIDE_IMAGE_BYTES) {
+    throw new SlidesError("validation", "Image trop volumineuse (8 Mo maximum).");
+  }
+
+  const mediaKey = `slides/${presentationId}/${randomUUID()}.${extension}`;
+  const { getStorage } = await import("@workspace/storage");
+  await getStorage().put({ key: mediaKey, body: input.body, contentType });
+
+  return { mediaKey };
+}
+
+/**
+ * Relit une image de la présentation. La clé DOIT être préfixée par
+ * `slides/<presentationId>/` : impossible de lire l'image d'une autre
+ * présentation en devinant sa clé (anti-IDOR). Le type MIME est dérivé de
+ * l'extension ; toute erreur (clé étrangère, objet absent) est une erreur
+ * métier que la route traduit en 404.
+ */
+export async function getSlideImage(
+  actor: Actor,
+  fileId: string,
+  mediaKey: string,
+): Promise<{ contentType: string; body: Buffer }> {
+  const { presentationId } = await requirePresentation(actor, fileId);
+  const prefix = `slides/${presentationId}/`;
+  if (typeof mediaKey !== "string" || !mediaKey.startsWith(prefix)) {
+    throw new SlidesError("validation", "Clé média invalide.");
+  }
+
+  const { getStorage } = await import("@workspace/storage");
+  const body = await getStorage().get(mediaKey);
+  if (!body) {
+    throw new SlidesError("not_found", "Image introuvable.");
+  }
+
+  const extension = mediaKey.split(".").pop()?.toLowerCase() ?? "";
+  return {
+    contentType: IMAGE_EXTENSION_TYPES[extension] ?? "application/octet-stream",
+    body,
+  };
 }
 
 export async function renamePresentation(

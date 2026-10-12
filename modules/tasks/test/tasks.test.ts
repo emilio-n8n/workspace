@@ -11,6 +11,7 @@ import {
   effectiveListRole,
   listListGrants,
   listLists,
+  listMyTasks,
   listTasks,
   renameList,
   shareList,
@@ -195,6 +196,7 @@ describe("tasks — partage et permissions", () => {
       role: "viewer",
     });
     expect(grant).not.toBeNull();
+    if (!grant) throw new Error("Partage non créé.");
 
     expect((await listLists(f.actorBruno))[0]?.role).toBe("viewer");
     const visible = await listTasks(f.actorBruno, { listId: list.id });
@@ -208,7 +210,7 @@ describe("tasks — partage et permissions", () => {
     });
 
     // Promotion editor.
-    await revokeGrant({ type: "task_list", id: list.id, orgId: f.orgId }, grant!.id);
+    await revokeGrant({ type: "task_list", id: list.id, orgId: f.orgId }, grant.id);
     await createGrant({
       resource: { type: "task_list", id: list.id, orgId: f.orgId },
       subject: { kind: "user", id: f.bruno },
@@ -235,5 +237,210 @@ describe("tasks — partage et permissions", () => {
     await createTask(f.actorAlice, { listId: list.id, title: "Éphémère aussi" });
     await deleteList(f.actorAlice, list.id);
     expect(await listLists(f.actorAlice)).toHaveLength(0);
+  });
+});
+
+describe("tasks — « Mes tâches » transverses", () => {
+  it("garde mes assignations et les tâches sans assigné des listes où j'ai l'écriture", async () => {
+    const editorList = await createList(f.actorAlice, { name: "Partagée édition" });
+    const viewerList = await createList(f.actorAlice, { name: "Partagée lecture" });
+    const privateList = await createList(f.actorAlice, { name: "Privée Alice" });
+
+    await shareList(f.actorAlice, editorList.id, {
+      subject: { kind: "user", id: f.bruno },
+      role: "editor",
+    });
+    await shareList(f.actorAlice, viewerList.id, {
+      subject: { kind: "user", id: f.bruno },
+      role: "viewer",
+    });
+
+    const assignedEditor = await createTask(f.actorAlice, {
+      listId: editorList.id,
+      title: "Assignée à moi (édition)",
+      assigneeId: f.bruno,
+    });
+    const unassignedEditor = await createTask(f.actorAlice, {
+      listId: editorList.id,
+      title: "Sans assigné (édition)",
+    });
+    const assignedViewer = await createTask(f.actorAlice, {
+      listId: viewerList.id,
+      title: "Assignée à moi (lecture)",
+      assigneeId: f.bruno,
+    });
+    await createTask(f.actorAlice, { listId: viewerList.id, title: "Sans assigné (lecture)" });
+    await createTask(f.actorAlice, {
+      listId: editorList.id,
+      title: "Assignée à Alice",
+      assigneeId: f.alice,
+    });
+    await createTask(f.actorAlice, { listId: privateList.id, title: "Invisible pour Bruno" });
+    const doneMine = await createTask(f.actorAlice, {
+      listId: editorList.id,
+      title: "Terminée assignée à moi",
+      assigneeId: f.bruno,
+    });
+    await updateTask(f.actorAlice, doneMine.id, { status: "done" });
+
+    const rows = await listMyTasks(f.actorBruno);
+    expect(rows.map((row) => row.task.id).sort()).toEqual(
+      [assignedEditor.id, unassignedEditor.id, assignedViewer.id].sort(),
+    );
+    expect(rows.find((row) => row.task.id === assignedEditor.id)?.listName).toBe(
+      "Partagée édition",
+    );
+    expect(rows.find((row) => row.task.id === assignedViewer.id)?.listName).toBe(
+      "Partagée lecture",
+    );
+    expect(rows.some((row) => row.task.title === "Assignée à Alice")).toBe(false);
+  });
+
+  it("filtre par fenêtre : aujourd'hui, cette semaine, tout", async () => {
+    const list = await createList(f.actorAlice, { name: "Fenêtres" });
+    const now = Date.now();
+    const past = await createTask(f.actorAlice, {
+      listId: list.id,
+      title: "En retard",
+      assigneeId: f.alice,
+      dueAt: new Date(now - 12 * 3_600_000).toISOString(),
+    });
+    const withinWeek = await createTask(f.actorAlice, {
+      listId: list.id,
+      title: "Cette semaine",
+      assigneeId: f.alice,
+      dueAt: new Date(now + 3 * 86_400_000).toISOString(),
+    });
+    const later = await createTask(f.actorAlice, {
+      listId: list.id,
+      title: "Plus tard",
+      assigneeId: f.alice,
+      dueAt: new Date(now + 8 * 86_400_000).toISOString(),
+    });
+    const noDue = await createTask(f.actorAlice, {
+      listId: list.id,
+      title: "Sans échéance",
+      assigneeId: f.alice,
+    });
+
+    const today = await listMyTasks(f.actorAlice, { window: "today" });
+    expect(today.map((row) => row.task.id)).toEqual([past.id]);
+
+    const week = await listMyTasks(f.actorAlice, { window: "week" });
+    expect(week.map((row) => row.task.id)).toEqual([past.id, withinWeek.id]);
+
+    const all = await listMyTasks(f.actorAlice, { window: "all" });
+    expect(all.map((row) => row.task.id)).toEqual([past.id, withinWeek.id, later.id, noDue.id]);
+  });
+
+  it("exclut les terminées et trie retards, priorité puis création", async () => {
+    const list = await createList(f.actorAlice, { name: "Tri" });
+    const now = Date.now();
+    const overdueOld = await createTask(f.actorAlice, {
+      listId: list.id,
+      title: "Retard ancien",
+      assigneeId: f.alice,
+      priority: "medium",
+      dueAt: new Date(now - 3 * 86_400_000).toISOString(),
+    });
+    const overdueRecent = await createTask(f.actorAlice, {
+      listId: list.id,
+      title: "Retard récent",
+      assigneeId: f.alice,
+      priority: "high",
+      dueAt: new Date(now - 86_400_000).toISOString(),
+    });
+    const future = await createTask(f.actorAlice, {
+      listId: list.id,
+      title: "Futur",
+      assigneeId: f.alice,
+      priority: "low",
+      dueAt: new Date(now + 2 * 86_400_000).toISOString(),
+    });
+    const sameDueHigh = await createTask(f.actorAlice, {
+      listId: list.id,
+      title: "Même échéance haute (1)",
+      assigneeId: f.alice,
+      priority: "high",
+      dueAt: new Date(now + 5 * 86_400_000).toISOString(),
+    });
+    const tieFirst = await createTask(f.actorAlice, {
+      listId: list.id,
+      title: "Même échéance haute (2)",
+      assigneeId: f.alice,
+      priority: "high",
+      dueAt: new Date(now + 5 * 86_400_000).toISOString(),
+    });
+    const tieSecond = await createTask(f.actorAlice, {
+      listId: list.id,
+      title: "Même échéance haute (3)",
+      assigneeId: f.alice,
+      priority: "high",
+      dueAt: new Date(now + 5 * 86_400_000).toISOString(),
+    });
+    const sameDueLow = await createTask(f.actorAlice, {
+      listId: list.id,
+      title: "Même échéance basse",
+      assigneeId: f.alice,
+      priority: "low",
+      dueAt: new Date(now + 5 * 86_400_000).toISOString(),
+    });
+    const highNoDue = await createTask(f.actorAlice, {
+      listId: list.id,
+      title: "Sans échéance haute",
+      assigneeId: f.alice,
+      priority: "high",
+    });
+    const lowNoDue = await createTask(f.actorAlice, {
+      listId: list.id,
+      title: "Sans échéance basse",
+      assigneeId: f.alice,
+      priority: "low",
+    });
+    const doneTask = await createTask(f.actorAlice, {
+      listId: list.id,
+      title: "Terminée très en retard",
+      assigneeId: f.alice,
+      dueAt: new Date(now - 10 * 86_400_000).toISOString(),
+    });
+    await updateTask(f.actorAlice, doneTask.id, { status: "done" });
+
+    const rows = await listMyTasks(f.actorAlice);
+    expect(rows.map((row) => row.task.id)).toEqual([
+      overdueOld.id,
+      overdueRecent.id,
+      future.id,
+      sameDueHigh.id,
+      tieFirst.id,
+      tieSecond.id,
+      sameDueLow.id,
+      highNoDue.id,
+      lowNoDue.id,
+    ]);
+    expect(rows.map((row) => row.task.id)).not.toContain(doneTask.id);
+  });
+
+  it("borne la limite et répond vide sans liste visible", async () => {
+    const list = await createList(f.actorAlice, { name: "Bornes" });
+    for (let index = 0; index < 3; index += 1) {
+      await createTask(f.actorAlice, {
+        listId: list.id,
+        title: `Tâche ${index}`,
+        assigneeId: f.alice,
+      });
+    }
+
+    const limited = await listMyTasks(f.actorAlice, { limit: 2 });
+    expect(limited).toHaveLength(2);
+
+    await expect(listMyTasks(f.actorAlice, { limit: 0 })).rejects.toMatchObject({
+      code: "validation",
+    });
+    await expect(listMyTasks(f.actorAlice, { limit: 501 })).rejects.toMatchObject({
+      code: "validation",
+    });
+
+    // Bruno ne voit aucune des listes d'Alice : agrégat vide, jamais d'erreur.
+    expect(await listMyTasks(f.actorBruno)).toEqual([]);
   });
 });

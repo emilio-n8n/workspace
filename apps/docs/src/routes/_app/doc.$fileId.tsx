@@ -98,8 +98,8 @@ function DocumentPage() {
   }
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
-      <header className="flex flex-wrap items-center gap-3 border-b border-border pb-3">
+    <div className="flex h-full min-h-0 flex-col print-flow">
+      <header className="flex flex-wrap items-center gap-3 border-b border-border pb-3 print-hide">
         <Link
           to="/"
           className="text-sm text-muted-foreground hover:text-foreground"
@@ -131,6 +131,9 @@ function DocumentPage() {
           >
             Historique
           </Button>
+          <Button type="button" variant="outline" size="sm" onClick={() => window.print()}>
+            Imprimer
+          </Button>
           <a href={`/api/docs/export/${fileId}?format=md`} download>
             <Button variant="outline" size="sm">
               Exporter .md
@@ -145,7 +148,7 @@ function DocumentPage() {
       </header>
 
       {versionsError ? (
-        <div className="border-b border-border bg-muted/40 px-3 py-2">
+        <div className="border-b border-border bg-muted/40 px-3 py-2 print-hide">
           <p role="alert" className="text-xs text-destructive">
             {versionsError}
           </p>
@@ -153,7 +156,7 @@ function DocumentPage() {
       ) : null}
 
       {versions ? (
-        <div className="border-b border-border bg-muted/40 px-3 py-2">
+        <div className="border-b border-border bg-muted/40 px-3 py-2 print-hide">
           <p className="mb-1 text-xs font-medium uppercase tracking-widest text-muted-foreground">
             Versions
           </p>
@@ -177,14 +180,16 @@ function DocumentPage() {
         </div>
       ) : null}
 
-      <DocumentEditor
-        fileId={fileId}
-        initialRevision={doc.revision}
-        initialContent={doc.content}
-        canEdit={doc.canEdit}
-      />
+      <div className="flex min-h-0 flex-1 flex-col print-surface">
+        <DocumentEditor
+          fileId={fileId}
+          initialRevision={doc.revision}
+          initialContent={doc.content}
+          canEdit={doc.canEdit}
+        />
+      </div>
 
-      <p className="flex items-center gap-1 border-t border-border pt-2 text-xs text-muted-foreground">
+      <p className="flex items-center gap-1 border-t border-border pt-2 text-xs text-muted-foreground print-hide">
         <IconFileText /> « {doc.title} » — fichier du Drive partagé avec les mêmes permissions.
       </p>
     </div>

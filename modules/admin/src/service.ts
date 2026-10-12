@@ -2,7 +2,7 @@ import { recordAudit } from "@workspace/audit";
 import { schema as core, getDb } from "@workspace/database";
 import { driveFiles } from "@workspace/drive";
 import type { Actor } from "@workspace/permissions";
-import { and, asc, desc, eq, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, ne, sql } from "drizzle-orm";
 
 export type AdminErrorCode = "not_found" | "forbidden" | "validation" | "conflict";
 
@@ -21,6 +21,17 @@ export type MemberFull = {
   email: string;
   role: string;
   createdAt: string;
+};
+
+export type ActiveSession = {
+  id: string;
+  userId: string;
+  userName: string;
+  userEmail: string;
+  ipAddress: string | null;
+  userAgent: string | null;
+  createdAt: string;
+  expiresAt: string;
 };
 
 export type OrgOverview = {
@@ -226,6 +237,104 @@ export async function removeMember(actor: Actor, userId: string): Promise<void> 
     resourceId: userId,
     result: "success",
   });
+}
+
+// ---------------------------------------------------------------------------
+// Sessions actives
+// ---------------------------------------------------------------------------
+
+/**
+ * Sessions non expirées des membres de l'organisation (200 plus récentes).
+ * La jointure sur `member` restreint strictement à l'organisation de l'acteur.
+ */
+export async function listActiveSessions(actor: Actor): Promise<ActiveSession[]> {
+  await requireAdmin(actor);
+  const rows = await db()
+    .select({
+      id: core.session.id,
+      userId: core.session.userId,
+      userName: core.user.name,
+      userEmail: core.user.email,
+      ipAddress: core.session.ipAddress,
+      userAgent: core.session.userAgent,
+      createdAt: core.session.createdAt,
+      expiresAt: core.session.expiresAt,
+    })
+    .from(core.session)
+    .innerJoin(core.user, eq(core.user.id, core.session.userId))
+    .innerJoin(
+      core.member,
+      and(eq(core.member.userId, core.session.userId), eq(core.member.organizationId, actor.orgId)),
+    )
+    .where(gt(core.session.expiresAt, new Date()))
+    .orderBy(desc(core.session.createdAt))
+    .limit(200);
+  return rows.map((row) => ({
+    id: row.id,
+    userId: row.userId,
+    userName: row.userName,
+    userEmail: row.userEmail,
+    ipAddress: row.ipAddress,
+    userAgent: row.userAgent,
+    createdAt: row.createdAt.toISOString(),
+    expiresAt: row.expiresAt.toISOString(),
+  }));
+}
+
+/**
+ * Révoque une session d'un membre de l'organisation. La session de l'acteur
+ * lui-même est refusée : sans en-têtes de requête, impossible d'identifier sa
+ * session courante — la déconnexion est le bon geste.
+ */
+export async function revokeSession(actor: Actor, sessionId: string): Promise<void> {
+  await requireAdmin(actor);
+  const [row] = await db()
+    .select({ id: core.session.id, userId: core.session.userId })
+    .from(core.session)
+    .innerJoin(
+      core.member,
+      and(eq(core.member.userId, core.session.userId), eq(core.member.organizationId, actor.orgId)),
+    )
+    .where(eq(core.session.id, sessionId))
+    .limit(1);
+  if (!row) throw new AdminError("not_found", "Session introuvable.");
+  if (row.userId === actor.userId) {
+    throw new AdminError("validation", "Utilisez « Se déconnecter » pour votre propre session.");
+  }
+
+  await db().delete(core.session).where(eq(core.session.id, sessionId));
+  await recordAudit({
+    orgId: actor.orgId,
+    actorUserId: actor.userId,
+    action: "admin.session.revoke",
+    resourceType: "session",
+    resourceId: sessionId,
+    result: "success",
+  });
+}
+
+/** Révoque toutes les sessions d'un membre, sauf celles de l'acteur. */
+export async function revokeAllSessions(
+  actor: Actor,
+  userId: string,
+): Promise<{ revoked: number }> {
+  await requireAdmin(actor);
+  await requireMember(actor, userId);
+  const rows = await db()
+    .delete(core.session)
+    .where(and(eq(core.session.userId, userId), ne(core.session.userId, actor.userId)))
+    .returning({ id: core.session.id });
+
+  await recordAudit({
+    orgId: actor.orgId,
+    actorUserId: actor.userId,
+    action: "admin.session.revoke-all",
+    resourceType: "session",
+    resourceId: userId,
+    result: "success",
+    metadata: { count: rows.length },
+  });
+  return { revoked: rows.length };
 }
 
 // ---------------------------------------------------------------------------

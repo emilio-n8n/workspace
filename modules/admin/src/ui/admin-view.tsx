@@ -1,14 +1,17 @@
-import { Badge, Button, Input, Label } from "@workspace/ui";
+import { Alert, Badge, Button, ConfirmDialog, Input, Label } from "@workspace/ui";
 import { useCallback, useEffect, useState } from "react";
 import {
+  type ActiveSession,
   type AuditEntry,
   addMemberFn,
   getOverviewFn,
+  listActiveSessionsFn,
   listAuditFn,
   listMembersFn,
   type MemberFull,
   type OrgOverview,
   removeMemberFn,
+  revokeSessionFn,
   updateMemberRoleFn,
   updateOrgProfileFn,
   updateQuotaFn,
@@ -21,6 +24,23 @@ function formatBytes(size: number): string {
   return `${(size / (1024 * 1024 * 1024)).toFixed(2)} Go`;
 }
 
+/** « il y a X » compact pour la colonne d'activité des sessions. */
+function formatRelative(iso: string): string {
+  const seconds = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 1000));
+  if (seconds < 60) return "à l'instant";
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `il y a ${minutes} min`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `il y a ${hours} h`;
+  const days = Math.floor(hours / 24);
+  return `il y a ${days} j`;
+}
+
+function truncateAgent(userAgent: string | null): { short: string; full: string } {
+  const full = userAgent ?? "Agent inconnu";
+  return { short: full.length > 60 ? `${full.slice(0, 57)}…` : full, full };
+}
+
 const RESULT_LABELS: Record<string, { label: string; bad?: boolean }> = {
   success: { label: "Succès" },
   denied: { label: "Refusé", bad: true },
@@ -28,13 +48,15 @@ const RESULT_LABELS: Record<string, { label: string; bad?: boolean }> = {
 };
 
 /**
- * Administration de l'organisation : profil, membres et rôles, quota de
- * stockage et journal d'audit. Réservé aux rôles owner/admin (vérifié côté
- * serveur — cet écran n'est qu'une vue).
+ * Administration de l'organisation : profil, membres et rôles, sessions
+ * actives, quota de stockage et journal d'audit. Réservé aux rôles owner/admin
+ * (vérifié côté serveur — cet écran n'est qu'une vue).
  */
 export function AdminView() {
   const [overview, setOverview] = useState<OrgOverview | null>(null);
   const [members, setMembers] = useState<MemberFull[]>([]);
+  const [sessions, setSessions] = useState<ActiveSession[]>([]);
+  const [revokeTarget, setRevokeTarget] = useState<ActiveSession | null>(null);
   const [audit, setAudit] = useState<AuditEntry[]>([]);
   const [orgName, setOrgName] = useState("");
   const [quotaGo, setQuotaGo] = useState("");
@@ -46,15 +68,17 @@ export function AdminView() {
 
   const refresh = useCallback(async () => {
     try {
-      const [data, memberList, auditList] = await Promise.all([
+      const [data, memberList, sessionList, auditList] = await Promise.all([
         getOverviewFn(),
         listMembersFn(),
+        listActiveSessionsFn(),
         listAuditFn(),
       ]);
       setOverview(data);
       setOrgName(data.org.name);
       setQuotaGo(data.quotaBytes ? String(Math.round(data.quotaBytes / 1024 ** 3)) : "");
       setMembers(memberList);
+      setSessions(sessionList);
       setAudit(auditList);
       setError(null);
     } catch (caught) {
@@ -87,6 +111,13 @@ export function AdminView() {
     }
   }
 
+  async function confirmRevoke() {
+    if (!revokeTarget) return;
+    const target = revokeTarget;
+    await guard(() => revokeSessionFn({ data: { sessionId: target.id } }), "Session révoquée.");
+    setRevokeTarget(null);
+  }
+
   if (loading) {
     return <p className="text-sm text-muted-foreground">Chargement…</p>;
   }
@@ -101,19 +132,8 @@ export function AdminView() {
         </p>
       </header>
 
-      {error ? (
-        <p
-          role="alert"
-          className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive"
-        >
-          {error}
-        </p>
-      ) : null}
-      {notice ? (
-        <p role="status" className="rounded-md border border-border bg-muted px-3 py-2 text-sm">
-          {notice}
-        </p>
-      ) : null}
+      {error ? <Alert tone="danger">{error}</Alert> : null}
+      {notice ? <Alert tone="success">{notice}</Alert> : null}
 
       <section className="flex flex-col gap-3 rounded-xl border border-border bg-card p-4">
         <h2 className="font-display text-sm font-semibold">Profil de l'organisation</h2>
@@ -225,6 +245,48 @@ export function AdminView() {
       </section>
 
       <section className="flex flex-col gap-3 rounded-xl border border-border bg-card p-4">
+        <h2 className="font-display text-sm font-semibold">Sessions actives</h2>
+        {sessions.length === 0 ? (
+          <p className="text-sm text-muted-foreground">Aucune session active.</p>
+        ) : (
+          <ul className="flex flex-col divide-y divide-border">
+            {sessions.map((entry) => {
+              const agent = truncateAgent(entry.userAgent);
+              return (
+                <li key={entry.id} className="flex flex-wrap items-center gap-2 py-2">
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-sm font-medium">{entry.userName}</span>
+                    <span className="block truncate text-xs text-muted-foreground">
+                      {entry.userEmail}
+                    </span>
+                  </span>
+                  <span className="flex min-w-0 flex-col text-xs text-muted-foreground">
+                    <span>{entry.ipAddress ?? "IP inconnue"}</span>
+                    <span className="max-w-64 truncate" title={agent.full}>
+                      {agent.short}
+                    </span>
+                  </span>
+                  <span className="flex flex-col text-right text-xs text-muted-foreground">
+                    <span>{formatRelative(entry.createdAt)}</span>
+                    <span>expire le {new Date(entry.expiresAt).toLocaleString("fr-FR")}</span>
+                  </span>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="text-destructive"
+                    disabled={busy}
+                    onClick={() => setRevokeTarget(entry)}
+                  >
+                    Révoquer
+                  </Button>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </section>
+
+      <section className="flex flex-col gap-3 rounded-xl border border-border bg-card p-4">
         <h2 className="font-display text-sm font-semibold">Stockage</h2>
         <p className="text-sm text-muted-foreground">
           {overview
@@ -308,6 +370,17 @@ export function AdminView() {
           </ul>
         )}
       </section>
+
+      <ConfirmDialog
+        open={revokeTarget !== null}
+        onClose={() => setRevokeTarget(null)}
+        onConfirm={() => void confirmRevoke()}
+        title="Révoquer cette session ?"
+        message="L'appareil concerné devra se reconnecter."
+        confirmLabel="Révoquer"
+        busy={busy}
+        destructive
+      />
     </div>
   );
 }
