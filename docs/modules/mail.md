@@ -29,3 +29,8 @@ service + E2E).
 
 ## Hors périmètre
 Fils de discussion, pièces jointes, IMAP direct, PGP.
+
+## Ajouts des vagues S/T
+- **Fils de discussion** : clé de fil normalisée (Re :/Fwd :/vide), bascule **Conversations | Messages**, compteurs de non-lus par fil, fil complet empilé dans la lecture ; les messages antérieurs restent des fils singletons (pas de rétro-remplissage).
+- **Rate limiting** du webhook entrant (30 req/min/IP, 429 + `retry-after`).
+- Boîtes : expiration par défaut des jetons côté auth (90 j) sans effet ici ; recherche insensible avec échappement LIKE.

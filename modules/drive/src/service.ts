@@ -1,6 +1,7 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { getServerEnv } from "@workspace/config";
+import { getAppUrls, getServerEnv } from "@workspace/config";
 import { schema as coreSchema, getDb, withTransaction } from "@workspace/database";
+import { createNotification } from "@workspace/notifications";
 import {
   type Actor,
   createGrant,
@@ -36,6 +37,12 @@ export class DriveError extends Error {
 
 const MAX_DEPTH = 32;
 const LINK_ROLES: readonly GrantRole[] = ["viewer", "editor"];
+
+/** Types MIME acceptés pour la création de fichiers texte par les agents. */
+export const TEXT_FILE_MIME_TYPES = ["text/plain", "text/markdown", "application/json"] as const;
+
+/** Taille maximale d'un fichier texte créé en une seule requête (2 Mo). */
+const MAX_TEXT_FILE_BYTES = 2 * 1024 * 1024;
 
 const db = () => getDb();
 const storage = () => getStorage();
@@ -520,27 +527,17 @@ async function assertStorageQuota(actor: Actor, incomingBytes: number): Promise<
   }
 }
 
-export async function uploadFile(
+/**
+ * Création d'un fichier : blob dans le stockage, puis ligne `drive_files` et
+ * version 1 dans une transaction unique (blob nettoyé si la transaction
+ * échoue). Mécanique partagée par `uploadFile` et `createTextFile`.
+ */
+async function createFileEntry(
   actor: Actor,
-  input: { parentId?: string | null; name: string; contentType?: string; body: Buffer },
+  input: { parentId: string | null; name: string; contentType?: string; body: Buffer },
 ): Promise<{ entry: DriveEntry; version: DriveVersion }> {
-  const name = assertValidName(input.name);
-  const maxUploadBytes = getMaxUploadBytes();
-
-  if (input.body.length === 0) throw new DriveError("validation", "Fichier vide.");
-  if (input.body.length > maxUploadBytes) {
-    throw new DriveError(
-      "validation",
-      `Fichier trop volumineux (maximum ${Math.floor(maxUploadBytes / (1024 * 1024))} Mo).`,
-    );
-  }
-
-  const parentId = input.parentId ?? null;
-  await assertWritableParent(actor, parentId);
-  await assertStorageQuota(actor, input.body.length);
-
   const checksum = sha256(input.body);
-  const key = orgKey(actor.orgId, randomUUID(), name);
+  const key = orgKey(actor.orgId, randomUUID(), input.name);
   await storage().put({ key, body: input.body, contentType: input.contentType });
 
   try {
@@ -550,9 +547,9 @@ export async function uploadFile(
         .values({
           orgId: actor.orgId,
           ownerId: actor.userId,
-          parentId,
+          parentId: input.parentId,
           kind: "file",
-          name,
+          name: input.name,
           mimeType: input.contentType ?? null,
           sizeBytes: input.body.length,
           storageKey: key,
@@ -585,6 +582,65 @@ export async function uploadFile(
     }
     throw error;
   }
+}
+
+export async function uploadFile(
+  actor: Actor,
+  input: { parentId?: string | null; name: string; contentType?: string; body: Buffer },
+): Promise<{ entry: DriveEntry; version: DriveVersion }> {
+  const name = assertValidName(input.name);
+  const maxUploadBytes = getMaxUploadBytes();
+
+  if (input.body.length === 0) throw new DriveError("validation", "Fichier vide.");
+  if (input.body.length > maxUploadBytes) {
+    throw new DriveError(
+      "validation",
+      `Fichier trop volumineux (maximum ${Math.floor(maxUploadBytes / (1024 * 1024))} Mo).`,
+    );
+  }
+
+  const parentId = input.parentId ?? null;
+  await assertWritableParent(actor, parentId);
+  await assertStorageQuota(actor, input.body.length);
+
+  return createFileEntry(actor, {
+    parentId,
+    name,
+    contentType: input.contentType,
+    body: input.body,
+  });
+}
+
+/**
+ * Crée un fichier texte depuis une chaîne UTF-8 (écriture agent-friendly) :
+ * `text/plain` par défaut, types autorisés `text/plain`, `text/markdown` et
+ * `application/json`, contenu limité à 2 Mo. Même chemin de stockage et même
+ * ligne de version 1 qu'un upload (`createFileEntry`).
+ */
+export async function createTextFile(
+  actor: Actor,
+  input: { parentId?: string | null; name: string; content: string; mimeType?: string },
+): Promise<DriveEntry> {
+  const name = assertValidName(input.name);
+  const mimeType = input.mimeType ?? "text/plain";
+  if (!(TEXT_FILE_MIME_TYPES as readonly string[]).includes(mimeType)) {
+    throw new DriveError(
+      "validation",
+      "Type de fichier non autorisé (text/plain, text/markdown ou application/json).",
+    );
+  }
+
+  const body = Buffer.from(input.content, "utf8");
+  if (body.length > MAX_TEXT_FILE_BYTES) {
+    throw new DriveError("validation", "Contenu trop volumineux (maximum 2 Mo).");
+  }
+
+  const parentId = input.parentId ?? null;
+  await assertWritableParent(actor, parentId);
+  await assertStorageQuota(actor, body.length);
+
+  const { entry } = await createFileEntry(actor, { parentId, name, contentType: mimeType, body });
+  return entry;
 }
 
 /**
@@ -825,6 +881,38 @@ export async function purge(actor: Actor, entryId: string): Promise<PurgeSummary
   return { deletedEntries: entryIds.length, deletedBlobs, blobErrors };
 }
 
+/**
+ * Supprime un élément (usage agent). Par défaut : mise à la corbeille
+ * réversible — même garde-fou que `trash` (droits d'écriture requis). Avec
+ * `permanent: true`, purge définitive réservée au propriétaire effectif
+ * (`effectiveRole === "owner"` : un grant `editor` ne suffit pas) et refusée
+ * tant que l'élément n'est pas déjà dans la corbeille ; s'appuie ensuite sur
+ * `purge` (grants, liens, versions et blobs compris).
+ */
+export async function deleteEntry(
+  actor: Actor,
+  entryId: string,
+  opts: { permanent?: boolean } = {},
+): Promise<void> {
+  if (!opts.permanent) {
+    await trash(actor, entryId);
+    return;
+  }
+
+  const entry = await assertDrive(actor, "delete", entryId, { allowTrashed: true });
+  if (entry.status !== "trashed") {
+    throw new DriveError(
+      "validation",
+      "Un élément doit être dans la corbeille pour être supprimé définitivement.",
+    );
+  }
+  if ((await effectiveRole(actor, entryId)) !== "owner") {
+    throw new DriveError("forbidden", "Seul le propriétaire peut supprimer définitivement.");
+  }
+
+  await purge(actor, entryId);
+}
+
 export async function listVersions(actor: Actor, fileId: string): Promise<DriveVersion[]> {
   await assertDrive(actor, "read", fileId);
   return db()
@@ -971,14 +1059,28 @@ export async function shareEntry(
   entryId: string,
   input: { subject: GrantSubject; role: GrantRole },
 ): Promise<ResourceGrantRow | null> {
-  await assertDrive(actor, "share", entryId);
+  const entry = await assertDrive(actor, "share", entryId);
   await assertSharingSubjectAllowed(actor, input.subject);
-  return createGrant({
+  const grant = await createGrant({
     resource: { type: "file", id: entryId, orgId: actor.orgId },
     subject: input.subject,
     role: input.role,
     actor,
   });
+
+  // Notification best-effort au destinataire d'un partage direct réellement
+  // créé — jamais à l'auteur du partage lui-même.
+  if (grant && input.subject.kind === "user" && input.subject.id !== actor.userId) {
+    await createNotification({
+      orgId: actor.orgId,
+      userId: input.subject.id,
+      kind: "share",
+      title: `Nouveau partage : « ${entry.name} »`,
+      href: getAppUrls().drive,
+    }).catch(() => undefined);
+  }
+
+  return grant;
 }
 
 export async function unshareEntry(

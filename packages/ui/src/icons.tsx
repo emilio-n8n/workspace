@@ -269,3 +269,12 @@ export function IconSettings(props: SVGProps<SVGSVGElement>) {
     </Svg>
   );
 }
+
+export function IconBell(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Svg {...props}>
+      <path d="M8 2a3.5 3.5 0 0 1 3.5 3.5c0 3 1.5 4 1.5 4h-10s1.5-1 1.5-4A3.5 3.5 0 0 1 8 2z" />
+      <path d="M6.5 12.5a1.5 1.5 0 0 0 3 0" />
+    </Svg>
+  );
+}

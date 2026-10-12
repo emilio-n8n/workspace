@@ -1,6 +1,7 @@
 import { createServerFn } from "@tanstack/react-start";
 import { getRequest } from "@tanstack/react-start/server";
 import { requireActor } from "@workspace/auth";
+import { getAppUrls } from "@workspace/config";
 import { z } from "zod";
 import {
   createCalendar,
@@ -12,7 +13,9 @@ import {
   updateEvent,
 } from "./index.ts";
 
-export type { CalendarView as CalendarOption, EventView } from "./index.ts";
+export type { CalendarView as CalendarOption, EventView, Recurrence } from "./index.ts";
+
+const RECURRENCE_VALUES = ["none", "daily", "weekly", "monthly"] as const;
 
 const eventFields = z.object({
   calendarId: z.string().uuid().nullish(),
@@ -23,6 +26,8 @@ const eventFields = z.object({
   endsAt: z.string().min(1),
   allDay: z.boolean().optional(),
   attendees: z.array(z.string().trim().min(1).max(255)).max(50).optional(),
+  recurrence: z.enum(RECURRENCE_VALUES).optional(),
+  recurrenceUntil: z.string().min(1).nullish(),
 });
 
 export const listCalendarsFn = createServerFn({ method: "GET" }).handler(async () => {
@@ -58,6 +63,8 @@ export const updateEventFn = createServerFn({ method: "POST" })
           startsAt: z.string().min(1).optional(),
           endsAt: z.string().min(1).optional(),
           allDay: z.boolean().optional(),
+          recurrence: z.enum(RECURRENCE_VALUES).optional(),
+          recurrenceUntil: z.string().min(1).nullish(),
         }),
       })
       .parse(input),
@@ -94,3 +101,12 @@ export const createCalendarFn = createServerFn({ method: "POST" })
     const { actor } = await requireActor(getRequest().headers);
     return createCalendar(actor, { name: data.name, shared: data.shared });
   });
+
+/**
+ * URL de l'application Meet, pour composer les liens de visioconférence des
+ * événements (les salles sont des liens à portée d'organisation : tout membre
+ * de l'organisation peut les rejoindre).
+ */
+export const getMeetUrlFn = createServerFn({ method: "GET" }).handler(
+  async () => getAppUrls().meet,
+);

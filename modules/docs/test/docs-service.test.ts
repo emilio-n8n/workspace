@@ -5,16 +5,20 @@ import { type Actor, createGrant, revokeGrant } from "@workspace/permissions";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  addComment,
   createDocument,
   DOCS_MIME,
   DocsError,
+  deleteComment,
   EMPTY_DOC,
   exportDocument,
   getDocumentByFileId,
+  listComments,
   listDocuments,
   listDocumentVersions,
   pruneDocumentVersions,
   renameDocument,
+  resolveComment,
   saveDocument,
 } from "../src/index.ts";
 import { docsVersions } from "../src/schema.ts";
@@ -367,6 +371,144 @@ describe("docs — permissions et isolation", () => {
     const db = getDb();
     const rows = await db.select().from(driveFiles).where(eq(driveFiles.id, entry.id));
     expect(rows[0]?.status).toBe("trashed");
+  });
+});
+
+describe("docs — commentaires", () => {
+  it("ajoute des commentaires puis les liste avec auteur et extrait", async () => {
+    const { entry } = await createDocument(f.actorAlice, { title: "Compte rendu" });
+
+    const first = await addComment(f.actorAlice, entry.id, {
+      body: "  Peut-être préciser le budget.  ",
+      quote: "Le budget prévisionnel",
+    });
+    expect(first.body).toBe("Peut-être préciser le budget.");
+    expect(first.quote).toBe("Le budget prévisionnel");
+    expect(first.authorName).toBe("Alice");
+    expect(first.authorId).toBe(f.alice);
+    expect(first.resolvedAt).toBeNull();
+    expect(typeof first.createdAt).toBe("string");
+
+    const second = await addComment(f.actorAlice, entry.id, { body: "Bien vu" });
+
+    const list = await listComments(f.actorAlice, entry.id);
+    expect(list.map((comment) => comment.id)).toEqual([first.id, second.id]);
+    expect(list.map((comment) => comment.authorName)).toEqual(["Alice", "Alice"]);
+    expect(list[1]?.quote).toBeNull();
+  });
+
+  it("un viewer ne commente pas, un commenter oui (les deux lisent)", async () => {
+    const { entry } = await createDocument(f.actorAlice, { title: "Discussion" });
+    await addComment(f.actorAlice, entry.id, { body: "Merci de relire" });
+
+    const grant = await shareEntry(f.actorAlice, entry.id, {
+      subject: { kind: "user", id: f.bruno },
+      role: "viewer",
+    });
+    if (!grant) throw new Error("grant viewer attendu");
+
+    // Le viewer lit les fils…
+    expect(await listComments(f.actorBruno, entry.id)).toHaveLength(1);
+
+    // …mais ne peut pas commenter.
+    await expect(
+      addComment(f.actorBruno, entry.id, { body: "Je commente quand même" }),
+    ).rejects.toMatchObject({ code: "forbidden" });
+
+    // Promotion commenter : l'ajout passe et apparaît dans la liste.
+    await revokeGrant({ type: "file", id: entry.id, orgId: f.orgId }, grant.id);
+    await createGrant({
+      resource: { type: "file", id: entry.id, orgId: f.orgId },
+      subject: { kind: "user", id: f.bruno },
+      role: "commenter",
+      actor: f.actorAlice,
+    });
+
+    const added = await addComment(f.actorBruno, entry.id, { body: "Une remarque" });
+    expect(added.authorName).toBe("Bruno");
+    expect(await listComments(f.actorBruno, entry.id)).toHaveLength(2);
+  });
+
+  it("résout puis rouvre un commentaire (resolvedAt)", async () => {
+    const { entry } = await createDocument(f.actorAlice, { title: "Suivi" });
+    const comment = await addComment(f.actorAlice, entry.id, { body: "À corriger" });
+    expect(comment.resolvedAt).toBeNull();
+
+    const resolved = await resolveComment(f.actorAlice, entry.id, comment.id, true);
+    expect(resolved.resolvedAt).not.toBeNull();
+    expect((await listComments(f.actorAlice, entry.id))[0]?.resolvedAt).toBe(resolved.resolvedAt);
+
+    const reopened = await resolveComment(f.actorAlice, entry.id, comment.id, false);
+    expect(reopened.resolvedAt).toBeNull();
+
+    await expect(resolveComment(f.actorAlice, entry.id, randomUUID(), true)).rejects.toMatchObject({
+      code: "not_found",
+    });
+  });
+
+  it("suppression : auteur et propriétaire autorisés, autre membre refusé", async () => {
+    const { entry } = await createDocument(f.actorAlice, { title: "Modération" });
+    await createGrant({
+      resource: { type: "file", id: entry.id, orgId: f.orgId },
+      subject: { kind: "user", id: f.bruno },
+      role: "commenter",
+      actor: f.actorAlice,
+    });
+
+    // Alice (propriétaire) commente ; Bruno (commenter, non auteur) est refusé.
+    const byAlice = await addComment(f.actorAlice, entry.id, { body: "Note du propriétaire" });
+    await expect(deleteComment(f.actorBruno, entry.id, byAlice.id)).rejects.toMatchObject({
+      code: "forbidden",
+    });
+    expect(await listComments(f.actorAlice, entry.id)).toHaveLength(1);
+
+    // Bruno supprime son propre commentaire (auteur).
+    const byBruno = await addComment(f.actorBruno, entry.id, { body: "Remarque de Bruno" });
+    await deleteComment(f.actorBruno, entry.id, byBruno.id);
+    expect(await listComments(f.actorBruno, entry.id)).toHaveLength(1);
+
+    // Alice (propriétaire) supprime le commentaire d'un autre membre.
+    const byBrunoAgain = await addComment(f.actorBruno, entry.id, { body: "Deuxième remarque" });
+    await deleteComment(f.actorAlice, entry.id, byBrunoAgain.id);
+    expect((await listComments(f.actorAlice, entry.id)).map((comment) => comment.body)).toEqual([
+      "Note du propriétaire",
+    ]);
+  });
+
+  it("isolation inter-organisations : commentaires inaccessibles", async () => {
+    const { entry } = await createDocument(f.actorAlice, { title: "Privé" });
+    const comment = await addComment(f.actorAlice, entry.id, { body: "Interne" });
+
+    await expect(addComment(f.actorChloe, entry.id, { body: "Intrusion" })).rejects.toMatchObject({
+      code: "not_found",
+    });
+    await expect(listComments(f.actorChloe, entry.id)).rejects.toMatchObject({
+      code: "not_found",
+    });
+    await expect(resolveComment(f.actorChloe, entry.id, comment.id, true)).rejects.toMatchObject({
+      code: "not_found",
+    });
+    await expect(deleteComment(f.actorChloe, entry.id, comment.id)).rejects.toMatchObject({
+      code: "not_found",
+    });
+  });
+
+  it("validation : corps vide, trop long ; extrait trop long ou vide normalisé", async () => {
+    const { entry } = await createDocument(f.actorAlice, { title: "Validation" });
+
+    await expect(addComment(f.actorAlice, entry.id, { body: "   " })).rejects.toMatchObject({
+      code: "validation",
+    });
+    await expect(
+      addComment(f.actorAlice, entry.id, { body: "a".repeat(4001) }),
+    ).rejects.toMatchObject({ code: "validation" });
+    await expect(
+      addComment(f.actorAlice, entry.id, { body: "Corps valide", quote: "x".repeat(501) }),
+    ).rejects.toMatchObject({ code: "validation" });
+    expect(await listComments(f.actorAlice, entry.id)).toHaveLength(0);
+
+    const comment = await addComment(f.actorAlice, entry.id, { body: "Corps", quote: "   " });
+    expect(comment.quote).toBeNull();
   });
 });
 

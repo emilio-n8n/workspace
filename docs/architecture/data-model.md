@@ -52,6 +52,12 @@ Règles : **refus par défaut** ; les rôles d'organisation donnent des capacit�
 | `org_settings` | Réglages par organisation (partage externe autorisé ?, quotas, politique de rétention) |
 | `api_tokens` | Jetons (MCP, intégrations) : propriétaire, organisation, scopes, empreinte (jamais en clair), expiration, dernière utilisation, révocation |
 
+### Notifications
+
+| Table | Rôle |
+|---|---|
+| `notifications` | Notifications utilisateur (partage reçu, tâche assignée, copie notée, système) : organisation, destinataire, type, titre, corps, lien applicatif, `read_at` (nul = non lue), horodatage. Suppression en cascade avec l'organisation ou l'utilisateur ; lecture et mutations toujours filtrées sur l'acteur |
+
 ### Fichiers (socle `packages/storage` + module Drive)
 
 | Table | Rôle |

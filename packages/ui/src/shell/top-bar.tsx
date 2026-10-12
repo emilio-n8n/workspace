@@ -4,6 +4,7 @@ import { Badge } from "../components/badge.tsx";
 import { Button } from "../components/button.tsx";
 import {
   IconApps,
+  IconBell,
   IconCheckSquare,
   IconChevronDown,
   IconKey,
@@ -14,6 +15,30 @@ import {
 } from "../icons.tsx";
 import { BrandMark } from "./brand-mark.tsx";
 import type { ResolvedSuiteApp } from "./suite-apps.ts";
+
+/**
+ * Vue minimale d'une notification affichée par la cloche. Volontairement
+ * structurelle : le type `NotificationView` de `@workspace/notifications` y est
+ * assignable dès qu'il expose ces champs.
+ */
+export type NotificationBellItem = {
+  id: string;
+  title: string;
+  body?: string | null;
+  href?: string | null;
+  read?: boolean;
+  createdAt?: string | number | Date;
+};
+
+/** Données et actions de la cloche de notifications. */
+export type TopBarNotifications = {
+  unreadCount: number;
+  items: NotificationBellItem[];
+  onOpenItem: (notification: NotificationBellItem) => void;
+  onMarkAllRead: () => void;
+  /** Notifié à chaque ouverture/fermeture du panneau. */
+  onOpenChange?: (open: boolean) => void;
+};
 
 export type TopBarProps = {
   activeApp: ResolvedSuiteApp;
@@ -28,8 +53,29 @@ export type TopBarProps = {
   onToggleTheme: () => void;
   onSignOut: () => void;
   onOpenPalette: () => void;
+  /** Cloche de notifications (absente = pas de cloche). */
+  notifications?: TopBarNotifications;
   children?: React.ReactNode;
 };
+
+/** Horodatage relatif court : « il y a 5 min », « il y a 2 j »… */
+function timeAgo(value: NotificationBellItem["createdAt"]): string | null {
+  if (value === undefined || value === null) return null;
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  const seconds = Math.max(0, Math.round((Date.now() - date.getTime()) / 1000));
+  if (seconds < 60) return "à l'instant";
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `il y a ${minutes} min`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `il y a ${hours} h`;
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `il y a ${days} j`;
+  const months = Math.floor(days / 30);
+  if (months < 12) return `il y a ${months} mois`;
+  const years = Math.floor(months / 12);
+  return `il y a ${years} an${years > 1 ? "s" : ""}`;
+}
 
 /** Barre supérieure partagée : recherche/palette, lanceur d'apps, thème, compte. */
 export function TopBar({
@@ -45,23 +91,29 @@ export function TopBar({
   onToggleTheme,
   onSignOut,
   onOpenPalette,
+  notifications,
   children,
 }: TopBarProps) {
   const [launcherOpen, setLauncherOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [notificationsOpen, setNotificationsOpen] = useState(false);
 
   // Échap ferme les menus (comportement attendu, cohérent avec <dialog>).
   useEffect(() => {
-    if (!launcherOpen && !menuOpen) return;
+    if (!launcherOpen && !menuOpen && !notificationsOpen) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         setLauncherOpen(false);
         setMenuOpen(false);
+        if (notificationsOpen) {
+          setNotificationsOpen(false);
+          notifications?.onOpenChange?.(false);
+        }
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [launcherOpen, menuOpen]);
+  }, [launcherOpen, menuOpen, notificationsOpen, notifications]);
 
   return (
     <header className="relative flex h-14 items-center gap-2 border-b border-border bg-surface px-3 md:px-4">
@@ -166,6 +218,113 @@ export function TopBar({
         >
           {theme === "dark" ? <IconSun /> : <IconMoon />}
         </Button>
+
+        {notifications ? (
+          <div className="relative">
+            <Button
+              variant="ghost"
+              size="sm"
+              aria-haspopup="menu"
+              aria-expanded={notificationsOpen}
+              aria-label={`Notifications${notifications.unreadCount > 0 ? ` (${notifications.unreadCount} non lues)` : ""}`}
+              onClick={() => {
+                const next = !notificationsOpen;
+                setNotificationsOpen(next);
+                notifications.onOpenChange?.(next);
+              }}
+            >
+              <span className="relative inline-flex">
+                <IconBell />
+                {notifications.unreadCount > 0 ? (
+                  <span className="absolute -right-0.5 -top-0.5 grid min-w-4 place-items-center rounded-full bg-attention px-1 text-[10px] font-semibold text-attention-foreground">
+                    {notifications.unreadCount}
+                  </span>
+                ) : null}
+              </span>
+            </Button>
+            {notificationsOpen ? (
+              <>
+                <button
+                  type="button"
+                  tabIndex={-1}
+                  aria-label="Fermer les notifications"
+                  className="fixed inset-0 z-30 cursor-default"
+                  onClick={() => {
+                    setNotificationsOpen(false);
+                    notifications.onOpenChange?.(false);
+                  }}
+                />
+                <div
+                  role="menu"
+                  className="absolute right-0 z-40 mt-1 max-h-96 w-80 overflow-y-auto rounded-xl border border-border bg-popover shadow-lift"
+                >
+                  <div className="sticky top-0 flex items-center justify-between gap-2 border-b border-border bg-popover px-3 py-2">
+                    <p className="text-sm font-medium">Notifications</p>
+                    {notifications.unreadCount > 0 ? (
+                      <button
+                        type="button"
+                        role="menuitem"
+                        className="rounded-md px-1.5 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                        onClick={notifications.onMarkAllRead}
+                      >
+                        Tout marquer comme lu
+                      </button>
+                    ) : null}
+                  </div>
+
+                  {notifications.items.length === 0 ? (
+                    <p className="px-3 py-6 text-center text-sm text-muted-foreground">
+                      Aucune notification.
+                    </p>
+                  ) : (
+                    <div className="p-1">
+                      {notifications.items.map((item) => {
+                        const unread = item.read !== true;
+                        const time = timeAgo(item.createdAt);
+                        return (
+                          <button
+                            key={item.id}
+                            type="button"
+                            role="menuitem"
+                            onClick={() => {
+                              setNotificationsOpen(false);
+                              notifications.onOpenChange?.(false);
+                              notifications.onOpenItem(item);
+                            }}
+                            className="flex w-full flex-col gap-0.5 rounded-md px-2.5 py-2 text-left transition-colors hover:bg-muted"
+                          >
+                            <span className="flex w-full items-center gap-2">
+                              <span
+                                aria-hidden
+                                className={cn(
+                                  "size-1.5 shrink-0 rounded-full",
+                                  unread ? "bg-attention" : "bg-transparent",
+                                )}
+                              />
+                              <span className="min-w-0 flex-1 truncate text-sm font-medium">
+                                {item.title}
+                              </span>
+                              {time ? (
+                                <span className="shrink-0 text-[10px] text-muted-foreground">
+                                  {time}
+                                </span>
+                              ) : null}
+                            </span>
+                            {item.body ? (
+                              <span className="line-clamp-2 pl-3.5 text-xs text-muted-foreground">
+                                {item.body}
+                              </span>
+                            ) : null}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              </>
+            ) : null}
+          </div>
+        ) : null}
 
         <div className="relative">
           <button

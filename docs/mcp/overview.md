@@ -37,7 +37,7 @@ Agent (stdio ou HTTP) ──► apps/mcp-server ──► modules/*/service.ts �
 | `errors` | typées — jamais de détail interne au-delà du message métier |
 | `audit` | acteur, org, outil, résultat (succès **et** refus) dans `audit_events` |
 
-## Outils livrés (v2 — 25)
+## Outils livrés (v3 — 27)
 
 | Outil | Scopes | Description |
 |---|---|---|
@@ -45,6 +45,8 @@ Agent (stdio ou HTTP) ──► apps/mcp-server ──► modules/*/service.ts �
 | `audit.recent` | `audit:read` | Derniers événements d'audit (réservé owner/admin de l'organisation) |
 | `files.search` | `drive:read` | Recherche de fichiers accessibles (partages hérités compris) |
 | `files.read` | `drive:read` | Lecture d'un fichier texte (tronquée à 60 k caractères) |
+| `files.write` | `drive:write` | Création d'un fichier texte (mime allowlist, ≤ 2 Mo, quota appliqué) |
+| `files.delete` | `drive:write` | Suppression (corbeille par défaut ; définitive = propriétaire + déjà en corbeille) — **confirmation « SUPPRIMER » exigée** |
 | `docs.read` | `docs:read` | Lecture du texte d'un document (extraction plain text) |
 | `tasks.lists` / `tasks.list` | `tasks:read` | Listes accessibles avec rôle ; tâches (statut, priorité, échéance) |
 | `tasks.create` / `tasks.update` / `tasks.complete` | `tasks:write` | Création, mise à jour, terminaison |
@@ -60,7 +62,7 @@ Agent (stdio ou HTTP) ──► apps/mcp-server ──► modules/*/service.ts �
 
 ## Feuille de route des outils
 
-- Prochaines briques : `files.write` / `files.delete` (confirmation), recherche plein texte transverse, `sheets.write`, `slides.write`.
+- Prochaines briques : recherche plein texte transverse, `sheets.write`, `slides.write`, outils Formulaires en écriture.
 - Les outils destructifs exigent toujours une confirmation littérale (principe : aucun agent ne supprime par accident).
 
 ## Sécurité et tests obligatoires

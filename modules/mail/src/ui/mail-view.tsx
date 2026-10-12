@@ -9,6 +9,7 @@ import {
   Input,
   Label,
   PageHeader,
+  SegmentedTabs,
   Toasts,
   useToasts,
 } from "@workspace/ui";
@@ -21,11 +22,13 @@ import {
   getMessageFn,
   listFoldersFn,
   listMessagesFn,
+  listThreadMessagesFn,
   type MessageDetail,
   type MessageSummary,
   restoreMessageFn,
   saveDraftFn,
   sendMailFn,
+  type ThreadSummary,
   toggleStarFn,
   trashMessageFn,
 } from "../server.ts";
@@ -68,19 +71,33 @@ type Composer = {
   body: string;
 };
 
+type ViewMode = "conversations" | "messages";
+
+const VIEW_TABS: { id: ViewMode; label: string }[] = [
+  { id: "conversations", label: "Conversations" },
+  { id: "messages", label: "Messages" },
+];
+
 /**
- * Mail — boîtes locales par utilisateur, dossiers, recherche, brouillons et
- * envoi (SMTP optionnel, l'échec est toujours visible sur le message).
+ * Mail — boîtes locales par utilisateur, dossiers, recherche, brouillons,
+ * envoi (SMTP optionnel, l'échec est toujours visible sur le message) et fils
+ * de discussion (affichage « Conversations » par défaut).
  */
 export function MailView() {
   const [address, setAddress] = useState("");
   const [folders, setFolders] = useState<FolderCounts | null>(null);
   const [folder, setFolder] = useState<FolderKey>("inbox");
+  const [mode, setMode] = useState<ViewMode>("conversations");
   const [query, setQuery] = useState("");
   const [unreadOnly, setUnreadOnly] = useState(false);
   const [starredOnly, setStarredOnly] = useState(false);
   const [messages, setMessages] = useState<MessageSummary[]>([]);
+  const [threads, setThreads] = useState<ThreadSummary[]>([]);
   const [selected, setSelected] = useState<MessageDetail | null>(null);
+  const [selectedThread, setSelectedThread] = useState<{
+    threadKey: string;
+    messages: MessageDetail[];
+  } | null>(null);
   const [composer, setComposer] = useState<Composer | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -92,11 +109,17 @@ export function MailView() {
   }, []);
 
   const refreshList = useCallback(async () => {
-    const list = await listMessagesFn({
-      data: { folder, query, unreadOnly, starredOnly },
-    });
-    setMessages(list);
-  }, [folder, query, unreadOnly, starredOnly]);
+    if (mode === "conversations") {
+      const list = await listMessagesFn({
+        data: { folder, query, unreadOnly, starredOnly, threaded: true },
+      });
+      // threaded: true → le serveur renvoie des fils (listMessages).
+      setThreads(list as ThreadSummary[]);
+    } else {
+      const list = await listMessagesFn({ data: { folder, query, unreadOnly, starredOnly } });
+      setMessages(list as MessageSummary[]);
+    }
+  }, [folder, query, unreadOnly, starredOnly, mode]);
 
   useEffect(() => {
     void (async () => {
@@ -140,19 +163,27 @@ export function MailView() {
     }
   }
 
+  async function openThread(thread: ThreadSummary) {
+    try {
+      const threadMessages = await listThreadMessagesFn({
+        data: { messageId: thread.latest.id },
+      });
+      setSelectedThread({ threadKey: thread.threadKey, messages: threadMessages });
+    } catch (caught) {
+      push("danger", caught instanceof Error ? caught.message : "Ouverture impossible.");
+    }
+  }
+
   function openComposer(base?: Partial<Composer>) {
     setComposer({ to: "", cc: "", subject: "", body: "", ...base });
   }
 
-  function reply() {
-    if (!selected) return;
-    const subject = selected.subject.startsWith("Re:")
-      ? selected.subject
-      : `Re: ${selected.subject}`;
+  function replyTo(message: MessageDetail) {
+    const subject = message.subject.startsWith("Re:") ? message.subject : `Re: ${message.subject}`;
     openComposer({
-      to: selected.fromAddress,
+      to: message.fromAddress,
       subject,
-      body: `\n\n— ${selected.fromName ?? selected.fromAddress} a écrit :\n> ${selected.body.replaceAll("\n", "\n> ")}`,
+      body: `\n\n— ${message.fromName ?? message.fromAddress} a écrit :\n> ${message.body.replaceAll("\n", "\n> ")}`,
     });
   }
 
@@ -206,20 +237,34 @@ export function MailView() {
     }
   }
 
+  // Cible des actions de lecture : le message sélectionné (mode Messages) ou le
+  // dernier message du fil (mode Conversations — KISS : on agit sur le dernier).
+  const threadLatest = selectedThread?.messages.at(-1) ?? null;
+  const activeMessage = mode === "conversations" ? threadLatest : selected;
+
   async function onToggleStar(messageId: string) {
-    await toggleStarFn({ data: { messageId } });
+    const result = await toggleStarFn({ data: { messageId } });
     await refreshAll();
     if (selected?.id === messageId) {
       setSelected(await getMessageFn({ data: { messageId } }));
     }
+    if (selectedThread?.messages.some((message) => message.id === messageId)) {
+      setSelectedThread({
+        ...selectedThread,
+        messages: selectedThread.messages.map((message) =>
+          message.id === messageId ? { ...message, starred: result.starred } : message,
+        ),
+      });
+    }
   }
 
   async function onTrash() {
-    if (!selected) return;
+    if (!activeMessage) return;
     setBusy(true);
     try {
-      await trashMessageFn({ data: { messageId: selected.id } });
+      await trashMessageFn({ data: { messageId: activeMessage.id } });
       setSelected(null);
+      setSelectedThread(null);
       await refreshAll();
     } finally {
       setBusy(false);
@@ -227,11 +272,12 @@ export function MailView() {
   }
 
   async function onRestore() {
-    if (!selected) return;
+    if (!activeMessage) return;
     setBusy(true);
     try {
-      await restoreMessageFn({ data: { messageId: selected.id } });
+      await restoreMessageFn({ data: { messageId: activeMessage.id } });
       setSelected(null);
+      setSelectedThread(null);
       await refreshAll();
     } finally {
       setBusy(false);
@@ -239,12 +285,13 @@ export function MailView() {
   }
 
   async function onDeleteForever() {
-    if (!selected) return;
+    if (!activeMessage) return;
     setBusy(true);
     try {
-      await deleteMessageFn({ data: { messageId: selected.id } });
+      await deleteMessageFn({ data: { messageId: activeMessage.id } });
       setConfirmDeleteForever(false);
       setSelected(null);
+      setSelectedThread(null);
       await refreshAll();
     } catch (caught) {
       push("danger", caught instanceof Error ? caught.message : "Suppression impossible.");
@@ -282,6 +329,7 @@ export function MailView() {
                   onClick={() => {
                     setFolder(key);
                     setSelected(null);
+                    setSelectedThread(null);
                     setUnreadOnly(false);
                     setStarredOnly(false);
                   }}
@@ -326,7 +374,13 @@ export function MailView() {
         </aside>
 
         <section className="flex w-80 shrink-0 flex-col rounded-xl border border-border bg-card">
-          <div className="border-b border-border p-2">
+          <div className="flex flex-col gap-2 border-b border-border p-2">
+            <SegmentedTabs
+              ariaLabel="Affichage"
+              items={VIEW_TABS}
+              value={mode}
+              onChange={(next) => setMode(next)}
+            />
             <Input
               aria-label="Rechercher dans les messages"
               placeholder="Rechercher…"
@@ -339,6 +393,69 @@ export function MailView() {
             <ul className="flex flex-1 flex-col divide-y divide-border overflow-y-auto">
               <li className="p-3 text-xs text-muted-foreground">Chargement…</li>
             </ul>
+          ) : mode === "conversations" ? (
+            threads.length === 0 ? (
+              <EmptyState
+                icon={<IconMail />}
+                title="Aucune conversation."
+                hint={EMPTY_HINTS[folder]}
+                className="flex-1 justify-center border-0 bg-transparent"
+              />
+            ) : (
+              <ul className="flex flex-1 flex-col divide-y divide-border overflow-y-auto">
+                {threads.map((thread) => (
+                  <li key={thread.threadKey}>
+                    <button
+                      type="button"
+                      onClick={() => void openThread(thread)}
+                      className={cn(
+                        "flex w-full flex-col gap-0.5 px-3 py-2 text-left text-sm transition-colors hover:bg-muted",
+                        thread.threadKey === selectedThread?.threadKey && "bg-accent/60",
+                        thread.unreadCount > 0 && "font-medium",
+                      )}
+                    >
+                      <span className="flex items-center gap-2">
+                        {thread.unreadCount > 0 ? (
+                          <span
+                            aria-label="Non lu"
+                            className="size-1.5 rounded-full bg-primary"
+                            role="img"
+                          />
+                        ) : null}
+                        <span className="min-w-0 flex-1 truncate">
+                          {folder === "sent" || folder === "drafts"
+                            ? `À : ${thread.latest.toAddresses.join(", ") || "(sans destinataire)"}`
+                            : (thread.latest.fromName ?? thread.latest.fromAddress)}
+                        </span>
+                        <span className="text-[11px] text-muted-foreground">
+                          {fmtDate(thread.latest.createdAt)}
+                        </span>
+                      </span>
+                      <span className="flex items-center gap-1.5">
+                        <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
+                          {thread.subject || "(sans objet)"}
+                        </span>
+                        {thread.messageCount > 1 ? <Badge>{thread.messageCount}</Badge> : null}
+                      </span>
+                      <span className="flex items-center gap-1">
+                        <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
+                          {thread.latest.snippet}
+                        </span>
+                        {thread.latest.starred ? <span className="text-attention">★</span> : null}
+                        {thread.latest.sendError ? (
+                          <span
+                            className="text-[10px] text-destructive"
+                            title={thread.latest.sendError}
+                          >
+                            ⚠
+                          </span>
+                        ) : null}
+                      </span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )
           ) : messages.length === 0 ? (
             <EmptyState
               icon={<IconMail />}
@@ -398,7 +515,124 @@ export function MailView() {
         </section>
 
         <section className="flex min-w-0 flex-1 flex-col rounded-xl border border-border bg-card">
-          {selected ? (
+          {mode === "conversations" && selectedThread ? (
+            <>
+              <header className="flex flex-wrap items-start gap-2 border-b border-border p-4">
+                <div className="min-w-0 flex-1">
+                  <h2 className="font-display text-lg font-semibold tracking-tight">
+                    {threadLatest?.subject || "(sans objet)"}
+                  </h2>
+                  <p className="text-xs text-muted-foreground">
+                    {selectedThread.messages.length} message
+                    {selectedThread.messages.length > 1 ? "s" : ""} dans la conversation
+                  </p>
+                </div>
+                <div className="flex flex-wrap items-center gap-1">
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    aria-label={threadLatest?.starred ? "Retirer le suivi" : "Suivre"}
+                    onClick={() => threadLatest && void onToggleStar(threadLatest.id)}
+                  >
+                    {threadLatest?.starred ? "★" : "☆"}
+                  </Button>
+                  {folder !== "sent" && folder !== "drafts" ? (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => threadLatest && replyTo(threadLatest)}
+                    >
+                      Répondre
+                    </Button>
+                  ) : null}
+                  {folder === "drafts" && threadLatest ? (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() =>
+                        openComposer({
+                          id: threadLatest.id,
+                          to: threadLatest.toAddresses.join(", "),
+                          cc: threadLatest.ccAddresses.join(", "),
+                          subject: threadLatest.subject,
+                          body: threadLatest.body,
+                        })
+                      }
+                    >
+                      Modifier
+                    </Button>
+                  ) : null}
+                  {folder === "trash" ? (
+                    <>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        loading={busy}
+                        onClick={() => void onRestore()}
+                      >
+                        Restaurer
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="text-destructive"
+                        loading={busy}
+                        onClick={() => setConfirmDeleteForever(true)}
+                      >
+                        Supprimer définitivement
+                      </Button>
+                    </>
+                  ) : (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="text-destructive"
+                      loading={busy}
+                      onClick={() => void onTrash()}
+                    >
+                      Corbeille
+                    </Button>
+                  )}
+                </div>
+              </header>
+              <div className="flex-1 overflow-y-auto">
+                {selectedThread.messages.map((message, index) => (
+                  <article
+                    key={message.id}
+                    className={cn("flex flex-col gap-2 p-4", index > 0 && "border-t border-border")}
+                  >
+                    <header className="flex flex-wrap items-start gap-2">
+                      <div className="min-w-0 flex-1">
+                        <p className="text-sm font-medium">
+                          {message.fromName ?? message.fromAddress}{" "}
+                          <span className="font-normal text-muted-foreground">
+                            &lt;{message.fromAddress}&gt;
+                          </span>
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          À : {message.toAddresses.join(", ")}
+                          {message.ccAddresses.length > 0
+                            ? ` · Cc : ${message.ccAddresses.join(", ")}`
+                            : ""}
+                        </p>
+                      </div>
+                      <span className="text-xs text-muted-foreground">
+                        {new Date(message.sentAt ?? message.createdAt).toLocaleString("fr-FR")}
+                      </span>
+                    </header>
+                    {message.sendError ? (
+                      <p className="rounded-md border border-destructive/40 bg-destructive/5 px-2 py-1 text-xs text-destructive">
+                        {message.sendError}
+                      </p>
+                    ) : null}
+                    <div className="whitespace-pre-wrap text-sm">
+                      {message.body || "(message vide)"}
+                    </div>
+                  </article>
+                ))}
+              </div>
+            </>
+          ) : selected ? (
             <>
               <header className="flex flex-wrap items-start gap-2 border-b border-border p-4">
                 <div className="min-w-0 flex-1">
@@ -431,7 +665,7 @@ export function MailView() {
                     {selected.starred ? "★" : "☆"}
                   </Button>
                   {folder !== "sent" && folder !== "drafts" ? (
-                    <Button size="sm" variant="outline" onClick={reply}>
+                    <Button size="sm" variant="outline" onClick={() => replyTo(selected)}>
                       Répondre
                     </Button>
                   ) : null}
@@ -491,7 +725,11 @@ export function MailView() {
             </>
           ) : (
             <div className="grid flex-1 place-items-center p-6">
-              <p className="text-sm text-muted-foreground">Sélectionnez un message.</p>
+              <p className="text-sm text-muted-foreground">
+                {mode === "conversations"
+                  ? "Sélectionnez une conversation."
+                  : "Sélectionnez un message."}
+              </p>
             </div>
           )}
         </section>

@@ -184,6 +184,35 @@ describe("tasks — cycle de vie des tâches", () => {
     const cleared = await updateTask(f.actorAlice, task.id, { dueAt: null });
     expect(cleared.dueAt).toBeNull();
   });
+
+  it("notifie le nouvel assigné membre de l'organisation", async () => {
+    const db = getDb();
+    await db.insert(coreSchema.member).values({
+      id: tag("mem"),
+      organizationId: f.orgId,
+      userId: f.bruno,
+      role: "member",
+      createdAt: new Date(),
+    });
+
+    const list = await createList(f.actorAlice, { name: "Notifications" });
+    const task = await createTask(f.actorAlice, { listId: list.id, title: "Relire le dossier" });
+
+    await updateTask(f.actorAlice, task.id, { assigneeId: f.bruno });
+
+    // La réassignation crée une notification pour Bruno (table cœur).
+    const [notification] = await db
+      .select()
+      .from(coreSchema.notifications)
+      .where(eq(coreSchema.notifications.userId, f.bruno));
+    expect(notification).toMatchObject({
+      orgId: f.orgId,
+      kind: "task_assigned",
+      title: "Tâche assignée : « Relire le dossier »",
+      href: "http://localhost:3003",
+      readAt: null,
+    });
+  });
 });
 
 describe("tasks — partage et permissions", () => {

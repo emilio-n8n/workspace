@@ -6,6 +6,7 @@ import { createPresentationFn } from "@workspace/slides/server";
 import {
   Alert,
   Badge,
+  buttonVariants,
   Card,
   CardContent,
   CardDescription,
@@ -15,9 +16,13 @@ import {
   FileIcon,
   IconCalendar,
   IconCheckSquare,
+  IconClose,
+  IconFileText,
   IconGrid,
+  IconKey,
   IconPresentation,
   IconSearch,
+  IconSettings,
   resolveSuiteApps,
 } from "@workspace/ui";
 import { type ReactNode, useEffect, useState } from "react";
@@ -54,6 +59,150 @@ const shortcutCardClass = cn(
   "flex h-full flex-col gap-2 rounded-xl border border-border bg-card p-4 text-left shadow-soft transition-colors hover:bg-muted",
   "disabled:cursor-wait disabled:opacity-60",
 );
+
+/** Au-delà, l'espace n'est plus considéré comme « nouveau ». */
+const NEW_WORKSPACE_MAX_FILES = 3;
+
+/** Clé locale de masquage du démarrage guidé (valeur « 1 »). */
+const ONBOARDING_DISMISSED_KEY = "workspace-onboarding-dismissed";
+
+/** Étape du démarrage guidé. */
+type OnboardingStep = {
+  label: string;
+  description: string;
+  Icon: typeof IconFileText;
+  done: boolean;
+  /** Lien inter-application, nul tant que les URLs ne sont pas chargées. */
+  href?: string | null;
+  /** Lien interne au routeur. */
+  to?: "/app/settings/tokens";
+  actionLabel: string;
+};
+
+/** Marqueur d'étape : cercle coché une fois l'étape terminée, cercle vide sinon. */
+function StepMarker({ done }: { done: boolean }) {
+  return (
+    <span
+      aria-hidden
+      className={cn(
+        "grid size-5 shrink-0 place-items-center rounded-full border",
+        done ? "border-primary bg-primary text-primary-foreground" : "border-border",
+      )}
+    >
+      {done ? <span className="text-[10px] leading-none">✓</span> : null}
+    </span>
+  );
+}
+
+/** Action d'une étape : lien interne, lien inter-application, ou bouton en attente des URLs. */
+function StepAction({ step }: { step: OnboardingStep }) {
+  const className = buttonVariants({ variant: "outline", size: "sm" });
+  if (step.to) {
+    return (
+      <Link to={step.to} className={className}>
+        {step.actionLabel}
+      </Link>
+    );
+  }
+  if (step.href) {
+    return (
+      <a href={step.href} className={className}>
+        {step.actionLabel}
+      </a>
+    );
+  }
+  return (
+    <button type="button" disabled className={className}>
+      {step.actionLabel}
+    </button>
+  );
+}
+
+/**
+ * Démarrage guidé : affiché uniquement sur un espace encore vierge, masquable
+ * localement. Chaque étape se coche à partir de données réelles quand elles
+ * sont disponibles.
+ */
+function OnboardingCard({
+  urls,
+  fileCount,
+  onDismiss,
+}: {
+  urls: Record<SuiteAppKey, string> | null;
+  fileCount: number | null;
+  onDismiss: () => void;
+}) {
+  const steps: OnboardingStep[] = [
+    {
+      label: "Créez votre premier document",
+      description: "Feuilles, présentations et docs vivent dans Drive.",
+      Icon: IconFileText,
+      done: (fileCount ?? 0) > NEW_WORKSPACE_MAX_FILES,
+      href: urls ? `${urls.docs}/` : null,
+      actionLabel: "Ouvrir Docs",
+    },
+    {
+      label: "Invitez un collègue",
+      description: "Ajoutez des membres à votre espace depuis l'administration.",
+      Icon: IconSettings,
+      done: false,
+      href: urls ? `${urls.admin}/` : null,
+      actionLabel: "Ouvrir Admin",
+    },
+    {
+      label: "Connectez un agent IA",
+      description: "Générez un jeton à privilèges minimaux pour un agent compatible MCP.",
+      Icon: IconKey,
+      done: false,
+      to: "/app/settings/tokens",
+      actionLabel: "Gérer les jetons",
+    },
+  ];
+
+  return (
+    <section
+      aria-labelledby="onboarding-title"
+      className="flex flex-col gap-4 rounded-xl border border-border bg-card p-4 shadow-soft"
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex flex-col gap-0.5">
+          <h2 id="onboarding-title" className="font-display text-base font-semibold">
+            Bienvenue dans Workspace
+          </h2>
+          <p className="text-xs text-muted-foreground">
+            Trois étapes pour un espace utile en trois minutes.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={onDismiss}
+          aria-label="Fermer"
+          className="-mr-1 -mt-1 grid size-8 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+        >
+          <IconClose className="size-4" />
+        </button>
+      </div>
+
+      <ul className="flex flex-col gap-2">
+        {steps.map((step) => (
+          <li
+            key={step.label}
+            className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg border border-border/60 px-3 py-2"
+          >
+            <StepMarker done={step.done} />
+            <step.Icon aria-hidden className="size-4 shrink-0 text-muted-foreground" />
+            <span className="flex min-w-0 flex-1 flex-col">
+              <span className="sr-only">{step.done ? "Terminé — " : "À faire — "}</span>
+              <span className="truncate text-sm font-medium">{step.label}</span>
+              <span className="text-xs text-muted-foreground">{step.description}</span>
+            </span>
+            <StepAction step={step} />
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
 
 /** Carte de raccourci : lien de navigation ou action serveur avec état d'attente. */
 function ShortcutCard({
@@ -109,6 +258,7 @@ function DashboardPage() {
   const [recent, setRecent] = useState<DriveEntryView[] | null>(null);
   const [busyShortcut, setBusyShortcut] = useState<BusyShortcut | null>(null);
   const [shortcutError, setShortcutError] = useState<string | null>(null);
+  const [onboardingDismissed, setOnboardingDismissed] = useState(false);
 
   const [loadError, setLoadError] = useState(false);
 
@@ -140,6 +290,25 @@ function DashboardPage() {
     })();
   }, []);
 
+  // Lecture paresseuse côté client uniquement : le rendu SSR ne touche jamais à window.
+  useEffect(() => {
+    try {
+      setOnboardingDismissed(window.localStorage.getItem(ONBOARDING_DISMISSED_KEY) === "1");
+    } catch {
+      // Stockage indisponible (navigation privée, cookies bloqués) : la carte reste visible.
+    }
+  }, []);
+
+  /** Masque le démarrage guidé et mémorise le choix localement. */
+  function dismissOnboarding(): void {
+    setOnboardingDismissed(true);
+    try {
+      window.localStorage.setItem(ONBOARDING_DISMISSED_KEY, "1");
+    } catch {
+      // Repli : masquée pour la session en cours seulement.
+    }
+  }
+
   if (loadError) {
     return (
       <div className="flex flex-col items-start gap-3">
@@ -156,6 +325,14 @@ function DashboardPage() {
   }
 
   const apps = urls ? resolveSuiteApps(urls) : [];
+
+  // Espace « nouveau » : aucune organisation partagée (proxy du nombre de membres,
+  // absent de l'état existant) et au plus trois fichiers.
+  const isNewWorkspace =
+    workspace !== null &&
+    storage !== null &&
+    workspace.organizations.length <= 1 &&
+    storage.fileCount <= NEW_WORKSPACE_MAX_FILES;
 
   async function onCreateSpreadsheet(): Promise<void> {
     if (!urls || busyShortcut !== null) return;
@@ -212,6 +389,14 @@ function DashboardPage() {
         <IconSearch className="size-4" />
         Rechercher dans toute la suite…
       </Link>
+
+      {isNewWorkspace && !onboardingDismissed ? (
+        <OnboardingCard
+          urls={urls}
+          fileCount={storage?.fileCount ?? null}
+          onDismiss={dismissOnboarding}
+        />
+      ) : null}
 
       <section aria-label="Raccourcis" className="flex flex-col gap-3">
         <h2 className="text-xs font-medium uppercase tracking-widest text-muted-foreground">
@@ -324,7 +509,7 @@ function DashboardPage() {
         </ul>
       </section>
 
-      <section aria-label="Stockage" className="grid gap-4 sm:grid-cols-2">
+      <section aria-label="Votre espace" className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         <Card>
           <CardHeader>
             <CardTitle className="text-base">Stockage</CardTitle>
@@ -365,6 +550,23 @@ function DashboardPage() {
               className="text-sm font-medium text-primary underline-offset-4 hover:underline"
             >
               Gérer les jetons →
+            </Link>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">Notifications</CardTitle>
+            <CardDescription>
+              Partages, tâches assignées et notes — la cloche est en haut de chaque application.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <Link
+              to="/app/notifications"
+              className="text-sm font-medium text-primary underline-offset-4 hover:underline"
+            >
+              Voir l'historique →
             </Link>
           </CardContent>
         </Card>

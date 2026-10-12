@@ -4,7 +4,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { issueApiToken, type WorkspaceScope } from "@workspace/auth";
 import { closeDb, getDb, schema } from "@workspace/database";
 import { createDocument, saveDocument } from "@workspace/docs";
-import { uploadFile } from "@workspace/drive";
+import { createTextFile, uploadFile } from "@workspace/drive";
 import { createTask, createList as createTaskList } from "@workspace/tasks";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
@@ -112,7 +112,7 @@ afterAll(async () => {
 });
 
 describe("serveur MCP — intégration réelle (stdio)", () => {
-  it("liste les vingt-cinq outils de la suite et répond à me.whoami avec le bon principal", async () => {
+  it("liste les vingt-sept outils de la suite et répond à me.whoami avec le bon principal", async () => {
     const f = await fixtures(["drive:read"]);
     const { client, transport } = await connectClient(f.token);
     try {
@@ -128,8 +128,10 @@ describe("serveur MCP — intégration réelle (stdio)", () => {
         "chat.send",
         "classroom.list",
         "docs.read",
+        "files.delete",
         "files.read",
         "files.search",
+        "files.write",
         "forms.list",
         "forms.responses",
         "mail.list",
@@ -245,6 +247,74 @@ describe("serveur MCP — intégration réelle (stdio)", () => {
         arguments: { fileId: entry.id },
       });
       expect(read.isError).toBe(true);
+    } finally {
+      await client.close();
+      await transport.close();
+    }
+  });
+
+  it("files.write puis files.read : aller-retour d'un fichier texte créé par l'agent", async () => {
+    const f = await fixtures(["drive:read", "drive:write"]);
+    const { client, transport } = await connectClient(f.token);
+    try {
+      const content = "# Compte rendu\nAgent en ligne";
+      const written = await client.callTool({
+        name: "files.write",
+        arguments: { name: "compte-rendu.md", content, mimeType: "text/markdown" },
+      });
+      expect(written.isError).toBeFalsy();
+      const created = payloadOf(written);
+      expect(created.name).toBe("compte-rendu.md");
+      expect(created.sizeBytes).toBe(Buffer.byteLength(content));
+
+      const read = await client.callTool({
+        name: "files.read",
+        arguments: { fileId: created.id as string },
+      });
+      expect(read.isError).toBeFalsy();
+      const payload = payloadOf(read);
+      expect(payload.text).toBe(content);
+      expect(payload.mimeType).toBe("text/markdown");
+      expect(payload.truncated).toBe(false);
+    } finally {
+      await client.close();
+      await transport.close();
+    }
+  });
+
+  it("files.delete : confirmation obligatoire, puis suppression (corbeille)", async () => {
+    const f = await fixtures(["drive:read", "drive:write"]);
+    const actor = { userId: f.userId, orgId: f.orgId };
+    const entry = await createTextFile(actor, {
+      name: "jetable-agent.txt",
+      content: "à supprimer",
+    });
+
+    const { client, transport } = await connectClient(f.token);
+    try {
+      const denied = await client.callTool({
+        name: "files.delete",
+        arguments: { fileId: entry.id },
+      });
+      expect(denied.isError).toBe(true);
+      const deniedContent = (denied as { content: { text: string }[] }).content;
+      expect(deniedContent[0]?.text).toBe('Confirmation requise : passez confirm: "SUPPRIMER".');
+
+      const deleted = await client.callTool({
+        name: "files.delete",
+        arguments: { fileId: entry.id, confirm: "SUPPRIMER" },
+      });
+      expect(deleted.isError).toBeFalsy();
+      const payload = payloadOf(deleted);
+      expect(payload.ok).toBe(true);
+      expect(payload.permanent).toBe(false);
+
+      const search = await client.callTool({
+        name: "files.search",
+        arguments: { query: "jetable-agent" },
+      });
+      expect(search.isError).toBeFalsy();
+      expect(payloadOf(search) as unknown as unknown[]).toHaveLength(0);
     } finally {
       await client.close();
       await transport.close();

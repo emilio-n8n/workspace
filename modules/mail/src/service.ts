@@ -2,7 +2,7 @@ import { createHash, timingSafeEqual } from "node:crypto";
 import { getServerEnv } from "@workspace/config";
 import { schema as core, getDb, withTransaction } from "@workspace/database";
 import type { Actor } from "@workspace/permissions";
-import { and, desc, eq, ilike, isNull, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, ilike, isNull, or, sql } from "drizzle-orm";
 import { type MailMailboxRow, type MailMessageRow, mailMailboxes, mailMessages } from "./schema.ts";
 
 export type MailErrorCode = "not_found" | "forbidden" | "validation" | "conflict";
@@ -44,6 +44,22 @@ export type MessageSummary = {
 export type MessageDetail = MessageSummary & {
   body: string;
   ccAddresses: string[];
+};
+
+/** Fil de discussion résumé : regroupement des messages d'une même clé. */
+export type ThreadSummary = {
+  threadKey: string;
+  subject: string;
+  messageCount: number;
+  unreadCount: number;
+  latest: MessageSummary;
+};
+
+export type ListMessagesInput = {
+  folder?: FolderKey;
+  query?: string;
+  unreadOnly?: boolean;
+  starredOnly?: boolean;
 };
 
 export type FolderCounts = Record<FolderKey, { total: number; unread: number }>;
@@ -108,6 +124,21 @@ function assertBodyLength(value: string, max: number, message: string): string {
     throw new MailError("validation", message);
   }
   return value;
+}
+
+/**
+ * Clé de fil d'une conversation : objet normalisé — minuscules, préfixes de
+ * réponse/transfert retirés (« re: », « re : », « fwd: », « fw: », « tr: »,
+ * éventuellement répétés), espaces réduits puis rognés. Un objet vide (ou
+ * réduit à un préfixe) n'a pas de fil : null.
+ */
+export function computeThreadKey(subject: string): string | null {
+  const normalized = subject
+    .toLowerCase()
+    .replace(/^(\s*(re|fwd|fw|tr)\s*:\s*)+/, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return normalized.length > 0 ? normalized : null;
 }
 
 function isUniqueViolation(error: unknown): boolean {
@@ -303,19 +334,9 @@ export async function listFolders(actor: Actor): Promise<FolderCounts> {
   return counts;
 }
 
-export async function listMessages(
-  actor: Actor,
-  input: {
-    folder?: FolderKey;
-    query?: string;
-    unreadOnly?: boolean;
-    starredOnly?: boolean;
-  } = {},
-): Promise<MessageSummary[]> {
-  const mailbox = await ensureMailbox(actor);
-  const folder = input.folder ?? "inbox";
-
-  const conditions = [eq(mailMessages.mailboxId, mailbox.id), eq(mailMessages.folder, folder)];
+/** Conditions communes aux listes plates et filaires (dossier + filtres). */
+function listConditions(mailboxId: string, folder: FolderKey, input: ListMessagesInput) {
+  const conditions = [eq(mailMessages.mailboxId, mailboxId), eq(mailMessages.folder, folder)];
   const query = input.query?.trim().slice(0, MAX_SEARCH_QUERY_LENGTH);
   if (query && query.length > 0) {
     const pattern = `%${escapeLike(query)}%`;
@@ -328,28 +349,119 @@ export async function listMessages(
   }
   if (input.unreadOnly) conditions.push(isNull(mailMessages.readAt));
   if (input.starredOnly) conditions.push(eq(mailMessages.starred, true));
+  return conditions;
+}
+
+/** Colonnes d'un résumé de liste — le corps complet ne quitte jamais la base. */
+const summarySelection = {
+  id: mailMessages.id,
+  folder: mailMessages.folder,
+  fromAddress: mailMessages.fromAddress,
+  fromName: mailMessages.fromName,
+  toAddresses: mailMessages.toAddresses,
+  subject: mailMessages.subject,
+  readAt: mailMessages.readAt,
+  starred: mailMessages.starred,
+  sendError: mailMessages.sendError,
+  createdAt: mailMessages.createdAt,
+  sentAt: mailMessages.sentAt,
+  snippet: sql<string>`left(${mailMessages.body}, 200)`,
+};
+
+/**
+ * Regroupe des résumés triés par created_at décroissant en fils : le premier
+ * message rencontré pour une clé est le plus récent, et la Map conserve l'ordre
+ * d'insertion — les fils sortent donc triés par dernier message. Un threadKey
+ * null devient un fil singleton portant l'id du message comme clé. La limite
+ * s'applique aux fils, pas aux messages.
+ */
+function toThreadSummaries(
+  rows: (MessageSummaryRow & { threadKey: string | null; snippet: string })[],
+): ThreadSummary[] {
+  const threads = new Map<string, ThreadSummary>();
+  for (const row of rows) {
+    const key = row.threadKey ?? row.id;
+    const thread = threads.get(key);
+    if (thread) {
+      thread.messageCount += 1;
+      if (row.readAt === null) thread.unreadCount += 1;
+      continue;
+    }
+    threads.set(key, {
+      threadKey: key,
+      subject: row.subject,
+      messageCount: 1,
+      unreadCount: row.readAt === null ? 1 : 0,
+      latest: toSummary(row, row.snippet),
+    });
+  }
+  return [...threads.values()].slice(0, MAX_LIST_RESULTS);
+}
+
+export function listMessages(
+  actor: Actor,
+  input: ListMessagesInput & { threaded: true },
+): Promise<ThreadSummary[]>;
+export function listMessages(
+  actor: Actor,
+  input?: ListMessagesInput & { threaded?: false },
+): Promise<MessageSummary[]>;
+export function listMessages(
+  actor: Actor,
+  input?: ListMessagesInput & { threaded?: boolean },
+): Promise<MessageSummary[] | ThreadSummary[]>;
+export async function listMessages(
+  actor: Actor,
+  input: ListMessagesInput & { threaded?: boolean } = {},
+): Promise<MessageSummary[] | ThreadSummary[]> {
+  const mailbox = await ensureMailbox(actor);
+  const folder = input.folder ?? "inbox";
+  const conditions = listConditions(mailbox.id, folder, input);
+
+  if (input.threaded) {
+    // Les compteurs par fil doivent être exacts : on lit les résumés du dossier
+    // (sans le corps complet), puis on regroupe en mémoire.
+    const rows = await db()
+      .select({ ...summarySelection, threadKey: mailMessages.threadKey })
+      .from(mailMessages)
+      .where(and(...conditions))
+      .orderBy(desc(mailMessages.createdAt), desc(mailMessages.id));
+    return toThreadSummaries(rows);
+  }
 
   const rows = await db()
-    .select({
-      id: mailMessages.id,
-      folder: mailMessages.folder,
-      fromAddress: mailMessages.fromAddress,
-      fromName: mailMessages.fromName,
-      toAddresses: mailMessages.toAddresses,
-      subject: mailMessages.subject,
-      readAt: mailMessages.readAt,
-      starred: mailMessages.starred,
-      sendError: mailMessages.sendError,
-      createdAt: mailMessages.createdAt,
-      sentAt: mailMessages.sentAt,
-      // Le corps complet ne quitte jamais la base pour une simple liste.
-      snippet: sql<string>`left(${mailMessages.body}, 200)`,
-    })
+    .select(summarySelection)
     .from(mailMessages)
     .where(and(...conditions))
     .orderBy(desc(mailMessages.createdAt))
     .limit(MAX_LIST_RESULTS);
   return rows.map((row) => toSummary(row, row.snippet));
+}
+
+/**
+ * Tous les messages d'un fil (même boîte, même dossier, même threadKey), du
+ * plus ancien au plus récent, corps inclus. Un message sans clé de fil est son
+ * propre fil : la liste ne contient que lui. Lecture pure, sans marquage lu.
+ */
+export async function listThreadMessages(
+  actor: Actor,
+  messageId: string,
+): Promise<MessageDetail[]> {
+  const { mailbox, message } = await requireOwnedMessage(actor, messageId);
+  if (message.threadKey === null) return [toDetail(message)];
+
+  const rows = await db()
+    .select()
+    .from(mailMessages)
+    .where(
+      and(
+        eq(mailMessages.mailboxId, mailbox.id),
+        eq(mailMessages.folder, message.folder),
+        eq(mailMessages.threadKey, message.threadKey),
+      ),
+    )
+    .orderBy(asc(mailMessages.createdAt), asc(mailMessages.id));
+  return rows.map(toDetail);
 }
 
 export async function getMessage(actor: Actor, messageId: string): Promise<MessageDetail> {
@@ -410,6 +522,7 @@ export async function saveDraft(
         toAddresses: to,
         ccAddresses: cc,
         subject,
+        threadKey: computeThreadKey(subject),
         body,
         fromAddress: mailbox.address,
       })
@@ -427,6 +540,7 @@ export async function saveDraft(
       toAddresses: to,
       ccAddresses: cc,
       subject,
+      threadKey: computeThreadKey(subject),
       body,
     })
     .returning({ id: mailMessages.id });
@@ -480,6 +594,7 @@ export async function sendMail(
         toAddresses: to,
         ccAddresses: cc,
         subject,
+        threadKey: computeThreadKey(subject),
         body,
         readAt: new Date(),
         sentAt: new Date(),
@@ -623,6 +738,7 @@ export async function createInboundMessage(
       fromName: payload.fromName?.trim().slice(0, 200) ?? null,
       toAddresses: [mailbox.address],
       subject,
+      threadKey: computeThreadKey(subject),
       body,
       externalId: externalId.length > 0 ? externalId : null,
     })

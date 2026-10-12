@@ -6,7 +6,20 @@ import {
   type PaletteSearchResult,
 } from "./command-palette.tsx";
 import type { ResolvedSuiteApp, SuiteAppId } from "./suite-apps.ts";
-import { TopBar } from "./top-bar.tsx";
+import { type NotificationBellItem, TopBar } from "./top-bar.tsx";
+
+/**
+ * Données de la cloche de notifications gérées par l'application :
+ * état affiché, navigation et actions (rechargement compris).
+ */
+export type NotificationBellData = {
+  unreadCount: number;
+  items: NotificationBellItem[];
+  onOpenItem: (notification: NotificationBellItem) => void;
+  onMarkAllRead: () => void;
+  /** Recharge les notifications (déclenché à l'ouverture du panneau). */
+  onRefresh: () => void;
+};
 
 export type AppShellProps = {
   activeAppId: SuiteAppId;
@@ -25,6 +38,8 @@ export type AppShellProps = {
   headerActions?: PaletteAction[];
   /** Recherche globale optionnelle (résultats injectés dans la palette). */
   search?: (query: string) => Promise<PaletteSearchResult[]>;
+  /** Cloche de notifications optionnelle (absente = pas de cloche). */
+  notifications?: NotificationBellData;
   children: ReactNode;
 };
 
@@ -47,6 +62,7 @@ export function AppShell({
   topBarContent,
   headerActions = [],
   search,
+  notifications,
   children,
 }: AppShellProps) {
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -150,6 +166,20 @@ export function AppShell({
           onToggleTheme={onToggleTheme}
           onSignOut={onSignOut}
           onOpenPalette={() => setPaletteOpen(true)}
+          notifications={
+            notifications
+              ? {
+                  unreadCount: notifications.unreadCount,
+                  items: notifications.items,
+                  onOpenItem: notifications.onOpenItem,
+                  onMarkAllRead: notifications.onMarkAllRead,
+                  // L'ouverture du panneau recharge les notifications.
+                  onOpenChange: (open) => {
+                    if (open) notifications.onRefresh();
+                  },
+                }
+              : undefined
+          }
         >
           {topBarContent}
         </TopBar>

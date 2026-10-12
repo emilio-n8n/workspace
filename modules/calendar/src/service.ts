@@ -1,6 +1,6 @@
 import { schema as core, getDb, withTransaction } from "@workspace/database";
 import type { Actor } from "@workspace/permissions";
-import { and, asc, eq, gt, inArray, isNull, lt, or } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, isNull, lt, ne, or, sql } from "drizzle-orm";
 import {
   type CalendarEventRow,
   type CalendarRow,
@@ -28,6 +28,32 @@ const MAX_EVENTS = 2000;
 
 /** Délai d'une journée en millisecondes (événements « journée entière »). */
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Nombre maximal d'occurrences développées par événement récurrent et par
+ * requête (garde-fou anti-DoS ; au-delà, les occurrences suivantes de la plage
+ * ne sont pas renvoyées).
+ */
+const MAX_OCCURRENCES_PER_EVENT = 100;
+
+/** Durée maximale d'une série récurrente : 2 ans calendaires après le début. */
+const MAX_RECURRENCE_MONTHS = 24;
+
+/** Valeurs acceptées pour `calendar_events.recurrence`. */
+export type Recurrence = "none" | "daily" | "weekly" | "monthly";
+
+type ActiveRecurrence = Exclude<Recurrence, "none">;
+
+const RECURRENCES: readonly Recurrence[] = ["none", "daily", "weekly", "monthly"];
+
+function isRecurrence(value: unknown): value is Recurrence {
+  return typeof value === "string" && (RECURRENCES as readonly string[]).includes(value);
+}
+
+/** Valeur stockée → type public (une valeur inconnue retombe sur « aucune »). */
+function asRecurrence(value: string): Recurrence {
+  return isRecurrence(value) ? value : "none";
+}
 
 const PRIMARY_CALENDAR_NAME = "Mon agenda";
 
@@ -58,6 +84,15 @@ export type EventView = {
   startsAt: string;
   endsAt: string;
   allDay: boolean;
+  /** Récurrence de la série (`none` pour un événement simple). */
+  recurrence: Recurrence;
+  /** Fin de la série (incluse), `null` pour un événement simple. */
+  recurrenceUntil: string | null;
+  /**
+   * `true` pour toute occurrence d'une série récurrente. Chaque occurrence
+   * porte l'identifiant de la série (l'édition affecte la série entière).
+   */
+  recurring: boolean;
   createdBy: string;
   canEdit: boolean;
   /** Réponse de l'acteur s'il est invité (`null` sinon). */
@@ -74,6 +109,13 @@ export type EventInput = {
   endsAt: string;
   allDay?: boolean;
   attendees?: string[];
+  /** Récurrence simple : `none` (défaut), `daily`, `weekly` ou `monthly`. */
+  recurrence?: Recurrence;
+  /**
+   * Dernière date (incluse) de la série. Obligatoire dès que `recurrence`
+   * n'est pas `none`, comprise entre `startsAt` et `startsAt` + 2 ans.
+   */
+  recurrenceUntil?: string | null;
 };
 
 const db = () => getDb();
@@ -122,6 +164,140 @@ function assertRange(startsAt: string, endsAt: string): { startsAt: Date; endsAt
     throw new CalendarError("validation", "La fin doit être après le début.");
   }
   return { startsAt: start, endsAt: end };
+}
+
+// ---------------------------------------------------------------------------
+// Récurrence simple (aucune dérogation par occurrence : toute modification ou
+// suppression porte sur la série entière)
+// ---------------------------------------------------------------------------
+
+/**
+ * Décale un instant de `count` mois calendaires UTC. Le jour est **borné**
+ * (clampé) au dernier jour du mois cible : le 31 janvier devient le 28/29
+ * février, puis le 31 mars (le jour d'origine est mémorisé, pas celui de
+ * l'occurrence précédente).
+ */
+function addUtcMonths(date: Date, count: number): Date {
+  const year = date.getUTCFullYear();
+  const month = date.getUTCMonth() + count;
+  const daysInTarget = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
+  return new Date(
+    Date.UTC(
+      year,
+      month,
+      Math.min(date.getUTCDate(), daysInTarget),
+      date.getUTCHours(),
+      date.getUTCMinutes(),
+      date.getUTCSeconds(),
+      date.getUTCMilliseconds(),
+    ),
+  );
+}
+
+/** Début de la n-ième occurrence (`index` = 0 : l'événement stocké lui-même). */
+function occurrenceStart(base: Date, recurrence: ActiveRecurrence, index: number): Date {
+  // Quotidien / hebdomadaire : décalage en millisecondes (UTC, sans heure d'été).
+  if (recurrence === "daily") return new Date(base.getTime() + index * ONE_DAY_MS);
+  if (recurrence === "weekly") return new Date(base.getTime() + index * 7 * ONE_DAY_MS);
+  return addUtcMonths(base, index);
+}
+
+/**
+ * Indice de la première occurrence à examiner pour une plage dont la borne
+ * basse vaut `thresholdMs` (= `from` moins la durée de l'événement, afin
+ * d'inclure une occurrence à cheval). L'arithmétique directe évite de boucler
+ * depuis la première occurrence quand la série a commencé loin avant la plage.
+ */
+function firstOccurrenceIndex(
+  base: Date,
+  recurrence: ActiveRecurrence,
+  thresholdMs: number,
+): number {
+  const baseMs = base.getTime();
+  if (baseMs > thresholdMs) return 0;
+  if (recurrence === "daily") {
+    return Math.floor((thresholdMs - baseMs) / ONE_DAY_MS) + 1;
+  }
+  if (recurrence === "weekly") {
+    return Math.floor((thresholdMs - baseMs) / (7 * ONE_DAY_MS)) + 1;
+  }
+  // Mensuel : estimation par différence de mois, puis ajustement borné
+  // (le clamp de fin de mois rend le pas non linéaire).
+  const threshold = new Date(thresholdMs);
+  const months =
+    (threshold.getUTCFullYear() - base.getUTCFullYear()) * 12 +
+    (threshold.getUTCMonth() - base.getUTCMonth());
+  let index = Math.max(0, months);
+  while (index > 0 && occurrenceStart(base, recurrence, index - 1).getTime() > thresholdMs) {
+    index -= 1;
+  }
+  while (occurrenceStart(base, recurrence, index).getTime() <= thresholdMs) {
+    index += 1;
+  }
+  return index;
+}
+
+/** Occurrences d'un événement qui recouvrent la plage [`fromMs`, `toMs`). */
+function expandOccurrences(
+  row: {
+    startsAt: Date;
+    endsAt: Date;
+    recurrence: Recurrence;
+    recurrenceUntil: Date | null;
+  },
+  fromMs: number,
+  toMs: number,
+): { startsAt: Date; endsAt: Date }[] {
+  const durationMs = row.endsAt.getTime() - row.startsAt.getTime();
+  if (row.recurrence === "none") {
+    return row.startsAt.getTime() < toMs && row.endsAt.getTime() > fromMs
+      ? [{ startsAt: row.startsAt, endsAt: row.endsAt }]
+      : [];
+  }
+
+  const untilMs = row.recurrenceUntil?.getTime() ?? Number.POSITIVE_INFINITY;
+  const occurrences: { startsAt: Date; endsAt: Date }[] = [];
+  for (
+    let index = firstOccurrenceIndex(row.startsAt, row.recurrence, fromMs - durationMs);
+    occurrences.length < MAX_OCCURRENCES_PER_EVENT;
+    index += 1
+  ) {
+    const startsAt = occurrenceStart(row.startsAt, row.recurrence, index);
+    // Fin de série (début d'occurrence borné par `recurrenceUntil`) ou fin de
+    // plage : les débuts croissent, on peut s'arrêter.
+    if (startsAt.getTime() > untilMs || startsAt.getTime() >= toMs) break;
+    const endsAt = new Date(startsAt.getTime() + durationMs);
+    if (endsAt.getTime() > fromMs) occurrences.push({ startsAt, endsAt });
+  }
+  return occurrences;
+}
+
+/** Valide la récurrence et sa fin, et normalise les valeurs persistées. */
+function assertRecurrence(
+  recurrence: Recurrence,
+  until: string | null | undefined,
+  startsAt: Date,
+): { recurrence: Recurrence; recurrenceUntil: Date | null } {
+  if (!isRecurrence(recurrence)) {
+    throw new CalendarError("validation", "Récurrence invalide.");
+  }
+  if (recurrence === "none") return { recurrence, recurrenceUntil: null };
+
+  const raw = until?.trim() ?? "";
+  if (raw.length === 0) {
+    throw new CalendarError("validation", "La date de fin de répétition est requise.");
+  }
+  const end = new Date(raw);
+  if (Number.isNaN(end.getTime())) {
+    throw new CalendarError("validation", "Date de fin de répétition invalide.");
+  }
+  if (end.getTime() < startsAt.getTime()) {
+    throw new CalendarError("validation", "La fin de répétition doit suivre le début.");
+  }
+  if (end.getTime() > addUtcMonths(startsAt, MAX_RECURRENCE_MONTHS).getTime()) {
+    throw new CalendarError("validation", "La répétition ne peut pas dépasser 2 ans.");
+  }
+  return { recurrence, recurrenceUntil: end };
 }
 
 function clean(value: string | null | undefined): string | null {
@@ -334,6 +510,9 @@ async function hydrate(
       startsAt: row.startsAt.toISOString(),
       endsAt: row.endsAt.toISOString(),
       allDay: row.allDay,
+      recurrence: asRecurrence(row.recurrence),
+      recurrenceUntil: row.recurrenceUntil ? row.recurrenceUntil.toISOString() : null,
+      recurring: row.recurrence !== "none",
       createdBy: row.createdBy,
       canEdit,
       myStatus: (mine?.status as AttendanceStatus | undefined) ?? null,
@@ -342,7 +521,16 @@ async function hydrate(
   });
 }
 
-/** Événements visibles dans une plage (agendas visibles + invitations). */
+/**
+ * Événements visibles dans une plage (agendas visibles + invitations).
+ *
+ * Les séries récurrentes sont développées en occurrences : chaque occurrence
+ * reprend l'identifiant de la série (les clics et le détail fonctionnent
+ * toujours), avec des bornes décalées, `recurring: true` et la récurrence
+ * d'origine. Limites assumées : 100 occurrences par événement et par requête ;
+ * modifier ou supprimer un événement récurrent affecte toute la série (pas de
+ * dérogation par occurrence).
+ */
 export async function listEvents(
   actor: Actor,
   input: { from: string; to: string },
@@ -392,16 +580,55 @@ export async function listEvents(
       and(
         eq(calendarEvents.orgId, actor.orgId),
         visibility,
-        // Intervalle semi-ouvert [startsAt, endsAt) : un événement qui touche
-        // exactement une borne n'est pas dupliqué entre deux plages adjacentes.
+        // Aucune occurrence ne peut démarrer après la fin de la plage.
         lt(calendarEvents.startsAt, to),
-        gt(calendarEvents.endsAt, from),
+        or(
+          // Événement simple (ou première occurrence d'une série) : intervalle
+          // semi-ouvert [startsAt, endsAt) — un événement qui touche exactement
+          // une borne n'est pas dupliqué entre deux plages adjacentes.
+          gt(calendarEvents.endsAt, from),
+          // Série récurrente : une occurrence ultérieure peut tomber dans la
+          // plage même si la première est antérieure. Dernière occurrence
+          // possible = `recurrenceUntil` ; elle recouvre la plage tant que
+          // « recurrenceUntil + durée > from » (la suite est filtrée en
+          // mémoire par expandOccurrences).
+          and(
+            ne(calendarEvents.recurrence, "none"),
+            sql`(${calendarEvents.recurrenceUntil} is null or ${calendarEvents.recurrenceUntil} + (${calendarEvents.endsAt} - ${calendarEvents.startsAt}) > ${from})`,
+          ),
+        ),
       ),
     )
     .orderBy(asc(calendarEvents.startsAt))
     .limit(MAX_EVENTS);
 
-  return hydrate(actor, rows, myEmail);
+  const views = await hydrate(actor, rows, myEmail);
+
+  // Développement des occurrences. La ligne stockée est la première occurrence
+  // (index 0) : `expandOccurrences` la renvoie telle quelle quand la plage la
+  // couvre, sans dupliquer le travail de `hydrate`.
+  const expanded = views.flatMap((view) =>
+    expandOccurrences(
+      {
+        startsAt: new Date(view.startsAt),
+        endsAt: new Date(view.endsAt),
+        recurrence: view.recurrence,
+        recurrenceUntil: view.recurrenceUntil ? new Date(view.recurrenceUntil) : null,
+      },
+      from.getTime(),
+      to.getTime(),
+    ).map((occurrence) => ({
+      ...view,
+      startsAt: occurrence.startsAt.toISOString(),
+      endsAt: occurrence.endsAt.toISOString(),
+      recurring: view.recurrence !== "none",
+    })),
+  );
+
+  // Les occurrences de plusieurs séries s'entrelacent : tri chronologique puis
+  // plafond global (garde-fou anti-DoS, comme la requête SQL).
+  expanded.sort((a, b) => new Date(a.startsAt).getTime() - new Date(b.startsAt).getTime());
+  return expanded.slice(0, MAX_EVENTS);
 }
 
 /** Événement visible : agenda visible ou invitation nominative. */
@@ -451,6 +678,11 @@ export async function createEvent(actor: Actor, input: EventInput): Promise<Even
   const calendarId = input.calendarId ?? (await ensurePrimaryCalendar(actor));
   await requireCalendarForWrite(actor, calendarId);
 
+  const recurrence = assertRecurrence(
+    input.recurrence ?? "none",
+    input.recurrenceUntil,
+    range.startsAt,
+  );
   const emails = normalizeEmails(input.attendees ?? []);
 
   // L'événement et ses invités sont créés atomiquement : jamais d'événement
@@ -467,6 +699,8 @@ export async function createEvent(actor: Actor, input: EventInput): Promise<Even
         startsAt: range.startsAt,
         endsAt: range.endsAt,
         allDay,
+        recurrence: recurrence.recurrence,
+        recurrenceUntil: recurrence.recurrenceUntil,
         createdBy: actor.userId,
       })
       .returning({ id: calendarEvents.id });
@@ -500,6 +734,10 @@ export async function createEvent(actor: Actor, input: EventInput): Promise<Even
   return getEvent(actor, eventId);
 }
 
+/**
+ * Modifie un événement. Pour une série récurrente, la modification porte sur
+ * **toute la série** : il n'existe pas de dérogation par occurrence.
+ */
 export async function updateEvent(
   actor: Actor,
   eventId: string,
@@ -526,6 +764,14 @@ export async function updateEvent(
     patch.startsAt !== undefined || patch.endsAt !== undefined || patch.allDay !== undefined;
   const range = rangeTouched ? normalizeAllDayRange(assertRange(startsAt, endsAt), allDay) : null;
 
+  // La récurrence se valide contre le début résultant (le déplacement d'une
+  // série ne peut pas la faire sortir de sa fenêtre de fin).
+  const recurrence = assertRecurrence(
+    patch.recurrence ?? existing.recurrence,
+    patch.recurrenceUntil !== undefined ? patch.recurrenceUntil : existing.recurrenceUntil,
+    range ? range.startsAt : new Date(existing.startsAt),
+  );
+
   const [updated] = await db()
     .update(calendarEvents)
     .set({
@@ -534,6 +780,8 @@ export async function updateEvent(
       ...(patch.location !== undefined ? { location: clean(patch.location) } : {}),
       ...(range ? { startsAt: range.startsAt, endsAt: range.endsAt } : {}),
       ...(patch.allDay !== undefined ? { allDay: patch.allDay } : {}),
+      recurrence: recurrence.recurrence,
+      recurrenceUntil: recurrence.recurrenceUntil,
     })
     .where(eq(calendarEvents.id, eventId))
     .returning({ id: calendarEvents.id });
@@ -542,6 +790,10 @@ export async function updateEvent(
   return getEvent(actor, eventId);
 }
 
+/**
+ * Supprime un événement. Pour une série récurrente, la suppression emporte
+ * **toutes les occurrences** (pas de dérogation par occurrence).
+ */
 export async function deleteEvent(actor: Actor, eventId: string): Promise<void> {
   const existing = await getEvent(actor, eventId);
   if (!existing.canEdit) {

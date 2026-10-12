@@ -56,3 +56,8 @@
 
 - Fidélité DOCX à mesurer (corpus S1) avant d'annoncer l'export.
 - Croissance des versions : rétention (compaction des autosaves par session) à définir avec la politique de rétention Drive.
+
+## Ajouts des vagues S/T
+- **Commentaires** : fils par document (auteur, citation ≤ 500, corps ≤ 4 000), résolution/rouverture, suppression par l'auteur ou le propriétaire ; les viewers lisent, les **commenters** commentent (matrice de permissions).
+- **Verrous optimistes** : `baseUpdatedAt` sur l'autosave — un conflit répond « modifié ailleurs », le contenu local est conservé et un rechargement est proposé.
+- **Impression** : Ctrl+P produit un document propre (chrome masqué, `@page`, pagination sans coupure de blocs).

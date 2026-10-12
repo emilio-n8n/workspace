@@ -5,11 +5,15 @@ import { effectiveRole } from "@workspace/drive";
 import { roleSatisfies } from "@workspace/permissions";
 import { z } from "zod";
 import {
+  addComment,
   createDocument,
+  deleteComment,
   getDocumentByFileId,
+  listComments,
   listDocuments,
   listDocumentVersions,
   renameDocument,
+  resolveComment,
   saveDocument,
 } from "./index.ts";
 
@@ -51,7 +55,7 @@ export const createDocumentFn = createServerFn({ method: "POST" })
 export const getDocumentFn = createServerFn({ method: "GET" })
   .validator((input: unknown) => fileInput.parse(input))
   .handler(async ({ data }) => {
-    const { actor } = await requireActor(getRequest().headers);
+    const { actor, userId } = await requireActor(getRequest().headers);
     const { entry, document, content, revision } = await getDocumentByFileId(actor, data.fileId);
     const role = await effectiveRole(actor, data.fileId);
 
@@ -65,6 +69,11 @@ export const getDocumentFn = createServerFn({ method: "GET" })
       // Jeton de révision à renvoyer en `baseUpdatedAt` lors de la sauvegarde.
       revision,
       canEdit: roleSatisfies(role, "write"),
+      // Les commentaires s'ouvrent dès le rôle « commenter » (les viewers lisent).
+      canComment: roleSatisfies(role, "comment"),
+      // Identité du lecteur : l'UI en déduit les commentaires supprimables.
+      viewerId: userId,
+      isOwner: roleSatisfies(role, "manage"),
     };
   });
 
@@ -114,4 +123,49 @@ export const listDocumentVersionsFn = createServerFn({ method: "GET" })
       version: version.version,
       createdAt: version.createdAt.toISOString(),
     }));
+  });
+
+const commentInput = z.object({
+  fileId: z.string().uuid(),
+  body: z.string().trim().min(1).max(4000),
+  quote: z.string().trim().max(500).optional(),
+});
+
+export const addCommentFn = createServerFn({ method: "POST" })
+  .validator((input: unknown) => commentInput.parse(input))
+  .handler(async ({ data }) => {
+    const { actor } = await requireActor(getRequest().headers);
+    return addComment(actor, data.fileId, { body: data.body, quote: data.quote ?? null });
+  });
+
+export const listCommentsFn = createServerFn({ method: "GET" })
+  .validator((input: unknown) => fileInput.parse(input))
+  .handler(async ({ data }) => {
+    const { actor } = await requireActor(getRequest().headers);
+    return listComments(actor, data.fileId);
+  });
+
+export const resolveCommentFn = createServerFn({ method: "POST" })
+  .validator((input: unknown) =>
+    z
+      .object({
+        fileId: z.string().uuid(),
+        commentId: z.string().uuid(),
+        resolved: z.boolean(),
+      })
+      .parse(input),
+  )
+  .handler(async ({ data }) => {
+    const { actor } = await requireActor(getRequest().headers);
+    return resolveComment(actor, data.fileId, data.commentId, data.resolved);
+  });
+
+export const deleteCommentFn = createServerFn({ method: "POST" })
+  .validator((input: unknown) =>
+    z.object({ fileId: z.string().uuid(), commentId: z.string().uuid() }).parse(input),
+  )
+  .handler(async ({ data }) => {
+    const { actor } = await requireActor(getRequest().headers);
+    await deleteComment(actor, data.fileId, data.commentId);
+    return { ok: true as const };
   });

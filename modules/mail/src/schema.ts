@@ -57,6 +57,13 @@ export const mailMessages = pgTable(
     toAddresses: jsonb("to_addresses").$type<string[]>().notNull().default([]),
     ccAddresses: jsonb("cc_addresses").$type<string[]>().notNull().default([]),
     subject: text("subject").notNull().default(""),
+    /**
+     * Clé de fil de discussion : objet normalisé (voir computeThreadKey).
+     * NULL pour les objets vides — chaque message reste alors son propre fil.
+     * Les messages antérieurs à la migration gardent NULL (singletons) ;
+     * seuls les nouveaux messages reçoivent une clé.
+     */
+    threadKey: text("thread_key"),
     body: text("body").notNull().default(""),
     readAt: timestamp("read_at", { withTimezone: true }),
     starred: boolean("starred").notNull().default(false),
@@ -73,6 +80,8 @@ export const mailMessages = pgTable(
     ),
     // Compteur de non-lus / filtre « read_at is null » par boîte.
     index("mail_messages_mailbox_read_idx").on(table.mailboxId, table.readAt),
+    // Fils de discussion : regroupement (mailbox, thread_key).
+    index("mail_messages_mailbox_thread_idx").on(table.mailboxId, table.threadKey),
     // PostgreSQL laisse les NULL distincts : l'unicité ne s'applique qu'aux
     // messages réellement identifiés par le relais.
     uniqueIndex("mail_messages_external_id_uidx").on(table.externalId),

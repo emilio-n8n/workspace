@@ -356,3 +356,181 @@ describe("calendar — événements", () => {
     );
   });
 });
+
+describe("calendar — récurrences", () => {
+  it("développe une récurrence quotidienne dans la plage, aux bons jours", async () => {
+    const created = await createEvent(f.actorAlice, {
+      title: "Quotidien",
+      startsAt: "2026-03-10T09:00:00.000Z",
+      endsAt: "2026-03-10T10:00:00.000Z",
+      recurrence: "daily",
+      recurrenceUntil: "2026-03-14T23:59:59.000Z",
+    });
+
+    const list = await listEvents(f.actorAlice, { from: FROM, to: TO });
+    expect(list.map((event) => event.startsAt)).toEqual([
+      "2026-03-10T09:00:00.000Z",
+      "2026-03-11T09:00:00.000Z",
+      "2026-03-12T09:00:00.000Z",
+      "2026-03-13T09:00:00.000Z",
+      "2026-03-14T09:00:00.000Z",
+    ]);
+    expect(list.map((event) => event.endsAt)).toEqual([
+      "2026-03-10T10:00:00.000Z",
+      "2026-03-11T10:00:00.000Z",
+      "2026-03-12T10:00:00.000Z",
+      "2026-03-13T10:00:00.000Z",
+      "2026-03-14T10:00:00.000Z",
+    ]);
+    // Chaque occurrence porte l'identifiant de la série (détail/clic intacts).
+    expect(list.every((event) => event.id === created.id)).toBe(true);
+    expect(list.every((event) => event.recurring && event.recurrence === "daily")).toBe(true);
+
+    // Sous-plage lointaine : la première occurrence est trouvée par
+    // arithmétique directe, sans énumérer les jours précédents.
+    const sub = await listEvents(f.actorAlice, {
+      from: "2026-03-12T00:00:00.000Z",
+      to: "2026-03-13T00:00:00.000Z",
+    });
+    expect(sub.map((event) => event.startsAt)).toEqual(["2026-03-12T09:00:00.000Z"]);
+  });
+
+  it("développe une récurrence hebdomadaire à cheval sur deux mois", async () => {
+    await createEvent(f.actorAlice, {
+      title: "Hebdo",
+      startsAt: "2026-03-28T14:00:00.000Z",
+      endsAt: "2026-03-28T15:00:00.000Z",
+      recurrence: "weekly",
+      recurrenceUntil: "2026-04-30T23:59:59.000Z",
+    });
+
+    const list = await listEvents(f.actorAlice, {
+      from: FROM,
+      to: "2026-05-01T00:00:00.000Z",
+    });
+    expect(list.map((event) => event.startsAt)).toEqual([
+      "2026-03-28T14:00:00.000Z",
+      "2026-04-04T14:00:00.000Z",
+      "2026-04-11T14:00:00.000Z",
+      "2026-04-18T14:00:00.000Z",
+      "2026-04-25T14:00:00.000Z",
+    ]);
+  });
+
+  it("conserve le jour du mois (mensuel) et borne à la fin du mois", async () => {
+    await createEvent(f.actorAlice, {
+      title: "Mensuel",
+      startsAt: "2026-01-31T10:00:00.000Z",
+      endsAt: "2026-01-31T11:00:00.000Z",
+      recurrence: "monthly",
+      recurrenceUntil: "2026-05-31T23:59:59.000Z",
+    });
+
+    // Décision documentée : le 31 est BORNÉ (clampé) au dernier jour du mois
+    // cible (février 2026 → 28), puis le jour d'origine (31) est réutilisé.
+    const list = await listEvents(f.actorAlice, {
+      from: "2026-01-01T00:00:00.000Z",
+      to: "2026-06-30T00:00:00.000Z",
+    });
+    expect(list.map((event) => event.startsAt)).toEqual([
+      "2026-01-31T10:00:00.000Z",
+      "2026-02-28T10:00:00.000Z",
+      "2026-03-31T10:00:00.000Z",
+      "2026-04-30T10:00:00.000Z",
+      "2026-05-31T10:00:00.000Z",
+    ]);
+  });
+
+  it("respecte la fin de répétition et la valide", async () => {
+    await createEvent(f.actorAlice, {
+      ...eventInput("Bornée"),
+      recurrence: "daily",
+      recurrenceUntil: "2026-03-12T09:00:00.000Z",
+    });
+
+    const list = await listEvents(f.actorAlice, { from: FROM, to: TO });
+    expect(list.map((event) => event.startsAt)).toEqual([
+      "2026-03-10T09:00:00.000Z",
+      "2026-03-11T09:00:00.000Z",
+      "2026-03-12T09:00:00.000Z",
+    ]);
+
+    // Fin obligatoire dès qu'une répétition est choisie.
+    await expect(
+      createEvent(f.actorAlice, { ...eventInput("Sans fin"), recurrence: "weekly" }),
+    ).rejects.toThrow("La date de fin de répétition est requise.");
+
+    // Fin ≥ début.
+    await expect(
+      createEvent(f.actorAlice, {
+        ...eventInput("Antérieure"),
+        recurrence: "daily",
+        recurrenceUntil: "2026-03-09T00:00:00.000Z",
+      }),
+    ).rejects.toThrow("La fin de répétition doit suivre le début.");
+
+    // Fin ≤ début + 2 ans.
+    await expect(
+      createEvent(f.actorAlice, {
+        ...eventInput("Trop longue"),
+        recurrence: "daily",
+        recurrenceUntil: "2029-01-01T00:00:00.000Z",
+      }),
+    ).rejects.toThrow("La répétition ne peut pas dépasser 2 ans.");
+  });
+
+  it("plafonne à 100 occurrences par événement et par requête", async () => {
+    await createEvent(f.actorAlice, {
+      title: "Plafond",
+      startsAt: "2026-01-01T09:00:00.000Z",
+      endsAt: "2026-01-01T10:00:00.000Z",
+      recurrence: "daily",
+      recurrenceUntil: "2026-12-31T23:59:59.000Z",
+    });
+
+    const list = await listEvents(f.actorAlice, {
+      from: "2026-01-01T00:00:00.000Z",
+      to: "2026-12-31T23:59:59.000Z",
+    });
+    expect(list).toHaveLength(100);
+    expect(list[0]?.startsAt).toBe("2026-01-01T09:00:00.000Z");
+    expect(list.at(-1)?.startsAt).toBe("2026-04-10T09:00:00.000Z");
+  });
+
+  it("laisse un événement simple intact et modifie toute la série", async () => {
+    const simple = await createEvent(f.actorAlice, eventInput("Simple"));
+    expect(simple.recurring).toBe(false);
+    expect(simple.recurrence).toBe("none");
+    expect(simple.recurrenceUntil).toBeNull();
+
+    const recurring = await createEvent(f.actorAlice, {
+      ...eventInput("Série"),
+      recurrence: "daily",
+      recurrenceUntil: "2026-03-14T23:59:59.000Z",
+    });
+
+    // Modifier la série change toutes ses occurrences (titre + fin raccourcie).
+    await updateEvent(f.actorAlice, recurring.id, {
+      title: "Série modifiée",
+      recurrenceUntil: "2026-03-12T23:59:59.000Z",
+    });
+
+    const list = await listEvents(f.actorAlice, { from: FROM, to: TO });
+    const simpleView = list.find((event) => event.id === simple.id);
+    expect(simpleView?.recurring).toBe(false);
+    expect(simpleView?.recurrence).toBe("none");
+
+    const expanded = list.filter((event) => event.id === recurring.id);
+    expect(expanded).toHaveLength(3); // 10, 11, 12 mars
+    expect(expanded.every((event) => event.title === "Série modifiée")).toBe(true);
+    expect(expanded.every((event) => event.recurring)).toBe(true);
+    expect(expanded.at(-1)?.startsAt).toBe("2026-03-12T09:00:00.000Z");
+
+    // Revenir à « aucune » replie la série sur une seule occurrence.
+    const collapsed = await updateEvent(f.actorAlice, recurring.id, { recurrence: "none" });
+    expect(collapsed.recurring).toBe(false);
+    expect(collapsed.recurrenceUntil).toBeNull();
+    const after = await listEvents(f.actorAlice, { from: FROM, to: TO });
+    expect(after.filter((event) => event.id === recurring.id)).toHaveLength(1);
+  });
+});

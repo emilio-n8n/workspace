@@ -9,9 +9,16 @@ import {
   touchEntry,
 } from "@workspace/drive";
 import { type Actor, roleSatisfies } from "@workspace/permissions";
-import { desc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import { escapeHtml, type PmNode, toHtml, toMarkdown } from "./export.ts";
-import { type DocsDocument, type DocsVersion, docsDocuments, docsVersions } from "./schema.ts";
+import {
+  type DocsComment,
+  type DocsDocument,
+  type DocsVersion,
+  docsComments,
+  docsDocuments,
+  docsVersions,
+} from "./schema.ts";
 
 /** Type MIME du pointeur Drive d'un document Workspace. */
 export const DOCS_MIME = "application/vnd.workspace.docs+json";
@@ -385,6 +392,182 @@ export async function listDocuments(
 ): Promise<DriveEntry[]> {
   const entries = await listEntries(actor, { parentId: input.parentFolderId ?? null });
   return entries.filter((entry) => entry.kind === "file" && entry.mimeType === DOCS_MIME);
+}
+
+// ---------------------------------------------------------------------------
+// Commentaires
+// ---------------------------------------------------------------------------
+
+/** Commentaire d'un document, enrichi du nom de son auteur (pour l'UI). */
+export type CommentView = {
+  id: string;
+  body: string;
+  quote: string | null;
+  authorId: string;
+  authorName: string;
+  /** Horodatage ISO de résolution, `null` tant que le fil est ouvert. */
+  resolvedAt: string | null;
+  createdAt: string;
+};
+
+const MAX_COMMENT_BODY = 4000;
+const MAX_COMMENT_QUOTE = 500;
+
+function assertCommentBody(body: string): string {
+  const trimmed = body.trim();
+  if (trimmed.length < 1 || trimmed.length > MAX_COMMENT_BODY) {
+    throw new DocsError("validation", "Le commentaire doit contenir entre 1 et 4000 caractères.");
+  }
+  return trimmed;
+}
+
+function assertCommentQuote(quote: string | null | undefined): string | null {
+  if (quote === null || quote === undefined) return null;
+  const trimmed = quote.trim();
+  if (trimmed.length === 0) return null;
+  if (trimmed.length > MAX_COMMENT_QUOTE) {
+    throw new DocsError("validation", "L'extrait cité ne peut pas dépasser 500 caractères.");
+  }
+  return trimmed;
+}
+
+async function commentAuthorName(userId: string): Promise<string> {
+  const [author] = await db()
+    .select({ name: coreSchema.user.name })
+    .from(coreSchema.user)
+    .where(eq(coreSchema.user.id, userId))
+    .limit(1);
+  return author?.name ?? "";
+}
+
+function toCommentView(row: DocsComment, authorName: string): CommentView {
+  return {
+    id: row.id,
+    body: row.body,
+    quote: row.quote,
+    authorId: row.authorId,
+    authorName,
+    resolvedAt: row.resolvedAt?.toISOString() ?? null,
+    createdAt: row.createdAt.toISOString(),
+  };
+}
+
+/** Charge un commentaire du document (isolation par document), sinon `not_found`. */
+async function requireComment(documentId: string, commentId: string): Promise<DocsComment> {
+  const [comment] = await db()
+    .select()
+    .from(docsComments)
+    .where(and(eq(docsComments.id, commentId), eq(docsComments.documentId, documentId)))
+    .limit(1);
+  if (!comment) throw new DocsError("not_found", "Commentaire introuvable.");
+  return comment;
+}
+
+/**
+ * Ajoute un commentaire. Réservé aux rôles « commenter » et supérieurs
+ * (`roleSatisfies(role, "comment")`) : un viewer lit mais ne commente pas.
+ */
+export async function addComment(
+  actor: Actor,
+  fileId: string,
+  input: { body: string; quote?: string | null },
+): Promise<CommentView> {
+  const { document } = await requireDocument(actor, fileId);
+
+  const role = await effectiveRole(actor, fileId);
+  if (!roleSatisfies(role, "comment")) {
+    throw new DocsError("forbidden", "Permission insuffisante pour commenter ce document.");
+  }
+
+  const body = assertCommentBody(input.body);
+  const quote = assertCommentQuote(input.quote);
+
+  const [created] = await db()
+    .insert(docsComments)
+    .values({ documentId: document.id, authorId: actor.userId, body, quote })
+    .returning();
+  if (!created) throw new DocsError("conflict", "Ajout du commentaire impossible.");
+
+  return toCommentView(created, await commentAuthorName(actor.userId));
+}
+
+/** Commentaires d'un document, du plus ancien au plus récent (lecture seule). */
+export async function listComments(actor: Actor, fileId: string): Promise<CommentView[]> {
+  const { document } = await requireDocument(actor, fileId);
+
+  const role = await effectiveRole(actor, fileId);
+  if (!roleSatisfies(role, "read")) {
+    throw new DocsError("forbidden", "Permission insuffisante pour consulter les commentaires.");
+  }
+
+  const rows = await db()
+    .select({
+      id: docsComments.id,
+      body: docsComments.body,
+      quote: docsComments.quote,
+      authorId: docsComments.authorId,
+      authorName: coreSchema.user.name,
+      resolvedAt: docsComments.resolvedAt,
+      createdAt: docsComments.createdAt,
+    })
+    .from(docsComments)
+    .innerJoin(coreSchema.user, eq(coreSchema.user.id, docsComments.authorId))
+    .where(eq(docsComments.documentId, document.id))
+    .orderBy(asc(docsComments.createdAt), asc(docsComments.id));
+
+  return rows.map((row) => ({
+    id: row.id,
+    body: row.body,
+    quote: row.quote,
+    authorId: row.authorId,
+    authorName: row.authorName,
+    resolvedAt: row.resolvedAt?.toISOString() ?? null,
+    createdAt: row.createdAt.toISOString(),
+  }));
+}
+
+/** Résout (`true`) ou rouvre (`false`) un commentaire — commenter et supérieurs. */
+export async function resolveComment(
+  actor: Actor,
+  fileId: string,
+  commentId: string,
+  resolved: boolean,
+): Promise<CommentView> {
+  const { document } = await requireDocument(actor, fileId);
+
+  const role = await effectiveRole(actor, fileId);
+  if (!roleSatisfies(role, "comment")) {
+    throw new DocsError("forbidden", "Permission insuffisante pour résoudre ce commentaire.");
+  }
+
+  const [updated] = await db()
+    .update(docsComments)
+    .set({ resolvedAt: resolved ? new Date() : null })
+    .where(and(eq(docsComments.id, commentId), eq(docsComments.documentId, document.id)))
+    .returning();
+  if (!updated) throw new DocsError("not_found", "Commentaire introuvable.");
+
+  return toCommentView(updated, await commentAuthorName(updated.authorId));
+}
+
+/** Supprime un commentaire : son auteur, ou le propriétaire effectif du document. */
+export async function deleteComment(
+  actor: Actor,
+  fileId: string,
+  commentId: string,
+): Promise<void> {
+  const { document } = await requireDocument(actor, fileId);
+  const comment = await requireComment(document.id, commentId);
+
+  const role = await effectiveRole(actor, fileId);
+  if (comment.authorId !== actor.userId && !roleSatisfies(role, "manage")) {
+    throw new DocsError(
+      "forbidden",
+      "Seul l'auteur ou le propriétaire du document peut supprimer ce commentaire.",
+    );
+  }
+
+  await db().delete(docsComments).where(eq(docsComments.id, comment.id));
 }
 
 // ---------------------------------------------------------------------------

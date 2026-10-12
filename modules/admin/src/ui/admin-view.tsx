@@ -5,15 +5,18 @@ import {
   type AuditEntry,
   addMemberFn,
   getOverviewFn,
+  getPoliciesFn,
   listActiveSessionsFn,
   listAuditFn,
   listMembersFn,
   type MemberFull,
   type OrgOverview,
+  type OrgPolicies,
   removeMemberFn,
   revokeSessionFn,
   updateMemberRoleFn,
   updateOrgProfileFn,
+  updatePoliciesFn,
   updateQuotaFn,
 } from "../server.ts";
 
@@ -61,6 +64,9 @@ export function AdminView() {
   const [orgName, setOrgName] = useState("");
   const [quotaGo, setQuotaGo] = useState("");
   const [inviteEmail, setInviteEmail] = useState("");
+  const [policies, setPolicies] = useState<OrgPolicies | null>(null);
+  const [sharingDraft, setSharingDraft] = useState(true);
+  const [retentionDraft, setRetentionDraft] = useState("");
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -68,11 +74,12 @@ export function AdminView() {
 
   const refresh = useCallback(async () => {
     try {
-      const [data, memberList, sessionList, auditList] = await Promise.all([
+      const [data, memberList, sessionList, auditList, policyData] = await Promise.all([
         getOverviewFn(),
         listMembersFn(),
         listActiveSessionsFn(),
         listAuditFn(),
+        getPoliciesFn(),
       ]);
       setOverview(data);
       setOrgName(data.org.name);
@@ -80,6 +87,9 @@ export function AdminView() {
       setMembers(memberList);
       setSessions(sessionList);
       setAudit(auditList);
+      setPolicies(policyData);
+      setSharingDraft(policyData.allowExternalSharing);
+      setRetentionDraft(String(policyData.versionRetentionDays));
       setError(null);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Chargement impossible.");
@@ -117,6 +127,10 @@ export function AdminView() {
     await guard(() => revokeSessionFn({ data: { sessionId: target.id } }), "Session révoquée.");
     setRevokeTarget(null);
   }
+
+  const retentionValue = Number(retentionDraft);
+  const retentionValid =
+    Number.isInteger(retentionValue) && retentionValue >= 7 && retentionValue <= 3650;
 
   if (loading) {
     return <p className="text-sm text-muted-foreground">Chargement…</p>;
@@ -240,6 +254,66 @@ export function AdminView() {
             }
           >
             Ajouter
+          </Button>
+        </div>
+      </section>
+
+      <section className="flex flex-col gap-3 rounded-xl border border-border bg-card p-4">
+        <h2 className="font-display text-sm font-semibold">Politiques</h2>
+        <div className="flex flex-col gap-1">
+          <div className="flex items-center gap-2">
+            <input
+              id="allow-external-sharing"
+              type="checkbox"
+              aria-label="Autoriser le partage externe"
+              className="size-4 accent-primary"
+              checked={sharingDraft}
+              disabled={busy || policies === null}
+              onChange={(event) => setSharingDraft(event.target.checked)}
+            />
+            <Label htmlFor="allow-external-sharing">Autoriser le partage externe</Label>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Hors de votre organisation — les liens et partages externes sont refusés quand
+            désactivé.
+          </p>
+        </div>
+        <div className="flex flex-col gap-1">
+          <div className="flex w-48 flex-col gap-1">
+            <Label htmlFor="version-retention">Rétention des versions (jours)</Label>
+            <Input
+              id="version-retention"
+              type="number"
+              min={7}
+              max={3650}
+              value={retentionDraft}
+              disabled={busy || policies === null}
+              onChange={(event) => setRetentionDraft(event.target.value)}
+            />
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Les versions des documents et fichiers plus anciennes sont nettoyées automatiquement.
+          </p>
+        </div>
+        <div>
+          <Button
+            size="sm"
+            loading={busy}
+            disabled={policies === null || !retentionValid}
+            onClick={() =>
+              void guard(
+                () =>
+                  updatePoliciesFn({
+                    data: {
+                      allowExternalSharing: sharingDraft,
+                      versionRetentionDays: retentionValue,
+                    },
+                  }),
+                "Politiques mises à jour.",
+              )
+            }
+          >
+            Enregistrer
           </Button>
         </div>
       </section>

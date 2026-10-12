@@ -1,5 +1,6 @@
 import { Link, useRouter } from "@tanstack/react-router";
 import {
+  Alert,
   Badge,
   Button,
   Card,
@@ -68,6 +69,19 @@ type DetailsState = {
   versions: { id: string; version: number; sizeBytes: number; createdAt: string }[];
 };
 
+/** Modes d'aperçu intégré (les autres fichiers passent par le dialogue de détails). */
+type PreviewMode = "image" | "pdf" | "text";
+
+type PreviewState = {
+  entry: DriveEntryView;
+  mode: PreviewMode;
+};
+
+type TextPreviewState =
+  | { status: "loading" }
+  | { status: "ready"; text: string; truncated: boolean }
+  | { status: "error" };
+
 type TypeFilter = "all" | "folders" | "files";
 
 const ROLE_LABELS: Record<string, string> = {
@@ -98,6 +112,69 @@ const LINKED_MIMES = new Set([DOCS_MIME, SHEETS_MIME, SLIDES_MIME, FORMS_MIME]);
 
 function isLinkedMime(mimeType: string | null): boolean {
   return mimeType !== null && LINKED_MIMES.has(mimeType);
+}
+
+/** Plafond du texte chargé pour l'aperçu (200 Kio) : le flux est coupé à cette taille. */
+const TEXT_PREVIEW_LIMIT = 200 * 1024;
+
+/** Mimes texte sans préfixe `text/` (JSON, Markdown, YAML) affichables dans l'aperçu. */
+const EXTRA_TEXT_MIMES = new Set([
+  "application/json",
+  "application/markdown",
+  "application/x-yaml",
+  "application/yaml",
+]);
+
+/** Mode d'aperçu intégré selon le type MIME, ou null si le fichier n'est pas prévisualisable. */
+function previewModeFor(mimeType: string | null): PreviewMode | null {
+  if (mimeType === null) return null;
+  if (mimeType.startsWith("image/")) return "image";
+  if (mimeType === "application/pdf") return "pdf";
+  if (mimeType.startsWith("text/") || EXTRA_TEXT_MIMES.has(mimeType)) return "text";
+  return null;
+}
+
+/** URL d'aperçu en ligne : l'API répond en `content-disposition: inline`. */
+function previewUrl(id: string): string {
+  return `/api/drive/download/${id}?inline=1`;
+}
+
+/**
+ * Lit le corps d'une réponse en s'arrêtant au plafond de l'aperçu (sans charger
+ * un fichier entier) ; renvoie le texte UTF-8 décodé et le drapeau de troncature.
+ */
+async function readTextPreview(response: Response): Promise<{ text: string; truncated: boolean }> {
+  const body = response.body;
+  if (!body) {
+    const text = await response.text();
+    const truncated = text.length > TEXT_PREVIEW_LIMIT;
+    return { text: truncated ? text.slice(0, TEXT_PREVIEW_LIMIT) : text, truncated };
+  }
+
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let text = "";
+  let read = 0;
+  let truncated = false;
+
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    const remaining = TEXT_PREVIEW_LIMIT - read;
+    if (value.byteLength > remaining) {
+      text += decoder.decode(value.subarray(0, remaining), { stream: true });
+      truncated = true;
+      break;
+    }
+    read += value.byteLength;
+    text += decoder.decode(value, { stream: true });
+  }
+
+  text += decoder.decode();
+  // Coupe la connexion dès que la suite du fichier n'est plus utile.
+  if (truncated) await reader.cancel().catch(() => undefined);
+  return { text, truncated };
 }
 
 /** Libellé du badge des fichiers liés (ouverts par l'application dédiée). */
@@ -194,6 +271,8 @@ export function DriveBrowser({
 
   const [shareTarget, setShareTarget] = useState<DriveEntryView | null>(null);
   const [details, setDetails] = useState<DetailsState | null>(null);
+  const [preview, setPreview] = useState<PreviewState | null>(null);
+  const [previewText, setPreviewText] = useState<TextPreviewState>({ status: "loading" });
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -230,6 +309,27 @@ export function DriveBrowser({
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  // Aperçu texte : charge le contenu en ligne à l'ouverture et annule la requête
+  // à la fermeture du dialogue (ou au passage à un autre fichier).
+  useEffect(() => {
+    if (preview?.mode !== "text") return;
+    const controller = new AbortController();
+    setPreviewText({ status: "loading" });
+
+    void (async () => {
+      try {
+        const response = await fetch(previewUrl(preview.entry.id), { signal: controller.signal });
+        if (!response.ok) throw new Error(`Aperçu indisponible (${response.status}).`);
+        const { text, truncated } = await readTextPreview(response);
+        setPreviewText({ status: "ready", text, truncated });
+      } catch {
+        if (!controller.signal.aborted) setPreviewText({ status: "error" });
+      }
+    })();
+
+    return () => controller.abort();
+  }, [preview]);
 
   const visibleEntries = useMemo(() => {
     if (!entries) return null;
@@ -313,6 +413,14 @@ export function DriveBrowser({
     }
     if (entry.mimeType === FORMS_MIME && formsUrl) {
       window.location.assign(`${formsUrl}/form/${entry.id}`);
+      return;
+    }
+    // Visionneuse intégrée pour les fichiers standard (image, PDF, texte) ;
+    // les autres types gardent le dialogue de détails.
+    const mode = previewModeFor(entry.mimeType);
+    if (mode) {
+      if (mode === "text") setPreviewText({ status: "loading" });
+      setPreview({ entry, mode });
       return;
     }
     const loaded = await entryDetailsFn({ data: { entryId: entry.id } });
@@ -831,6 +939,65 @@ export function DriveBrowser({
               </Button>
             </div>
           </div>
+        ) : null}
+      </Dialog>
+
+      {/* Visionneuse intégrée : image, PDF ou texte selon le type du fichier. */}
+      <Dialog
+        open={preview !== null}
+        onClose={() => setPreview(null)}
+        title={preview ? preview.entry.name : "Aperçu"}
+        className="max-w-3xl"
+        footer={
+          preview ? (
+            <>
+              <a href={`/api/drive/download/${preview.entry.id}`} download>
+                <Button size="sm" variant="outline">
+                  Télécharger
+                </Button>
+              </a>
+              <a href={previewUrl(preview.entry.id)} target="_blank" rel="noreferrer">
+                <Button size="sm">Ouvrir dans un nouvel onglet</Button>
+              </a>
+            </>
+          ) : null
+        }
+      >
+        {preview ? (
+          preview.mode === "image" ? (
+            <div className="flex items-center justify-center rounded-md bg-muted p-2">
+              <img
+                src={previewUrl(preview.entry.id)}
+                alt={preview.entry.name}
+                className="max-h-[70vh] w-full object-contain"
+              />
+            </div>
+          ) : preview.mode === "pdf" ? (
+            <iframe
+              src={previewUrl(preview.entry.id)}
+              title={preview.entry.name}
+              className="h-[70vh] w-full rounded-md border border-border"
+            />
+          ) : previewText.status === "loading" ? (
+            <p className="py-8 text-center text-sm text-muted-foreground">
+              Chargement de l'aperçu…
+            </p>
+          ) : previewText.status === "error" ? (
+            <Alert tone="danger" title="Aperçu impossible">
+              Le contenu n'a pas pu être chargé. Vous pouvez télécharger le fichier.
+            </Alert>
+          ) : (
+            <div className="flex flex-col gap-2">
+              <pre className="max-h-[70vh] overflow-auto rounded-md border border-border bg-muted/50 p-3 font-mono text-xs whitespace-pre-wrap">
+                {previewText.text}
+              </pre>
+              {previewText.truncated ? (
+                <p className="text-xs text-muted-foreground">
+                  Aperçu tronqué : seuls les 200 premiers Kio sont affichés.
+                </p>
+              ) : null}
+            </div>
+          )
         ) : null}
       </Dialog>
     </div>

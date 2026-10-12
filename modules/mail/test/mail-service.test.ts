@@ -5,6 +5,7 @@ import type { Actor } from "@workspace/permissions";
 import { eq, inArray } from "drizzle-orm";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  computeThreadKey,
   createInboundMessage,
   deleteMessage,
   ensureMailbox,
@@ -12,6 +13,7 @@ import {
   isMailError,
   listFolders,
   listMessages,
+  listThreadMessages,
   MAX_INBOUND_BODY_LENGTH,
   MailError,
   restoreMessage,
@@ -597,5 +599,157 @@ describe("mail — ingestion entrante", () => {
         webhookSecret(),
       ),
     ).rejects.toMatchObject({ code: "not_found" });
+  });
+});
+
+describe("mail — fils de discussion", () => {
+  it("normalise l'objet en clé de fil", () => {
+    expect(computeThreadKey("Bonjour")).toBe("bonjour");
+    expect(computeThreadKey("Re: Bonjour")).toBe("bonjour");
+    expect(computeThreadKey("RE : Bonjour")).toBe("bonjour");
+    expect(computeThreadKey("Fwd: Bonjour")).toBe("bonjour");
+    expect(computeThreadKey("FW :  Re : Bonjour ")).toBe("bonjour");
+    expect(computeThreadKey("  Tr:   Sujet  avec   espaces  ")).toBe("sujet avec espaces");
+    expect(computeThreadKey("")).toBeNull();
+    expect(computeThreadKey("   ")).toBeNull();
+    expect(computeThreadKey("Re:")).toBeNull();
+    expect(computeThreadKey("Fwd :")).toBeNull();
+  });
+
+  it("attribue la clé de fil à l'envoi, au brouillon, à l'entrant et à la réponse", async () => {
+    const box = await ensureMailbox(f.actorAlice);
+
+    await sendMail(f.actorAlice, {
+      to: ["bruno@example.org"],
+      cc: [],
+      subject: "Projet",
+      body: "Premier",
+    });
+    await sendMail(f.actorAlice, {
+      to: ["bruno@example.org"],
+      cc: [],
+      subject: "Re: Projet",
+      body: "Réponse",
+    });
+    const sent = await listMessages(f.actorAlice, { folder: "sent", threaded: true });
+    expect(sent).toHaveLength(1);
+    expect(sent[0]?.threadKey).toBe("projet");
+    expect(sent[0]?.messageCount).toBe(2);
+    expect(sent[0]?.latest.subject).toBe("Re: Projet");
+
+    const draft = await saveDraft(f.actorAlice, {
+      to: ["bruno@example.org"],
+      cc: [],
+      subject: "RE : Projet",
+      body: "Brouillon",
+    });
+    const drafts = await listMessages(f.actorAlice, { folder: "drafts", threaded: true });
+    expect(drafts).toHaveLength(1);
+    expect(drafts[0]?.threadKey).toBe("projet");
+
+    const inbound = await createInboundMessage(
+      { to: box.address, from: "bruno@example.org", subject: "Fwd: Projet", body: "Transféré" },
+      webhookSecret(),
+    );
+    const inbox = await listMessages(f.actorAlice, { folder: "inbox", threaded: true });
+    expect(inbox).toHaveLength(1);
+    expect(inbox[0]?.threadKey).toBe("projet");
+    expect(inbox[0]?.latest.id).toBe(inbound.id);
+
+    // La mise à jour d'un brouillon recalcule la clé de fil.
+    await saveDraft(f.actorAlice, {
+      id: draft.id,
+      to: ["bruno@example.org"],
+      cc: [],
+      subject: "Autre sujet",
+      body: "v2",
+    });
+    const updated = await listMessages(f.actorAlice, { folder: "drafts", threaded: true });
+    expect(updated).toHaveLength(1);
+    expect(updated[0]?.threadKey).toBe("autre sujet");
+  });
+
+  it("regroupe par fil avec les compteurs de non-lus et l'ordre du dernier message", async () => {
+    const base = Date.now();
+    await insertMessage(f.actorAlice, {
+      subject: "Projet",
+      threadKey: "projet",
+      body: "Ancien",
+      createdAt: new Date(base - 3000),
+    });
+    const latest = await insertMessage(f.actorAlice, {
+      subject: "Re: Projet",
+      threadKey: "projet",
+      body: "Dernier",
+      readAt: new Date(),
+      createdAt: new Date(base - 1000),
+    });
+    await insertMessage(f.actorAlice, {
+      subject: "RE : Projet",
+      threadKey: "projet",
+      body: "Milieu",
+      createdAt: new Date(base - 2000),
+    });
+    await insertMessage(f.actorAlice, {
+      subject: "Autre",
+      threadKey: "autre",
+      body: "Autre",
+      createdAt: new Date(base - 4000),
+    });
+    const solo = await insertMessage(f.actorAlice, {
+      subject: "Sans fil",
+      threadKey: null,
+      body: "Solo",
+      createdAt: new Date(base - 5000),
+    });
+
+    const threads = await listMessages(f.actorAlice, { folder: "inbox", threaded: true });
+    expect(threads.map((thread) => thread.threadKey)).toEqual(["projet", "autre", solo]);
+    expect(threads[0]).toMatchObject({ subject: "Re: Projet", messageCount: 3, unreadCount: 2 });
+    expect(threads[0]?.latest.id).toBe(latest);
+    expect(threads[0]?.latest.snippet).toBe("Dernier");
+    expect(threads[1]?.messageCount).toBe(1);
+    expect(threads[2]?.messageCount).toBe(1);
+
+    // Le mode plat reste inchangé et la limite porte sur les fils.
+    expect(await listMessages(f.actorAlice, { folder: "inbox" })).toHaveLength(5);
+    expect(
+      await listMessages(f.actorAlice, { folder: "inbox", query: "projet", threaded: true }),
+    ).toHaveLength(1);
+  });
+
+  it("liste un fil complet en ordre chronologique, isolé par dossier", async () => {
+    const base = Date.now();
+    const first = await insertMessage(f.actorAlice, {
+      subject: "Projet",
+      threadKey: "projet",
+      body: "Premier",
+      createdAt: new Date(base - 3000),
+    });
+    const second = await insertMessage(f.actorAlice, {
+      subject: "Re: Projet",
+      threadKey: "projet",
+      body: "Deuxième",
+      createdAt: new Date(base - 2000),
+    });
+    // Même clé mais dans « Envoyés » : le fil reste isolé par dossier.
+    await insertMessage(f.actorAlice, {
+      folder: "sent",
+      subject: "Re: Projet",
+      threadKey: "projet",
+      body: "Envoyé",
+      createdAt: new Date(base - 1000),
+    });
+    const solo = await insertMessage(f.actorAlice, { subject: "Solo", threadKey: null });
+
+    const thread = await listThreadMessages(f.actorAlice, second);
+    expect(thread.map((message) => message.id)).toEqual([first, second]);
+    expect(thread[0]?.body).toBe("Premier");
+    expect(thread[1]?.body).toBe("Deuxième");
+
+    const singleton = await listThreadMessages(f.actorAlice, solo);
+    expect(singleton.map((message) => message.id)).toEqual([solo]);
+
+    await expect(listThreadMessages(f.actorBruno, first)).rejects.toThrow(MailError);
   });
 });

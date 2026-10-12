@@ -1,4 +1,6 @@
-import { getDb } from "@workspace/database";
+import { getAppUrls } from "@workspace/config";
+import { schema as core, getDb } from "@workspace/database";
+import { createNotification } from "@workspace/notifications";
 import {
   type Actor,
   createGrant,
@@ -349,6 +351,27 @@ export async function updateTask(
 
   const [row] = await db().update(tasks).set(updates).where(eq(tasks.id, taskId)).returning();
   if (!row) throw new TasksError("not_found", "Tâche introuvable.");
+
+  // Notification best-effort : la tâche change d'assigné et le nouveau
+  // destinataire est membre de l'organisation.
+  const nextAssignee = patch.assigneeId;
+  if (nextAssignee !== undefined && nextAssignee !== null && nextAssignee !== task.assigneeId) {
+    const [membership] = await db()
+      .select({ userId: core.member.userId })
+      .from(core.member)
+      .where(and(eq(core.member.userId, nextAssignee), eq(core.member.organizationId, actor.orgId)))
+      .limit(1);
+    if (membership) {
+      await createNotification({
+        orgId: actor.orgId,
+        userId: nextAssignee,
+        kind: "task_assigned",
+        title: `Tâche assignée : « ${row.title} »`,
+        href: getAppUrls().tasks,
+      }).catch(() => undefined);
+    }
+  }
+
   return row;
 }
 

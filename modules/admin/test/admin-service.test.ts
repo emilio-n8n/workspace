@@ -7,6 +7,7 @@ import {
   AdminError,
   addMemberByEmail,
   getOverview,
+  getPolicies,
   listActiveSessions,
   listAudit,
   listMembers,
@@ -15,10 +16,11 @@ import {
   revokeSession,
   updateMemberRole,
   updateOrgProfile,
+  updatePolicies,
   updateQuota,
 } from "../src/index.ts";
 
-const { user, session, organization, member, auditEvents } = coreSchema;
+const { user, session, organization, member, auditEvents, orgSettings } = coreSchema;
 
 let counter = 0;
 const tag = (prefix: string) => `${prefix}${++counter}_${randomUUID().slice(0, 8)}`;
@@ -252,5 +254,62 @@ describe("admin — sessions actives", () => {
     expect(await db.select().from(session).where(eq(session.id, own.id))).toHaveLength(1);
 
     await expect(revokeAllSessions(f.actorAdmin, f.outsider)).rejects.toThrow(AdminError);
+  });
+});
+
+describe("admin — politiques", () => {
+  it("retourne les valeurs par défaut sans ligne de réglages", async () => {
+    const db = getDb();
+    expect(await db.select().from(orgSettings).where(eq(orgSettings.orgId, f.orgId))).toHaveLength(
+      0,
+    );
+
+    await expect(getPolicies(f.actorAdmin)).resolves.toEqual({
+      allowExternalSharing: true,
+      versionRetentionDays: 90,
+      storageQuotaBytes: null,
+    });
+  });
+
+  it("persiste les politiques, préserve le quota et journalise l'action", async () => {
+    await updatePolicies(f.actorAdmin, { versionRetentionDays: 30 });
+    await updateQuota(f.actorOwner, 2 * 1024 ** 3);
+    await updatePolicies(f.actorAdmin, { allowExternalSharing: false });
+
+    await expect(getPolicies(f.actorOwner)).resolves.toEqual({
+      allowExternalSharing: false,
+      versionRetentionDays: 30,
+      storageQuotaBytes: 2 * 1024 ** 3,
+    });
+
+    const entries = (await listAudit(f.actorOwner, 10)).filter(
+      (entry) => entry.action === "admin.policies.update",
+    );
+    expect(entries).toHaveLength(2);
+    const metadata = entries.map((entry) => entry.metadata);
+    expect(metadata).toContainEqual({ versionRetentionDays: 30 });
+    expect(metadata).toContainEqual({ allowExternalSharing: false });
+  });
+
+  it("refuse rétention hors bornes et membres non administrateurs", async () => {
+    await expect(updatePolicies(f.actorOwner, { versionRetentionDays: 6 })).rejects.toThrow(
+      AdminError,
+    );
+    await expect(updatePolicies(f.actorOwner, { versionRetentionDays: 3651 })).rejects.toThrow(
+      AdminError,
+    );
+    await expect(updatePolicies(f.actorOwner, { versionRetentionDays: 30.5 })).rejects.toThrow(
+      AdminError,
+    );
+
+    await expect(getPolicies(f.actorSimple)).rejects.toThrow(AdminError);
+    await expect(updatePolicies(f.actorSimple, { allowExternalSharing: false })).rejects.toThrow(
+      AdminError,
+    );
+
+    // Les bornes elles-mêmes restent acceptées.
+    await updatePolicies(f.actorOwner, { versionRetentionDays: 7 });
+    await updatePolicies(f.actorOwner, { versionRetentionDays: 3650 });
+    expect((await getPolicies(f.actorOwner)).versionRetentionDays).toBe(3650);
   });
 });

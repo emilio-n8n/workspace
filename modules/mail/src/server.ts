@@ -8,6 +8,7 @@ import {
   getMessage,
   listFolders,
   listMessages,
+  listThreadMessages,
   restoreMessage,
   saveDraft,
   sendMail,
@@ -15,7 +16,13 @@ import {
   trashMessage,
 } from "./index.ts";
 
-export type { FolderCounts, FolderKey, MessageDetail, MessageSummary } from "./index.ts";
+export type {
+  FolderCounts,
+  FolderKey,
+  MessageDetail,
+  MessageSummary,
+  ThreadSummary,
+} from "./index.ts";
 
 const folderSchema = z.enum(["inbox", "sent", "drafts", "trash"]);
 
@@ -45,12 +52,21 @@ export const listMessagesFn = createServerFn({ method: "GET" })
         query: z.string().max(200).optional(),
         unreadOnly: z.boolean().optional(),
         starredOnly: z.boolean().optional(),
+        /** true → résumés de fils de discussion au lieu des messages plats. */
+        threaded: z.boolean().optional(),
       })
       .parse(input),
   )
   .handler(async ({ data }) => {
     const { actor } = await requireActor(getRequest().headers);
     return listMessages(actor, data);
+  });
+
+export const listThreadMessagesFn = createServerFn({ method: "GET" })
+  .validator((input: unknown) => z.object({ messageId: z.string().uuid() }).parse(input))
+  .handler(async ({ data }) => {
+    const { actor } = await requireActor(getRequest().headers);
+    return listThreadMessages(actor, data.messageId);
   });
 
 export const getMessageFn = createServerFn({ method: "GET" })

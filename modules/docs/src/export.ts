@@ -139,7 +139,7 @@ function listItemMarkdown(item: PmNode, depth: number): string {
 
 /** Convertit un document ProseMirror en Markdown. */
 export function toMarkdown(doc: PmNode): string {
-  return blockMarkdown(doc).trimEnd() + "\n";
+  return `${blockMarkdown(doc).trimEnd()}\n`;
 }
 
 // ---------------------------------------------------------------------------

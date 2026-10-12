@@ -9,6 +9,12 @@ import {
 } from "@workspace/auth";
 import { getAppUrls } from "@workspace/config";
 import { schema as coreSchema, getDb } from "@workspace/database";
+import {
+  countUnreadNotifications,
+  listNotifications,
+  markAllNotificationsRead,
+  markNotificationRead,
+} from "@workspace/notifications";
 import { searchEverything } from "@workspace/search";
 import { eq } from "drizzle-orm";
 import { z } from "zod";
@@ -121,4 +127,33 @@ export const searchFn = createServerFn({ method: "GET" })
               ? urls.tasks
               : `${urls.calendar}`,
     }));
+  });
+
+/** Notifications de l'utilisateur courant (compteur de non-lues + 20 dernières). */
+export const listNotificationsFn = createServerFn({ method: "GET" }).handler(async () => {
+  const request = getRequest();
+  const { actor } = await requireActor(request.headers);
+  const [unreadCount, items] = await Promise.all([
+    countUnreadNotifications(actor),
+    listNotifications(actor, { limit: 20 }),
+  ]);
+  return { unreadCount, items };
+});
+
+/** Marque toutes les notifications de l'utilisateur comme lues. */
+export const markAllNotificationsReadFn = createServerFn({ method: "POST" }).handler(async () => {
+  const request = getRequest();
+  const { actor } = await requireActor(request.headers);
+  await markAllNotificationsRead(actor);
+  return { ok: true };
+});
+
+/** Marque une notification précise comme lue. */
+export const markNotificationReadFn = createServerFn({ method: "POST" })
+  .validator((input: unknown) => z.object({ id: z.string().uuid() }).parse(input))
+  .handler(async ({ data }) => {
+    const request = getRequest();
+    const { actor } = await requireActor(request.headers);
+    await markNotificationRead(actor, data.id);
+    return { ok: true };
   });

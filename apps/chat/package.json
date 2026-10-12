@@ -21,6 +21,7 @@
     "@workspace/auth": "workspace:*",
     "@workspace/config": "workspace:*",
     "@workspace/database": "workspace:*",
+    "@workspace/notifications": "workspace:*",
     "@workspace/design-tokens": "workspace:*",
     "@workspace/ui": "workspace:*",
     "react": "^19.2.0",

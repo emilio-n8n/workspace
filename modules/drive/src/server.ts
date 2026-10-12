@@ -8,8 +8,10 @@ import {
   accessShareLink,
   createFolder,
   createShareLink,
+  createTextFile,
   type DriveEntry,
   DriveError,
+  deleteEntry,
   driveFiles,
   getAncestors,
   getEntry,
@@ -25,6 +27,7 @@ import {
   restore,
   revokeShareLink,
   shareEntry,
+  TEXT_FILE_MIME_TYPES,
   trash,
   unshareEntry,
 } from "./index.ts";
@@ -157,6 +160,22 @@ export const createFolderFn = createServerFn({ method: "POST" })
     return toView(entry, userId);
   });
 
+const createTextFileInput = z.object({
+  parentId: z.string().uuid().nullable().optional(),
+  name: z.string().trim().min(1).max(255),
+  content: z.string().max(2_000_000),
+  mimeType: z.enum(TEXT_FILE_MIME_TYPES).optional(),
+});
+
+/** Création d'un fichier texte (agents/MCP) — mêmes règles que le service. */
+export const createTextFileFn = createServerFn({ method: "POST" })
+  .validator((input: unknown) => createTextFileInput.parse(input))
+  .handler(async ({ data }) => {
+    const { actor, userId } = await requireActor(getRequest().headers);
+    const entry = await createTextFile(actor, data);
+    return toView(entry, userId);
+  });
+
 const renameInput = z.object({
   entryId: z.string().uuid(),
   name: z.string().trim().min(1).max(255),
@@ -191,6 +210,24 @@ export const purgeEntryFn = createServerFn({ method: "POST" })
   .handler(async ({ data }) => {
     const { actor } = await requireActor(getRequest().headers);
     await purge(actor, data.entryId);
+    return { ok: true };
+  });
+
+const deleteEntryInput = z.object({
+  entryId: z.string().uuid(),
+  permanent: z.boolean().optional(),
+});
+
+/**
+ * Suppression générique : corbeille par défaut, purge définitive seulement si
+ * `permanent` (garde-fous portés par le service). La confirmation littérale
+ * (`confirm: "SUPPRIMER"`) vit dans les outils MCP, pas ici.
+ */
+export const deleteEntryFn = createServerFn({ method: "POST" })
+  .validator((input: unknown) => deleteEntryInput.parse(input))
+  .handler(async ({ data }) => {
+    const { actor } = await requireActor(getRequest().headers);
+    await deleteEntry(actor, data.entryId, { permanent: data.permanent });
     return { ok: true };
   });
 

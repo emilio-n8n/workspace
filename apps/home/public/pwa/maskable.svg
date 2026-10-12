@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-label="Workspace">
+  <rect width="512" height="512" fill="#2f5d54"/>
+  <g transform="translate(256 256) scale(0.6) translate(-256 -256)">
+    <path d="M120 360 L200 150 L256 280 L312 150 L392 360" fill="none" stroke="#f7f4ee" stroke-width="48" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+</svg>

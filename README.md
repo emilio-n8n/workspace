@@ -65,13 +65,13 @@ pnpm seed:demo              # jeu de démonstration complet (compte demo@exemple
 WORKSPACE_TOKEN=wsk_… pnpm --filter @workspace/mcp-server start
 ```
 
-Les jetons se créent dans l'application (Accueil → Agents & jetons) avec des scopes minimaux (`drive:read`, `docs:read`, `tasks:write`…), expirent par défaut après 90 jours et sont réservés aux administrateurs pour le scope `audit:read`. **25 outils** couvrent la suite ; les outils destructifs exigent une confirmation littérale. Chaque appel est journalisé (succès, refus, erreurs), et **toutes les mutations web sont auditées** (`@workspace/audit`). Détails : `docs/mcp/`.
+Les jetons se créent dans l'application (Accueil → Agents & jetons) avec des scopes minimaux (`drive:read`, `docs:read`, `tasks:write`…), expirent par défaut après 90 jours et sont réservés aux administrateurs pour le scope `audit:read`. **27 outils** couvrent la suite ; les outils destructifs exigent une confirmation littérale. Chaque appel est journalisé (succès, refus, erreurs), et **toutes les mutations web sont auditées** (`@workspace/audit`). Détails : `docs/mcp/`.
 
 ## Structure du dépôt
 
 ```
 apps/        home · drive · docs · tasks · calendar · forms · sheets · slides · mail · chat · meet · sites · classroom · admin · mcp-server
-packages/    design-tokens · ui · database · auth · permissions · storage · config · audit · search
+packages/    design-tokens · ui · database · auth · permissions · storage · config · audit · search · notifications · ratelimit
 modules/     drive · docs · tasks · calendar · forms · sheets · slides · mail · chat · meet · sites · classroom · admin
              (services + server functions + interface)
 e2e/         tests de bout en bout multi-applications

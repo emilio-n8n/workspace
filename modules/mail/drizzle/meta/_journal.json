@@ -29,6 +29,13 @@
       "when": 1791831714735,
       "tag": "0003_stormy_the_watchers",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1791834975987,
+      "tag": "0004_friendly_komodo",
+      "breakpoints": true
     }
   ]
 }

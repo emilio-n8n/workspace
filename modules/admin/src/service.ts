@@ -451,3 +451,86 @@ export async function listAudit(actor: Actor, limit = 100): Promise<AuditEntry[]
     metadata: row.metadata as Record<string, string | number | boolean | null> | null,
   }));
 }
+
+// ---------------------------------------------------------------------------
+// Politiques (partage externe, rétention des versions)
+// ---------------------------------------------------------------------------
+
+export const POLICY_RETENTION_MIN_DAYS = 7;
+export const POLICY_RETENTION_MAX_DAYS = 3650;
+/** Même défaut que les modules `drive` et `docs` quand aucune ligne n'existe. */
+const DEFAULT_VERSION_RETENTION_DAYS = 90;
+
+export type OrgPolicies = {
+  allowExternalSharing: boolean;
+  versionRetentionDays: number;
+  storageQuotaBytes: number | null;
+};
+
+/** Politiques effectives de l'organisation — valeurs par défaut si aucune ligne. */
+export async function getPolicies(actor: Actor): Promise<OrgPolicies> {
+  await requireAdmin(actor);
+  const [row] = await db()
+    .select({
+      allowExternalSharing: core.orgSettings.allowExternalSharing,
+      versionRetentionDays: core.orgSettings.versionRetentionDays,
+      storageQuotaBytes: core.orgSettings.storageQuotaBytes,
+    })
+    .from(core.orgSettings)
+    .where(eq(core.orgSettings.orgId, actor.orgId))
+    .limit(1);
+  return {
+    allowExternalSharing: row?.allowExternalSharing ?? true,
+    versionRetentionDays: row?.versionRetentionDays ?? DEFAULT_VERSION_RETENTION_DAYS,
+    storageQuotaBytes: row?.storageQuotaBytes ?? null,
+  };
+}
+
+/**
+ * Met à jour les politiques par patch : les clés absentes ne sont pas touchées
+ * (le quota de stockage en particulier). Crée la ligne de réglages au besoin.
+ */
+export async function updatePolicies(
+  actor: Actor,
+  input: { allowExternalSharing?: boolean; versionRetentionDays?: number },
+): Promise<void> {
+  await requireAdmin(actor);
+  const patch: { allowExternalSharing?: boolean; versionRetentionDays?: number } = {};
+  if (input.allowExternalSharing !== undefined) {
+    patch.allowExternalSharing = input.allowExternalSharing;
+  }
+  if (input.versionRetentionDays !== undefined) {
+    if (
+      !Number.isInteger(input.versionRetentionDays) ||
+      input.versionRetentionDays < POLICY_RETENTION_MIN_DAYS ||
+      input.versionRetentionDays > POLICY_RETENTION_MAX_DAYS
+    ) {
+      throw new AdminError(
+        "validation",
+        `La rétention des versions doit être un entier entre ${POLICY_RETENTION_MIN_DAYS} et ${POLICY_RETENTION_MAX_DAYS} jours.`,
+      );
+    }
+    patch.versionRetentionDays = input.versionRetentionDays;
+  }
+  if (patch.allowExternalSharing === undefined && patch.versionRetentionDays === undefined) {
+    throw new AdminError("validation", "Aucune politique à mettre à jour.");
+  }
+
+  await db()
+    .insert(core.orgSettings)
+    .values({ orgId: actor.orgId, ...patch })
+    .onConflictDoUpdate({
+      target: core.orgSettings.orgId,
+      set: patch,
+    });
+
+  await recordAudit({
+    orgId: actor.orgId,
+    actorUserId: actor.userId,
+    action: "admin.policies.update",
+    resourceType: "org_settings",
+    resourceId: actor.orgId,
+    result: "success",
+    metadata: patch,
+  });
+}

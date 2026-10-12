@@ -5,18 +5,28 @@ import { z } from "zod";
 import {
   addMemberByEmail,
   getOverview,
+  getPolicies,
   listActiveSessions,
   listAudit,
   listMembers,
+  POLICY_RETENTION_MAX_DAYS,
+  POLICY_RETENTION_MIN_DAYS,
   removeMember,
   revokeAllSessions,
   revokeSession,
   updateMemberRole,
   updateOrgProfile,
+  updatePolicies,
   updateQuota,
 } from "./index.ts";
 
-export type { ActiveSession, AuditEntry, MemberFull, OrgOverview } from "./index.ts";
+export type {
+  ActiveSession,
+  AuditEntry,
+  MemberFull,
+  OrgOverview,
+  OrgPolicies,
+} from "./index.ts";
 
 export const getOverviewFn = createServerFn({ method: "GET" }).handler(async () => {
   const { actor } = await requireActor(getRequest().headers);
@@ -70,6 +80,31 @@ export const updateQuotaFn = createServerFn({ method: "POST" })
   .handler(async ({ data }) => {
     const { actor } = await requireActor(getRequest().headers);
     await updateQuota(actor, data.quotaBytes);
+    return { ok: true };
+  });
+
+export const getPoliciesFn = createServerFn({ method: "GET" }).handler(async () => {
+  const { actor } = await requireActor(getRequest().headers);
+  return getPolicies(actor);
+});
+
+export const updatePoliciesFn = createServerFn({ method: "POST" })
+  .validator((input: unknown) =>
+    z
+      .object({
+        allowExternalSharing: z.boolean().optional(),
+        versionRetentionDays: z
+          .number()
+          .int()
+          .min(POLICY_RETENTION_MIN_DAYS)
+          .max(POLICY_RETENTION_MAX_DAYS)
+          .optional(),
+      })
+      .parse(input),
+  )
+  .handler(async ({ data }) => {
+    const { actor } = await requireActor(getRequest().headers);
+    await updatePolicies(actor, data);
     return { ok: true };
   });
 

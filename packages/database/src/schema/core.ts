@@ -98,6 +98,33 @@ export const apiTokens = pgTable(
   ],
 );
 
+/**
+ * Notifications utilisateur : partages reçus, tâches assignées, copies notées.
+ * `read_at` nul = non lue ; le libellé est porté par `kind` côté application.
+ */
+export const notifications = pgTable(
+  "notifications",
+  {
+    id: uuid("id").primaryKey().default(sql`uuidv7()`),
+    orgId: text("org_id")
+      .notNull()
+      .references(() => organization.id, { onDelete: "cascade" }),
+    userId: text("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    kind: text("kind").notNull(),
+    title: text("title").notNull(),
+    body: text("body"),
+    href: text("href"),
+    readAt: timestamp("read_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    index("notifications_user_read_idx").on(table.userId, table.readAt),
+    index("notifications_org_time_idx").on(table.orgId, table.createdAt),
+  ],
+);
+
 /** Journal d'audit : acteur (session ou jeton), action, ressource, résultat. */
 export const auditEvents = pgTable(
   "audit_events",
@@ -148,6 +175,7 @@ export const orgSettings = pgTable("org_settings", {
 
 export type ResourceGrant = typeof resourceGrants.$inferSelect;
 export type ApiToken = typeof apiTokens.$inferSelect;
+export type Notification = typeof notifications.$inferSelect;
 export type AuditEvent = typeof auditEvents.$inferSelect;
 export type InstanceSettings = typeof instanceSettings.$inferSelect;
 export type OrgSettings = typeof orgSettings.$inferSelect;

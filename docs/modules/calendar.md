@@ -31,3 +31,7 @@ isolation entre organisations (tests de service).
 
 ## Hors périmètre (assumé, documenté)
 CalDAV, récurrences avancées (RRULE), fuseaux par événement, disponibilité.
+
+## Ajouts des vagues S/T
+- **Récurrences simples** : quotidienne / hebdomadaire / mensuelle (+ « jusqu'au », ≤ 24 mois), expansion dans la plage interrogée (même identifiant de série, cap 100 occurrences/événement), mensuel **clampé au dernier jour** des mois courts (31 janv. → 28 févr. → 31 mars) ; l'édition porte sur toute la série (pas de dérogation par occurrence — documenté).
+- **Visioconférence en un clic** : à la création d'un événement, une salle Meet peut être créée et son lien ajouté au lieu (réglage org-scoped, échec non bloquant).

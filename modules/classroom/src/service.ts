@@ -1,5 +1,7 @@
 import { randomBytes } from "node:crypto";
+import { getAppUrls } from "@workspace/config";
 import { schema as core, getDb, withTransaction } from "@workspace/database";
+import { createNotification } from "@workspace/notifications";
 import type { Actor } from "@workspace/permissions";
 import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import {
@@ -499,5 +501,16 @@ export async function gradeSubmission(
     .update(classroomSubmissions)
     .set({ grade: input.grade, feedback, gradedAt: new Date() })
     .where(eq(classroomSubmissions.id, submissionId));
+
+  // Notification best-effort à l'élève noté.
+  await createNotification({
+    orgId: actor.orgId,
+    userId: submission.studentId,
+    kind: "graded",
+    title: `Copie notée : ${assignment.title}`,
+    body: `Note : ${input.grade}/${assignment.points}`,
+    href: getAppUrls().classroom,
+  }).catch(() => undefined);
+
   return { ok: true };
 }

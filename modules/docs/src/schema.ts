@@ -65,5 +65,29 @@ export const docsVersions = pgTable(
   ],
 );
 
+/**
+ * Commentaires d'un document — fils simples (un commentaire par fil, pas de
+ * réponses imbriquées), avec extrait ancré optionnel (`quote`) et résolution.
+ */
+export const docsComments = pgTable(
+  "docs_comments",
+  {
+    id: uuid("id").primaryKey().default(sql`uuidv7()`),
+    documentId: uuid("document_id")
+      .notNull()
+      .references(() => docsDocuments.id, { onDelete: "cascade" }),
+    authorId: text("author_id")
+      .notNull()
+      .references(() => core.user.id, { onDelete: "cascade" }),
+    body: text("body").notNull(),
+    /** Extrait du document auquel le commentaire se rattache (facultatif). */
+    quote: text("quote"),
+    resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [index("docs_comments_document_created_idx").on(table.documentId, table.createdAt)],
+);
+
 export type DocsDocument = typeof docsDocuments.$inferSelect;
 export type DocsVersion = typeof docsVersions.$inferSelect;
+export type DocsComment = typeof docsComments.$inferSelect;

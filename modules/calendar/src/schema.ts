@@ -7,6 +7,11 @@ import { boolean, index, pgTable, text, timestamp, uniqueIndex, uuid } from "dri
  * Un agenda appartient à une personne (`owner_id`) ou à l'organisation
  * (`owner_id` nul : visible de tous les membres). Les événements portent des
  * invités avec leur réponse (invité / accepté / refusé).
+ *
+ * Récurrence simple : la série est portée par la ligne (`recurrence` +
+ * `recurrence_until`) et développée en occurrences à la lecture. Il n'existe
+ * pas de dérogation par occurrence : modifier ou supprimer la ligne affecte
+ * toute la série.
  */
 
 export const calendars = pgTable(
@@ -43,6 +48,13 @@ export const calendarEvents = pgTable(
     startsAt: timestamp("starts_at", { withTimezone: true }).notNull(),
     endsAt: timestamp("ends_at", { withTimezone: true }).notNull(),
     allDay: boolean("all_day").notNull().default(false),
+    /**
+     * Récurrence de la série : `none` | `daily` | `weekly` | `monthly`.
+     * La première occurrence est la ligne elle-même (startsAt/endsAt).
+     */
+    recurrence: text("recurrence").notNull().default("none"),
+    /** Dernière date (incluse) à laquelle une occurrence peut démarrer. */
+    recurrenceUntil: timestamp("recurrence_until", { withTimezone: true }),
     createdBy: text("created_by")
       .notNull()
       .references(() => core.user.id, { onDelete: "cascade" }),

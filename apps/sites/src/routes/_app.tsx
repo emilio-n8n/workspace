@@ -1,4 +1,5 @@
 import { createFileRoute, Outlet, redirect, useRouter } from "@tanstack/react-router";
+import type { NotificationView } from "@workspace/notifications";
 import {
   AppShell,
   currentTheme,
@@ -7,11 +8,14 @@ import {
   type Theme,
   toggleTheme,
 } from "@workspace/ui";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   getAppUrlsFn,
   getSessionFn,
   getWorkspaceFn,
+  listNotificationsFn,
+  markAllNotificationsReadFn,
+  markNotificationReadFn,
   searchFn,
   signOutFn,
   switchOrgFn,
@@ -46,12 +50,36 @@ type AppUrls = {
   admin: string;
 };
 
+type NotificationData = {
+  unreadCount: number;
+  items: NotificationView[];
+};
+
 function AppLayout() {
   const router = useRouter();
   const [workspace, setWorkspace] = useState<WorkspaceInfo>(null);
   const [urls, setUrls] = useState<AppUrls | null>(null);
   const [theme, setTheme] = useState<Theme>("light");
   const [loadError, setLoadError] = useState(false);
+  const [notifications, setNotifications] = useState<NotificationData>({
+    unreadCount: 0,
+    items: [],
+  });
+
+  const refreshNotifications = useCallback(async () => {
+    try {
+      setNotifications(await listNotificationsFn());
+    } catch {
+      // Silencieux : la cloche ne doit jamais casser la mise en page.
+    }
+  }, []);
+
+  // Recharge les notifications au montage puis toutes les 60 secondes.
+  useEffect(() => {
+    void refreshNotifications();
+    const interval = window.setInterval(() => void refreshNotifications(), 60_000);
+    return () => window.clearInterval(interval);
+  }, [refreshNotifications]);
 
   useEffect(() => {
     setTheme(currentTheme());
@@ -99,6 +127,22 @@ function AppLayout() {
       activeAppId={"sites" as SuiteAppId}
       apps={resolveSuiteApps(urls)}
       search={async (query) => await searchFn({ data: { query } })}
+      notifications={{
+        unreadCount: notifications.unreadCount,
+        items: notifications.items,
+        onOpenItem: (n) => {
+          void markNotificationReadFn({ data: { id: n.id } })
+            .then(() => refreshNotifications())
+            .catch(() => undefined);
+          if (n.href) window.location.assign(n.href);
+        },
+        onMarkAllRead: () => {
+          void markAllNotificationsReadFn()
+            .then(() => refreshNotifications())
+            .catch(() => undefined);
+        },
+        onRefresh: () => void refreshNotifications(),
+      }}
       homeHref={`${urls.home}/app`}
       tokensHref={`${urls.home}/app/settings/tokens`}
       user={{ name: workspace.user.name, email: workspace.user.email }}

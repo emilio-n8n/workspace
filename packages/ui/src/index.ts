@@ -45,7 +45,11 @@ export {
 export { useDebouncedValue } from "./hooks/use-debounced-value.ts";
 export * from "./icons.tsx";
 export { AppRail, type AppRailProps } from "./shell/app-rail.tsx";
-export { AppShell, type AppShellProps } from "./shell/app-shell.tsx";
+export {
+  AppShell,
+  type AppShellProps,
+  type NotificationBellData,
+} from "./shell/app-shell.tsx";
 export { BrandMark } from "./shell/brand-mark.tsx";
 export {
   CommandPalette,
@@ -61,7 +65,12 @@ export {
   type SuiteAppId,
   shippedApps,
 } from "./shell/suite-apps.ts";
-export { TopBar, type TopBarProps } from "./shell/top-bar.tsx";
+export {
+  type NotificationBellItem,
+  TopBar,
+  type TopBarNotifications,
+  type TopBarProps,
+} from "./shell/top-bar.tsx";
 export {
   applyTheme,
   currentTheme,

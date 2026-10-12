@@ -57,3 +57,8 @@ Le coffre-fort de fichiers de la suite : dossiers, uploads, aperçus, partages, 
 - Pagination des dossiers volumineux (MVP : dossiers de taille raisonnable, ordre serveur).
 - Aperçu de gros fichiers (streaming et limites mémoire) ; quotas à brancher dans `uploadFile`.
 - Politique de rétention des versions (réglage d'organisation, défaut raisonnable à définir).
+
+## Ajouts des vagues S/T
+- **MCP `files.write` / `files.delete`** : création de fichiers texte (mime allowlist, ≤ 2 Mo, quota appliqué) et suppression — corbeille par défaut, suppression définitive réservée au propriétaire d'un élément **déjà en corbeille**, confirmation littérale « SUPPRIMER » exigée côté agent.
+- **Visionneuse intégrée** : images, PDF (iframe) et texte (≤ 200 Ko en flux) s'ouvrent en dialogue avec `?inline=1` (cache privé 5 min, `content-disposition: inline`).
+- **Rétention des versions** (90 j par défaut, réglable Admin) et **partage externe** configurables et réellement appliqués.

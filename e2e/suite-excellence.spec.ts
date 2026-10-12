@@ -7,6 +7,7 @@ import { gotoHydrated, openApp, signupNewUser, uniqueEmail } from "./helpers.ts"
  * Chaque cas crée son propre compte : aucun état partagé entre les tests.
  */
 
+const DRIVE = "http://localhost:3001";
 const TASKS = "http://localhost:3003";
 const CALENDAR = "http://localhost:3004";
 const FORMS = "http://localhost:3005";
@@ -74,17 +75,39 @@ test("recherche globale : trouve fichiers, formulaires, tâches et événements"
   await expect(page.getByText("Point Alpha").first()).toBeVisible();
 });
 
-test("palette ⌘K : ouvre la recherche globale", async ({ page }) => {
+test("palette ⌘K : recherche en direct et navigation vers un résultat", async ({ page }) => {
+  test.slow(); // multi-applications : Drive (3001) → accueil (3000)
+
   const email = uniqueEmail("palette");
   await signupNewUser(page, "Palette E2E", email);
 
+  // Une cible réelle pour la recherche en direct : un dossier dans le Drive.
+  await openApp(page, `${DRIVE}/`);
+  await page.getByRole("button", { name: "Nouveau", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Nouveau dossier" }).click();
+  await page.getByLabel("Nom du dossier").fill("Cible Palette");
+  await page.getByRole("button", { name: "Créer le dossier" }).click();
+  await expect(page.getByRole("button", { name: "Cible Palette", exact: true })).toBeVisible();
+
+  // Retour au lanceur : la palette s'ouvre, se referme avec Échap…
+  await gotoHydrated(page, "/app");
   await page.keyboard.press("ControlOrMeta+k");
   const palette = page.getByPlaceholder("Rechercher une application ou une action…");
-  await expect(page.getByRole("dialog", { name: "Palette de commandes" })).toBeVisible();
+  const dialogue = page.getByRole("dialog", { name: "Palette de commandes" });
+  await expect(dialogue).toBeVisible();
   await expect(palette).toBeVisible();
 
   await page.keyboard.press("Escape");
-  await expect(palette).toBeHidden();
+  await expect(dialogue).toBeHidden();
+
+  // …puis interroge la recherche globale en direct.
+  await page.keyboard.press("ControlOrMeta+k");
+  await palette.fill("Cible");
+  await expect(dialogue.getByText("Cible Palette")).toBeVisible({ timeout: 5_000 });
+
+  // Entrée ouvre le premier résultat : le dossier vit dans le Drive.
+  await page.keyboard.press("Enter");
+  await expect(page).toHaveURL(/localhost:3001/, { timeout: 25_000 });
 });
 
 test("thème sombre : contrastes critiques visibles", async ({ page }) => {

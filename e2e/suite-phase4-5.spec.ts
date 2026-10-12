@@ -89,18 +89,21 @@ test("classroom : cours, code d'accès, copie d'élève et notation", async ({ p
   // L'enseignant crée le cours et un devoir.
   await signupNewUser(page, "Prof E2E", ownerEmail);
   await openApp(page, `${CLASSROOM}/`);
-  await page.getByRole("button", { name: "Créer un cours" }).click();
+  // En-tête + état vide exposent les deux mêmes actions : on vise la première.
+  await page.getByRole("button", { name: "Créer un cours" }).first().click();
   await page.getByLabel("Nom du cours").fill("Maths E2E");
   await page.getByRole("button", { name: "Créer le cours" }).click();
 
-  await expect(page.getByText("Nouveau devoir")).toBeVisible({ timeout: 25_000 });
+  await expect(page.getByRole("button", { name: "Nouveau devoir" }).first()).toBeVisible({
+    timeout: 25_000,
+  });
   const codeButton = page.getByRole("button", { name: /Code :/ });
   const codeText = await codeButton.innerText();
   const match = /([A-HJ-NP-Z2-9]{8})/.exec(codeText);
   if (!match?.[1]) throw new Error("Code d'accès introuvable");
   const joinCode = match[1];
 
-  await page.getByRole("button", { name: "Nouveau devoir" }).click();
+  await page.getByRole("button", { name: "Nouveau devoir" }).first().click();
   await page.getByLabel("Titre").fill("Exercice 1");
   await page.getByLabel("Consignes").fill("Faire les calculs.");
   await page.getByRole("button", { name: "Créer le devoir" }).click();
@@ -110,7 +113,7 @@ test("classroom : cours, code d'accès, copie d'élève et notation", async ({ p
   await logout(page);
   await signupNewUser(page, "Élève E2E", studentEmail);
   await openApp(page, `${CLASSROOM}/`);
-  await page.getByRole("button", { name: "Rejoindre avec un code" }).click();
+  await page.getByRole("button", { name: "Rejoindre avec un code" }).first().click();
   await page.getByLabel("Code d'accès").fill(joinCode);
   await page.getByRole("button", { name: "Rejoindre", exact: true }).click();
   await expect(page.getByText("Exercice 1")).toBeVisible({ timeout: 25_000 });
@@ -141,7 +144,11 @@ test("admin : profil d'organisation, membres, quota et journal", async ({ page }
   await expect(page.getByRole("heading", { name: "Administration" })).toBeVisible();
 
   await page.getByLabel("Nom", { exact: true }).fill("Org E2E");
-  await page.getByRole("button", { name: "Enregistrer" }).click();
+  // Deux cartes « Enregistrer » (profil, politiques) : on vise la carte Profil.
+  await page
+    .locator("section", { hasText: "Profil de l'organisation" })
+    .getByRole("button", { name: "Enregistrer" })
+    .click();
   await expect(page.getByRole("status")).toContainText("Profil mis à jour.");
 
   await expect(page.getByText(email)).toBeVisible();

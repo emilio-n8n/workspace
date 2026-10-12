@@ -10,13 +10,18 @@ export const Route = createFileRoute("/api/drive/download/$fileId")({
         try {
           const { actor } = await requireActor(request.headers);
           const { entry, body } = await download(actor, params.fileId);
+          // `?inline=1` : affichage direct dans le navigateur (visionneuse intégrée)
+          // au lieu du téléchargement, avec un cache privé court.
+          const inline = new URL(request.url).searchParams.get("inline") === "1";
+          const disposition = inline ? "inline" : "attachment";
+          const filename = encodeURIComponent(entry.name);
 
           return new Response(new Uint8Array(body), {
             headers: {
               "content-type": entry.mimeType ?? "application/octet-stream",
               "content-length": String(body.length),
-              "content-disposition": `attachment; filename*=UTF-8''${encodeURIComponent(entry.name)}`,
-              "cache-control": "private, no-store",
+              "content-disposition": `${disposition}; filename*=UTF-8''${filename}`,
+              "cache-control": inline ? "private, max-age=300" : "private, no-store",
             },
           });
         } catch {

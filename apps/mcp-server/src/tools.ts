@@ -4,7 +4,13 @@ import { deleteEvent } from "@workspace/calendar";
 import { listMessages as listChatMessages } from "@workspace/chat";
 import { getDb, schema } from "@workspace/database";
 import { getDocumentByFileId, toPlainText } from "@workspace/docs";
-import { download, searchEntries } from "@workspace/drive";
+import {
+  createTextFile,
+  deleteEntry,
+  download,
+  searchEntries,
+  TEXT_FILE_MIME_TYPES,
+} from "@workspace/drive";
 import { getMessage } from "@workspace/mail";
 import { createTask, listLists, listTasks, updateTask } from "@workspace/tasks";
 import { and, desc, eq } from "drizzle-orm";
@@ -203,6 +209,74 @@ export function registerTools(server: McpServer, principal: TokenPrincipal): voi
                 null,
                 2,
               ),
+            },
+          ],
+        };
+      }),
+  );
+
+  server.registerTool(
+    "files.write",
+    {
+      title: "Créer un fichier texte",
+      description:
+        "Crée un fichier texte (text/plain par défaut, text/markdown ou application/json, 2 Mo max) à la racine ou dans le dossier `parentId`. Scope requis : drive:write.",
+      inputSchema: {
+        name: z.string().min(1).max(255),
+        content: z.string().max(2_000_000),
+        parentId: z.string().uuid().optional(),
+        mimeType: z.enum(TEXT_FILE_MIME_TYPES).optional(),
+      },
+    },
+    async ({ name, content, parentId, mimeType }) =>
+      withAudit(principal, "files.write", async () => {
+        requireScope(principal, "drive:write");
+
+        const entry = await createTextFile(actor, { name, content, parentId, mimeType });
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify(
+                { id: entry.id, name: entry.name, sizeBytes: entry.sizeBytes },
+                null,
+                2,
+              ),
+            },
+          ],
+        };
+      }),
+  );
+
+  server.registerTool(
+    "files.delete",
+    {
+      title: "Supprimer un fichier ou un dossier",
+      description:
+        'Met un élément à la corbeille (restaurable) ; avec `permanent: true`, purge définitive réservée au propriétaire et seulement si l\'élément est déjà dans la corbeille. Confirmation explicite obligatoire : `confirm: "SUPPRIMER"`. Scope requis : drive:write.',
+      inputSchema: {
+        fileId: z.string().uuid(),
+        // Optionnel au niveau du schéma pour que l'absence de confirmation
+        // arrive jusqu'au gestionnaire et reçoive un message explicite,
+        // plutôt qu'un refus de validation générique du SDK.
+        confirm: z.literal("SUPPRIMER").optional(),
+        permanent: z.boolean().optional(),
+      },
+    },
+    async ({ fileId, confirm, permanent }) =>
+      withAudit(principal, "files.delete", async () => {
+        requireScope(principal, "drive:write");
+        if (confirm !== "SUPPRIMER") {
+          return errorResult('Confirmation requise : passez confirm: "SUPPRIMER".');
+        }
+
+        const permanentDelete = permanent ?? false;
+        await deleteEntry(actor, fileId, { permanent: permanentDelete });
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify({ ok: true, permanent: permanentDelete }, null, 2),
             },
           ],
         };

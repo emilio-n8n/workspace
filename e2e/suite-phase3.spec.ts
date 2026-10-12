@@ -68,8 +68,13 @@ test("sheets : saisie, formule évaluée et persistance après rechargement", as
   await page.getByLabel("Titre de la feuille").fill("Budget E2E");
   await page.getByRole("button", { name: "Créer et ouvrir" }).click();
 
+  // Entrée valide et descend d'une ligne : la cellule suivante est déjà en
+  // édition (champ), sinon c'est un bouton au repos — on accepte les deux.
   async function typeCell(ref: string, value: string) {
-    await page.getByRole("button", { name: `Cellule ${ref}` }).click();
+    await page
+      .getByRole("button", { name: `Cellule ${ref}` })
+      .or(page.getByRole("textbox", { name: `Cellule ${ref}` }))
+      .click();
     const input = page.getByRole("textbox", { name: `Cellule ${ref}` });
     await input.fill(value);
     await input.press("Enter");
@@ -103,8 +108,12 @@ test("slides : zone de texte, sauvegarde et persistance", async ({ page }) => {
   await page.getByRole("button", { name: "Créer et ouvrir" }).click();
 
   await page.getByRole("button", { name: "Ajouter une zone de texte" }).click();
-  await page.getByRole("button", { name: "Élément Texte" }).click();
-  await page.getByLabel("Texte").fill("Bonjour E2E");
+  // Le nom accessible de l'élément dérive de son texte (« Élément Texte » à la création).
+  await page
+    .getByRole("button", { name: /Élément/ })
+    .first()
+    .click();
+  await page.getByRole("textbox", { name: "Texte", exact: true }).fill("Bonjour E2E");
   await expect(page.getByRole("status").filter({ hasText: "Enregistré" })).toBeVisible({
     timeout: 15_000,
   });

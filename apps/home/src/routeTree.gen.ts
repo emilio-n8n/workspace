@@ -15,6 +15,7 @@ import { Route as LoginRouteImport } from './routes/login'
 import { Route as SignupRouteImport } from './routes/signup'
 import { Route as ApiHealthRouteImport } from './routes/api/health'
 import { Route as AppIndexRouteImport } from './routes/app/index'
+import { Route as AppNotificationsRouteImport } from './routes/app/notifications'
 import { Route as AppRechercheRouteImport } from './routes/app/recherche'
 import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
 import { Route as AppSettingsTokensRouteImport } from './routes/app/settings.tokens'
@@ -49,6 +50,11 @@ const AppIndexRoute = AppIndexRouteImport.update({
   path: '/',
   getParentRoute: () => AppRoute,
 } as any)
+const AppNotificationsRoute = AppNotificationsRouteImport.update({
+  id: '/notifications',
+  path: '/notifications',
+  getParentRoute: () => AppRoute,
+} as any)
 const AppRechercheRoute = AppRechercheRouteImport.update({
   id: '/recherche',
   path: '/recherche',
@@ -71,6 +77,7 @@ export interface FileRoutesByFullPath {
   '/login': typeof LoginRoute
   '/signup': typeof SignupRoute
   '/api/health': typeof ApiHealthRoute
+  '/app/notifications': typeof AppNotificationsRoute
   '/app/recherche': typeof AppRechercheRoute
   '/app/': typeof AppIndexRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
@@ -81,6 +88,7 @@ export interface FileRoutesByTo {
   '/login': typeof LoginRoute
   '/signup': typeof SignupRoute
   '/api/health': typeof ApiHealthRoute
+  '/app/notifications': typeof AppNotificationsRoute
   '/app/recherche': typeof AppRechercheRoute
   '/app': typeof AppIndexRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
@@ -93,6 +101,7 @@ export interface FileRoutesById {
   '/login': typeof LoginRoute
   '/signup': typeof SignupRoute
   '/api/health': typeof ApiHealthRoute
+  '/app/notifications': typeof AppNotificationsRoute
   '/app/recherche': typeof AppRechercheRoute
   '/app/': typeof AppIndexRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
@@ -106,6 +115,7 @@ export interface FileRouteTypes {
     | '/login'
     | '/signup'
     | '/api/health'
+    | '/app/notifications'
     | '/app/recherche'
     | '/app/'
     | '/api/auth/$'
@@ -116,6 +126,7 @@ export interface FileRouteTypes {
     | '/login'
     | '/signup'
     | '/api/health'
+    | '/app/notifications'
     | '/app/recherche'
     | '/app'
     | '/api/auth/$'
@@ -127,6 +138,7 @@ export interface FileRouteTypes {
     | '/login'
     | '/signup'
     | '/api/health'
+    | '/app/notifications'
     | '/app/recherche'
     | '/app/'
     | '/api/auth/$'
@@ -186,6 +198,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppIndexRouteImport
       parentRoute: typeof AppRoute
     }
+    '/app/notifications': {
+      id: '/app/notifications'
+      path: '/notifications'
+      fullPath: '/app/notifications'
+      preLoaderRoute: typeof AppNotificationsRouteImport
+      parentRoute: typeof AppRoute
+    }
     '/app/recherche': {
       id: '/app/recherche'
       path: '/recherche'
@@ -211,12 +230,14 @@ declare module '@tanstack/react-router' {
 }
 
 interface AppRouteChildren {
+  AppNotificationsRoute: typeof AppNotificationsRoute
   AppRechercheRoute: typeof AppRechercheRoute
   AppIndexRoute: typeof AppIndexRoute
   AppSettingsTokensRoute: typeof AppSettingsTokensRoute
 }
 
 const AppRouteChildren: AppRouteChildren = {
+  AppNotificationsRoute: AppNotificationsRoute,
   AppRechercheRoute: AppRechercheRoute,
   AppIndexRoute: AppIndexRoute,
   AppSettingsTokensRoute: AppSettingsTokensRoute,
@@ -235,12 +256,3 @@ const rootRouteChildren: RootRouteChildren = {
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
   ._addFileTypes<FileRouteTypes>()
-
-import type { getRouter } from './router.tsx'
-import type { createStart } from '@tanstack/react-start'
-declare module '@tanstack/react-start' {
-  interface Register {
-    ssr: true
-    router: Awaited<ReturnType<typeof getRouter>>
-  }
-}

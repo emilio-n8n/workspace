@@ -202,6 +202,20 @@ describe("classroom — devoirs et copies", () => {
     if (!submission) throw new Error("copie manquante");
     await gradeSubmission(f.actorAlice, submission.id, { grade: 18, feedback: "Très bien" });
 
+    // L'élève noté reçoit une notification (table cœur).
+    const [notification] = await getDb()
+      .select()
+      .from(coreSchema.notifications)
+      .where(eq(coreSchema.notifications.userId, f.actorBruno.userId));
+    expect(notification).toMatchObject({
+      orgId: f.orgId,
+      kind: "graded",
+      title: "Copie notée : Rédaction",
+      body: "Note : 18/20",
+      href: "http://localhost:3012",
+      readAt: null,
+    });
+
     const graded = await getCourse(f.actorBruno, course.id);
     expect(graded.assignments[0]?.mySubmission?.grade).toBe(18);
     expect(graded.assignments[0]?.mySubmission?.feedback).toBe("Très bien");

@@ -8,6 +8,8 @@ import {
   accessShareLink,
   createFolder,
   createShareLink,
+  createTextFile,
+  deleteEntry,
   download,
   effectiveRole,
   getAncestors,
@@ -152,6 +154,97 @@ describe("drive — dossiers et fichiers (propriétaire)", () => {
   });
 });
 
+describe("drive — écriture et suppression façon agent", () => {
+  it("createTextFile écrit du texte lisible via download (version 1, type par défaut)", async () => {
+    const content = "Rapport généré par un agent ✅";
+    const entry = await createTextFile(f.actorAlice, {
+      name: "rapport.md",
+      content,
+      mimeType: "text/markdown",
+    });
+
+    expect(entry.kind).toBe("file");
+    expect(entry.mimeType).toBe("text/markdown");
+    expect(entry.sizeBytes).toBe(Buffer.byteLength(content));
+    expect(entry.checksum).toBe(createHash("sha256").update(bufferOf(content)).digest("hex"));
+
+    const downloaded = await download(f.actorAlice, entry.id);
+    expect(downloaded.body.toString("utf8")).toBe(content);
+
+    // Même mécanique qu'un upload : version 1 rattachée au même blob.
+    const versions = await listVersions(f.actorAlice, entry.id);
+    expect(versions.map((version) => version.version)).toEqual([1]);
+    expect(versions[0]?.storageKey).toBe(entry.storageKey);
+
+    // Type par défaut : text/plain.
+    const plain = await createTextFile(f.actorAlice, { name: "note.txt", content: "court" });
+    expect(plain.mimeType).toBe("text/plain");
+  });
+
+  it("refuse un type MIME hors allowlist et un nom vide", async () => {
+    await expect(
+      createTextFile(f.actorAlice, { name: "image.png", content: "x", mimeType: "image/png" }),
+    ).rejects.toMatchObject({ name: "DriveError", code: "validation" });
+
+    await expect(createTextFile(f.actorAlice, { name: "   ", content: "x" })).rejects.toMatchObject(
+      { code: "validation" },
+    );
+
+    // Aucune ligne n'a été créée par les tentatives refusées.
+    expect(await listEntries(f.actorAlice)).toEqual([]);
+  });
+
+  it("deleteEntry met à la corbeille par défaut (restaurable)", async () => {
+    const entry = await createTextFile(f.actorAlice, {
+      name: "corbeille.txt",
+      content: "à jeter",
+    });
+
+    await deleteEntry(f.actorAlice, entry.id);
+
+    expect(await listEntries(f.actorAlice)).toEqual([]);
+    expect((await listTrash(f.actorAlice)).map((row) => row.name)).toEqual(["corbeille.txt"]);
+
+    await restore(f.actorAlice, entry.id);
+    expect((await listEntries(f.actorAlice)).map((row) => row.name)).toEqual(["corbeille.txt"]);
+  });
+
+  it("deleteEntry permanent exige la corbeille et le rôle propriétaire", async () => {
+    const entry = await createTextFile(f.actorAlice, {
+      name: "definitif.txt",
+      content: "contenu à purger",
+    });
+
+    // Un éditeur ne peut pas purger définitivement le fichier d'Alice.
+    await shareEntry(f.actorAlice, entry.id, {
+      subject: { kind: "user", id: f.bruno },
+      role: "editor",
+    });
+
+    // Refusé tant que l'élément n'est pas déjà dans la corbeille.
+    await expect(deleteEntry(f.actorAlice, entry.id, { permanent: true })).rejects.toMatchObject({
+      code: "validation",
+    });
+    await expect(deleteEntry(f.actorBruno, entry.id, { permanent: true })).rejects.toMatchObject({
+      code: "forbidden",
+    });
+
+    await trash(f.actorAlice, entry.id);
+
+    // Même une fois dans la corbeille, un simple editor reste refusé.
+    await expect(deleteEntry(f.actorBruno, entry.id, { permanent: true })).rejects.toMatchObject({
+      code: "forbidden",
+    });
+
+    // Le propriétaire, sur un élément déjà en corbeille, purge pour de bon.
+    await deleteEntry(f.actorAlice, entry.id, { permanent: true });
+
+    const db = getDb();
+    const remaining = await db.select().from(driveFiles).where(eq(driveFiles.id, entry.id));
+    expect(remaining).toHaveLength(0);
+  });
+});
+
 describe("drive — partage et héritage", () => {
   it("refus par défaut, puis partage viewer/editor avec révocation", async () => {
     const file = await uploadFile(f.actorAlice, {
@@ -171,6 +264,19 @@ describe("drive — partage et héritage", () => {
       role: "viewer",
     });
     expect(granted).not.toBeNull();
+
+    // Le destinataire d'un partage direct est notifié (table cœur).
+    const [notification] = await getDb()
+      .select()
+      .from(coreSchema.notifications)
+      .where(eq(coreSchema.notifications.userId, f.bruno));
+    expect(notification).toMatchObject({
+      orgId: f.orgId,
+      kind: "share",
+      title: "Nouveau partage : « rapport.txt »",
+      href: "http://localhost:3001",
+      readAt: null,
+    });
 
     expect((await listEntries(f.actorBruno)).map((row) => row.name)).toEqual(["rapport.txt"]);
     expect((await download(f.actorBruno, file.entry.id)).body.toString()).toBe("secret");

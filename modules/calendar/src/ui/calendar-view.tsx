@@ -1,3 +1,4 @@
+import { createRoomFn } from "@workspace/meet/server";
 import {
   Alert,
   Badge,
@@ -17,8 +18,10 @@ import {
   createEventFn,
   deleteEventFn,
   type EventView,
+  getMeetUrlFn,
   listCalendarsFn,
   listEventsFn,
+  type Recurrence,
   setAttendanceFn,
   updateEventFn,
 } from "../server.ts";
@@ -29,6 +32,16 @@ const MODE_TABS: SegmentedTabItem<ViewMode>[] = [
   { id: "month", label: "Mois" },
   { id: "week", label: "Semaine" },
 ];
+
+/** Libellés de récurrence affichés dans l'éditeur et le détail. */
+const RECURRENCE_LABELS: Record<Recurrence, string> = {
+  none: "Aucune",
+  daily: "Quotidienne",
+  weekly: "Hebdomadaire",
+  monthly: "Mensuelle",
+};
+
+const RECURRENCE_OPTIONS = Object.keys(RECURRENCE_LABELS) as Recurrence[];
 
 const DAY_LABELS = ["lun", "mar", "mer", "jeu", "ven", "sam", "dim"];
 const MONTH_LABELS = [
@@ -134,6 +147,11 @@ type EditorState = {
   description: string;
   attendees: string;
   calendarId: string;
+  recurrence: Recurrence;
+  /** Date locale `yyyy-mm-dd`, vide quand la récurrence est « Aucune ». */
+  recurrenceUntil: string;
+  /** Case « visioconférence » (création uniquement, jamais pour une édition). */
+  meetRoom: boolean;
 };
 
 function emptyEditor(date: Date, calendarId: string): EditorState {
@@ -148,6 +166,9 @@ function emptyEditor(date: Date, calendarId: string): EditorState {
     description: "",
     attendees: "",
     calendarId,
+    recurrence: "none",
+    recurrenceUntil: "",
+    meetRoom: false,
   };
 }
 
@@ -249,6 +270,9 @@ export function CalendarView() {
       description: event.description ?? "",
       attendees: "",
       calendarId: event.calendarId,
+      recurrence: event.recurrence,
+      recurrenceUntil: event.recurrenceUntil ? toDateInput(new Date(event.recurrenceUntil)) : "",
+      meetRoom: false,
     });
   }
 
@@ -257,6 +281,10 @@ export function CalendarView() {
     if (!editor) return;
     setBusy(true);
     setEditorError(null);
+    // Rempli si la salle Meet n'a pas pu être créée : l'événement est tout de
+    // même enregistré, l'avertissement est affiché après la fermeture du
+    // dialogue (état d'erreur existant de la vue).
+    let meetWarning: string | null = null;
     try {
       let startsAt: string;
       let endsAt: string;
@@ -268,7 +296,20 @@ export function CalendarView() {
         endsAt = new Date(`${editor.date}T${editor.endTime}:00`).toISOString();
       }
 
+      // Fin de série : fin de la journée locale choisie (l'occurrence de ce
+      // jour-là reste incluse), `null` quand la répétition est « Aucune ».
+      let recurrenceUntil: string | null = null;
+      if (editor.recurrence !== "none") {
+        if (editor.recurrenceUntil.length === 0) {
+          setEditorError("Choisissez une date de fin de répétition.");
+          return;
+        }
+        recurrenceUntil = new Date(`${editor.recurrenceUntil}T23:59:59`).toISOString();
+      }
+
       if (editor.eventId) {
+        // Édition : la récurrence (et toute modification) porte sur la série
+        // entière — il n'existe pas de dérogation par occurrence.
         await updateEventFn({
           data: {
             eventId: editor.eventId,
@@ -279,6 +320,8 @@ export function CalendarView() {
               startsAt,
               endsAt,
               allDay: editor.allDay,
+              recurrence: editor.recurrence,
+              recurrenceUntil,
             },
           },
         });
@@ -287,21 +330,47 @@ export function CalendarView() {
           .split(/[,;\s]+/)
           .map((value) => value.trim())
           .filter((value) => value.length > 0);
+
+        // Visioconférence en un clic : la salle Meet est créée avant
+        // l'événement, puis son lien est ajouté au lieu. Les salles Meet sont
+        // des liens à portée d'organisation (tout membre peut les rejoindre).
+        let location = editor.location;
+        if (editor.meetRoom) {
+          try {
+            const room = await createRoomFn({
+              data: { name: editor.title.trim() || "Réunion" },
+            });
+            const meetUrl = await getMeetUrlFn();
+            const link = `${meetUrl}/room/${room.slug}`;
+            const prefix = location.trim();
+            // Le lieu est borné à 255 caractères par l'API : si l'ajout du lien
+            // dépasse, le texte saisi est tronqué pour garder le lien intact.
+            const maxPrefix = Math.max(0, 255 - link.length - 1);
+            location = prefix.length > 0 ? `${prefix.slice(0, maxPrefix)}\n${link}` : link;
+          } catch {
+            meetWarning =
+              "Événement créé sans visioconférence : la salle Meet n'a pas pu être créée.";
+          }
+        }
+
         await createEventFn({
           data: {
             calendarId: editor.calendarId,
             title: editor.title.trim(),
             description: editor.description,
-            location: editor.location,
+            location,
             startsAt,
             endsAt,
             allDay: editor.allDay,
             attendees,
+            recurrence: editor.recurrence,
+            recurrenceUntil,
           },
         });
       }
       setEditor(null);
       await refresh();
+      if (meetWarning) setError(meetWarning);
     } catch (caught) {
       setEditorError(caught instanceof Error ? caught.message : "Enregistrement impossible.");
     } finally {
@@ -564,6 +633,9 @@ export function CalendarView() {
           <div className="flex flex-col gap-3">
             <div className="flex flex-wrap items-center gap-2">
               <Badge variant="outline">{selected.calendarName}</Badge>
+              {selected.recurring ? (
+                <Badge variant="outline">↻ {RECURRENCE_LABELS[selected.recurrence]}</Badge>
+              ) : null}
               {selected.myStatus ? (
                 <Badge variant={selected.myStatus === "accepted" ? "accent" : "outline"}>
                   {ATTENDANCE_LABELS[selected.myStatus]}
@@ -736,6 +808,51 @@ export function CalendarView() {
               />
               Journée entière
             </label>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <div className="flex flex-col gap-1">
+                <Label htmlFor="event-recurrence">Répétition</Label>
+                <select
+                  id="event-recurrence"
+                  value={editor.recurrence}
+                  onChange={(event) => {
+                    const recurrence = event.target.value as Recurrence;
+                    setEditor({
+                      ...editor,
+                      recurrence,
+                      // « Aucune » efface la fin de série ; la date reste
+                      // requise dès qu'une répétition est choisie.
+                      recurrenceUntil: recurrence === "none" ? "" : editor.recurrenceUntil,
+                    });
+                  }}
+                  className="h-9 rounded-md border border-input bg-background px-2 text-sm"
+                >
+                  {RECURRENCE_OPTIONS.map((value) => (
+                    <option key={value} value={value}>
+                      {RECURRENCE_LABELS[value]}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              {editor.recurrence !== "none" ? (
+                <div className="flex flex-col gap-1">
+                  <Label htmlFor="event-recurrence-until">Répéter jusqu'au</Label>
+                  <Input
+                    id="event-recurrence-until"
+                    type="date"
+                    value={editor.recurrenceUntil}
+                    onChange={(event) =>
+                      setEditor({ ...editor, recurrenceUntil: event.target.value })
+                    }
+                    required
+                  />
+                </div>
+              ) : null}
+            </div>
+            {editor.recurrence !== "none" ? (
+              <p className="text-xs text-muted-foreground">
+                Modifier ou supprimer une répétition s'applique à toute la série.
+              </p>
+            ) : null}
             <div className="flex flex-col gap-1">
               <Label htmlFor="event-location">Lieu</Label>
               <Input
@@ -755,6 +872,17 @@ export function CalendarView() {
                   placeholder="alice@exemple.org, bruno@exemple.org"
                 />
               </div>
+            ) : null}
+            {!editor.eventId ? (
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  className="accent-primary"
+                  checked={editor.meetRoom}
+                  onChange={(event) => setEditor({ ...editor, meetRoom: event.target.checked })}
+                />
+                Créer une salle de visioconférence
+              </label>
             ) : null}
             <div className="flex flex-col gap-1">
               <Label htmlFor="event-description">Description</Label>
