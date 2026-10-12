@@ -11,6 +11,9 @@ export default defineConfig({
   dbCredentials: {
     url: process.env.DATABASE_URL ?? "",
   },
+  // Registre propre au module : drizzle n'applique que les migrations plus
+  // récentes que la dernière du registre, un registre partagé en sauterait.
+  migrations: { table: "__drizzle_migrations_chat", schema: "drizzle" },
   strict: true,
   verbose: true,
 });
