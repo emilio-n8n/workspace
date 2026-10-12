@@ -13,7 +13,9 @@ import { Route as IndexRouteImport } from './routes/index'
 import { Route as AppRouteImport } from './routes/app'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as SignupRouteImport } from './routes/signup'
+import { Route as ApiHealthRouteImport } from './routes/api/health'
 import { Route as AppIndexRouteImport } from './routes/app/index'
+import { Route as AppRechercheRouteImport } from './routes/app/recherche'
 import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
 import { Route as AppSettingsTokensRouteImport } from './routes/app/settings.tokens'
 
@@ -37,9 +39,19 @@ const SignupRoute = SignupRouteImport.update({
   path: '/signup',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiHealthRoute = ApiHealthRouteImport.update({
+  id: '/api/health',
+  path: '/api/health',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const AppIndexRoute = AppIndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppRechercheRoute = AppRechercheRouteImport.update({
+  id: '/recherche',
+  path: '/recherche',
   getParentRoute: () => AppRoute,
 } as any)
 const ApiAuthSplatRoute = ApiAuthSplatRouteImport.update({
@@ -58,6 +70,8 @@ export interface FileRoutesByFullPath {
   '/app': typeof AppRouteWithChildren
   '/login': typeof LoginRoute
   '/signup': typeof SignupRoute
+  '/api/health': typeof ApiHealthRoute
+  '/app/recherche': typeof AppRechercheRoute
   '/app/': typeof AppIndexRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/app/settings/tokens': typeof AppSettingsTokensRoute
@@ -66,6 +80,8 @@ export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/login': typeof LoginRoute
   '/signup': typeof SignupRoute
+  '/api/health': typeof ApiHealthRoute
+  '/app/recherche': typeof AppRechercheRoute
   '/app': typeof AppIndexRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/app/settings/tokens': typeof AppSettingsTokensRoute
@@ -76,6 +92,8 @@ export interface FileRoutesById {
   '/app': typeof AppRouteWithChildren
   '/login': typeof LoginRoute
   '/signup': typeof SignupRoute
+  '/api/health': typeof ApiHealthRoute
+  '/app/recherche': typeof AppRechercheRoute
   '/app/': typeof AppIndexRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/app/settings/tokens': typeof AppSettingsTokensRoute
@@ -87,18 +105,29 @@ export interface FileRouteTypes {
     | '/app'
     | '/login'
     | '/signup'
+    | '/api/health'
+    | '/app/recherche'
     | '/app/'
     | '/api/auth/$'
     | '/app/settings/tokens'
   fileRoutesByTo: FileRoutesByTo
   to:
-    '/' | '/login' | '/signup' | '/app' | '/api/auth/$' | '/app/settings/tokens'
+    | '/'
+    | '/login'
+    | '/signup'
+    | '/api/health'
+    | '/app/recherche'
+    | '/app'
+    | '/api/auth/$'
+    | '/app/settings/tokens'
   id:
     | '__root__'
     | '/'
     | '/app'
     | '/login'
     | '/signup'
+    | '/api/health'
+    | '/app/recherche'
     | '/app/'
     | '/api/auth/$'
     | '/app/settings/tokens'
@@ -109,6 +138,7 @@ export interface RootRouteChildren {
   AppRoute: typeof AppRouteWithChildren
   LoginRoute: typeof LoginRoute
   SignupRoute: typeof SignupRoute
+  ApiHealthRoute: typeof ApiHealthRoute
   ApiAuthSplatRoute: typeof ApiAuthSplatRoute
 }
 
@@ -142,11 +172,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof SignupRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/health': {
+      id: '/api/health'
+      path: '/api/health'
+      fullPath: '/api/health'
+      preLoaderRoute: typeof ApiHealthRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/app/': {
       id: '/app/'
       path: '/'
       fullPath: '/app/'
       preLoaderRoute: typeof AppIndexRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/app/recherche': {
+      id: '/app/recherche'
+      path: '/recherche'
+      fullPath: '/app/recherche'
+      preLoaderRoute: typeof AppRechercheRouteImport
       parentRoute: typeof AppRoute
     }
     '/api/auth/$': {
@@ -167,11 +211,13 @@ declare module '@tanstack/react-router' {
 }
 
 interface AppRouteChildren {
+  AppRechercheRoute: typeof AppRechercheRoute
   AppIndexRoute: typeof AppIndexRoute
   AppSettingsTokensRoute: typeof AppSettingsTokensRoute
 }
 
 const AppRouteChildren: AppRouteChildren = {
+  AppRechercheRoute: AppRechercheRoute,
   AppIndexRoute: AppIndexRoute,
   AppSettingsTokensRoute: AppSettingsTokensRoute,
 }
@@ -183,6 +229,7 @@ const rootRouteChildren: RootRouteChildren = {
   AppRoute: AppRouteWithChildren,
   LoginRoute: LoginRoute,
   SignupRoute: SignupRoute,
+  ApiHealthRoute: ApiHealthRoute,
   ApiAuthSplatRoute: ApiAuthSplatRoute,
 }
 export const routeTree = rootRouteImport

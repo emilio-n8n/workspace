@@ -165,19 +165,32 @@ export async function createDocument(
 export async function getDocumentByFileId(
   actor: Actor,
   fileId: string,
-): Promise<{ entry: DriveEntry; document: DocsDocument; content: PmNode }> {
+): Promise<{ entry: DriveEntry; document: DocsDocument; content: PmNode; revision: string }> {
   const { entry, document } = await requireDocument(actor, fileId);
   const latest = await latestVersion(document.id);
   const content = (latest?.content as PmNode | undefined) ?? EMPTY_DOC;
-  return { entry, document, content };
+  // Jeton de révision : l'horodatage de la version courante. Les clients le
+  // renvoient en `baseUpdatedAt` pour que l'autosave ne puisse pas écraser
+  // silencieusement une sauvegarde concurrente.
+  const revision = (latest?.createdAt ?? document.updatedAt).toISOString();
+  return { entry, document, content, revision };
 }
 
-/** Sauvegarde : `replace-latest` (autosave) ou `append` (instantané explicite). */
+/**
+ * Sauvegarde : `replace-latest` (autosave) ou `append` (instantané explicite).
+ *
+ * Verrouillage optimiste : le client fournit `baseUpdatedAt` (la révision
+ * reçue au chargement ou à la dernière sauvegarde). Si la version courante a
+ * changé entre-temps, la sauvegarde `replace-latest` est refusée en conflit —
+ * deux onglets ouverts ne peuvent plus s'écraser en silence. Sans
+ * `baseUpdatedAt`, le comportement historique est conservé (aucune
+ * vérification) ; `append` crée toujours une nouvelle version, sans base.
+ */
 export async function saveDocument(
   actor: Actor,
   fileId: string,
-  input: { content: unknown; mode?: SaveMode },
-): Promise<{ version: number; documentId: string }> {
+  input: { content: unknown; mode?: SaveMode; baseUpdatedAt?: string },
+): Promise<{ version: number; documentId: string; updatedAt: string }> {
   await requireDocument(actor, fileId);
 
   const role = await effectiveRole(actor, fileId);
@@ -189,11 +202,16 @@ export async function saveDocument(
   const mode: SaveMode = input.mode ?? "replace-latest";
 
   const result = await withTransaction(async (tx) => {
+    // Verrou de la ligne document (SELECT … FOR UPDATE) : les sauvegardes
+    // concurrentes d'un même document sont sérialisées, ce qui rend la
+    // vérification de révision ci-dessous atomique (pas de double
+    // « replace-latest » accepté sur la même base).
     const [doc] = await tx
       .select()
       .from(docsDocuments)
       .where(eq(docsDocuments.fileId, fileId))
-      .limit(1);
+      .limit(1)
+      .for("update");
     if (!doc || doc.orgId !== actor.orgId) {
       throw new DocsError("not_found", "Document introuvable.");
     }
@@ -218,23 +236,48 @@ export async function saveDocument(
         .where(eq(docsDocuments.id, doc.id))
         .returning({ version: docsDocuments.currentVersion });
       if (!bumped) throw new DocsError("conflict", "Enregistrement concurrent impossible.");
-      await tx.insert(docsVersions).values({
-        documentId: doc.id,
+      const [snapshot] = await tx
+        .insert(docsVersions)
+        .values({
+          documentId: doc.id,
+          version: bumped.version,
+          content,
+          createdBy: actor.userId,
+        })
+        .returning({ createdAt: docsVersions.createdAt });
+      if (!snapshot) throw new DocsError("conflict", "Enregistrement concurrent impossible.");
+      return {
         version: bumped.version,
-        content,
-        createdBy: actor.userId,
-      });
-      return { version: bumped.version, documentId: doc.id };
+        documentId: doc.id,
+        updatedAt: snapshot.createdAt.toISOString(),
+      };
     }
 
-    // replace-latest : le contenu de la version courante est actualisé.
-    // replace-latest : on conserve createdAt d'origine (seul le contenu vit).
-    await tx
-      .update(docsVersions)
-      .set({ content, createdBy: actor.userId })
-      .where(eq(docsVersions.id, latest.id));
+    // Autosave optimiste : le client s'appuie sur une révision périmée ⇒ une
+    // autre session a modifié le document entre-temps.
+    if (
+      input.baseUpdatedAt !== undefined &&
+      latest.createdAt.toISOString() !== input.baseUpdatedAt
+    ) {
+      throw new DocsError("conflict", "Le document a été modifié ailleurs — rechargez la page.");
+    }
 
-    return { version: latest.version, documentId: doc.id };
+    // replace-latest : le contenu de la version courante est actualisé et son
+    // createdAt devient le jeton de révision. Il avance strictement, même si
+    // deux sauvegardes tombent dans la même milliseconde.
+    const revision = new Date(Math.max(Date.now(), latest.createdAt.getTime() + 1));
+    const [updated] = await tx
+      .update(docsVersions)
+      .set({ content, createdBy: actor.userId, createdAt: revision })
+      .where(eq(docsVersions.id, latest.id))
+      .returning({ createdAt: docsVersions.createdAt });
+    if (!updated) throw new DocsError("conflict", "Enregistrement concurrent impossible.");
+
+    return {
+      version: latest.version,
+      documentId: doc.id,
+      updatedAt: updated.createdAt.toISOString(),
+    };
   });
 
   // Met à jour « modifié récemment » côté Drive (best-effort, non bloquant).

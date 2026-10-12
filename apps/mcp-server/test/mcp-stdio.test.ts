@@ -5,7 +5,7 @@ import { issueApiToken, type WorkspaceScope } from "@workspace/auth";
 import { closeDb, getDb, schema } from "@workspace/database";
 import { createDocument, saveDocument } from "@workspace/docs";
 import { uploadFile } from "@workspace/drive";
-import { createList as createTaskList } from "@workspace/tasks";
+import { createTask, createList as createTaskList } from "@workspace/tasks";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
 
@@ -112,7 +112,7 @@ afterAll(async () => {
 });
 
 describe("serveur MCP — intégration réelle (stdio)", () => {
-  it("liste les vingt outils de la suite et répond à me.whoami avec le bon principal", async () => {
+  it("liste les vingt-cinq outils de la suite et répond à me.whoami avec le bon principal", async () => {
     const f = await fixtures(["drive:read"]);
     const { client, transport } = await connectClient(f.token);
     try {
@@ -121,8 +121,10 @@ describe("serveur MCP — intégration réelle (stdio)", () => {
       expect(names).toEqual([
         "audit.recent",
         "calendar.create",
+        "calendar.delete",
         "calendar.list",
         "chat.list",
+        "chat.read",
         "chat.send",
         "classroom.list",
         "docs.read",
@@ -131,14 +133,17 @@ describe("serveur MCP — intégration réelle (stdio)", () => {
         "forms.list",
         "forms.responses",
         "mail.list",
+        "mail.read",
         "mail.send",
         "me.whoami",
         "sheets.read",
         "sites.read",
         "slides.read",
+        "tasks.complete",
         "tasks.create",
         "tasks.list",
         "tasks.lists",
+        "tasks.update",
       ]);
 
       const whoami = await client.callTool({ name: "me.whoami", arguments: {} });
@@ -473,9 +478,116 @@ describe("serveur MCP — tâches (lecture et création par un agent)", () => {
     const { client, transport } = await connectClient(f.token);
     try {
       const result = await client.callTool({ name: "forms.list", arguments: {} });
-      expect(result.isError).toBeFalsy();
+      expect(result.isError, JSON.stringify(result.content)).toBeFalsy();
       const forms = payloadOf(result) as unknown as { title: string }[];
       expect(forms.some((entry) => entry.title === "Enquête agent")).toBe(true);
+    } finally {
+      await client.close();
+      await transport.close();
+    }
+  });
+
+  it("tasks.complete : termine une tâche", async () => {
+    const f = await fixtures(["tasks:read", "tasks:write"]);
+    const actor = { userId: f.userId, orgId: f.orgId };
+    const list = await createTaskList(actor, { name: "Agent" });
+    const task = await createTask(actor, { listId: list.id, title: "Terminer le rapport" });
+
+    const { client, transport } = await connectClient(f.token);
+    try {
+      const completed = await client.callTool({
+        name: "tasks.complete",
+        arguments: { taskId: task.id },
+      });
+      expect(completed.isError).toBeFalsy();
+      const payload = payloadOf(completed);
+      expect(payload.id).toBe(task.id);
+      expect(payload.status).toBe("done");
+    } finally {
+      await client.close();
+      await transport.close();
+    }
+  });
+
+  it("mail.read + chat.read : lit un message et les messages d'un canal", async () => {
+    const f = await fixtures(["mail:read", "chat:read"]);
+    const actor = { userId: f.userId, orgId: f.orgId };
+
+    const { ensureMailbox, sendMail } = await import("@workspace/mail");
+    const mailbox = await ensureMailbox(actor);
+    const sent = await sendMail(actor, {
+      to: ["destinataire@example.org"],
+      cc: [],
+      subject: "Rapport MCP",
+      body: "Corps du message agent",
+    });
+
+    const { createChannel, sendMessage } = await import("@workspace/chat");
+    const channel = await createChannel(actor, "agents-lecture");
+    await sendMessage(actor, channel.id, "Bonjour le canal");
+
+    const { client, transport } = await connectClient(f.token);
+    try {
+      const mail = await client.callTool({
+        name: "mail.read",
+        arguments: { messageId: sent.id },
+      });
+      expect(mail.isError).toBeFalsy();
+      const mailPayload = payloadOf(mail);
+      expect(mailPayload.from).toBe(mailbox.address);
+      expect(mailPayload.subject).toBe("Rapport MCP");
+      expect(mailPayload.body).toContain("Corps du message agent");
+      expect(mailPayload.truncated).toBe(false);
+      expect(mailPayload.starred).toBe(false);
+
+      const chat = await client.callTool({
+        name: "chat.read",
+        arguments: { channelId: channel.id },
+      });
+      expect(chat.isError).toBeFalsy();
+      const messages = payloadOf(chat) as unknown as { authorName: string; body: string }[];
+      expect(
+        messages.some(
+          (message) => message.body === "Bonjour le canal" && message.authorName === "Agent MCP",
+        ),
+      ).toBe(true);
+    } finally {
+      await client.close();
+      await transport.close();
+    }
+  });
+
+  it("calendar.delete : exige la confirmation et supprime", async () => {
+    const f = await fixtures(["calendar:read", "calendar:write"]);
+    const actor = { userId: f.userId, orgId: f.orgId };
+
+    const { createEvent, listEvents } = await import("@workspace/calendar");
+    const event = await createEvent(actor, {
+      title: "À supprimer",
+      startsAt: "2026-04-01T09:00:00.000Z",
+      endsAt: "2026-04-01T10:00:00.000Z",
+    });
+
+    const { client, transport } = await connectClient(f.token);
+    try {
+      const denied = await client.callTool({
+        name: "calendar.delete",
+        arguments: { eventId: event.id },
+      });
+      expect(denied.isError).toBe(true);
+
+      const deleted = await client.callTool({
+        name: "calendar.delete",
+        arguments: { eventId: event.id, confirm: "SUPPRIMER" },
+      });
+      expect(deleted.isError).toBeFalsy();
+      expect(payloadOf(deleted).ok).toBe(true);
+
+      const remaining = await listEvents(actor, {
+        from: "2026-03-31T00:00:00.000Z",
+        to: "2026-04-02T00:00:00.000Z",
+      });
+      expect(remaining.some((entry) => entry.id === event.id)).toBe(false);
     } finally {
       await client.close();
       await transport.close();

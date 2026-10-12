@@ -10,6 +10,7 @@ import {
   deleteTab,
   exportSpreadsheetCsv,
   getSpreadsheet,
+  importCsv,
   listSpreadsheets,
   MAX_TABS,
   renameTab,
@@ -384,5 +385,131 @@ describe("sheets — export CSV", () => {
     const csv = await exportSpreadsheetCsv(f.actorAlice, entry.id, tabId);
     expect(csv.body).toContain("'@SUM(A1)");
     expect(csv.body).toContain("'-1");
+  });
+});
+
+describe("sheets — import CSV", () => {
+  it("remplace le contenu existant de l'onglet", async () => {
+    const { entry } = await createSpreadsheet(f.actorAlice, { title: "Import" });
+    const detail = await getSpreadsheet(f.actorAlice, entry.id);
+    const tabId = detail.tabs[0]?.id;
+    if (!tabId) throw new Error("onglet manquant");
+
+    await saveCells(f.actorAlice, entry.id, {
+      tabId,
+      updates: [
+        { row: 0, col: 0, value: "ancien" },
+        { row: 5, col: 3, value: "42" },
+        { row: 99, col: 99, value: "obsolète" },
+      ],
+    });
+
+    const result = await importCsv(f.actorAlice, entry.id, {
+      tabId,
+      text: 'Nom,Prénom\r\n"Dupont, Jean",Jean\nvaleur,3',
+    });
+    expect(result.imported).toBe(6);
+
+    const refreshed = await getSpreadsheet(f.actorAlice, entry.id);
+    expect(refreshed.cells).toEqual([
+      { tabId, row: 0, col: 0, value: "Nom" },
+      { tabId, row: 0, col: 1, value: "Prénom" },
+      { tabId, row: 1, col: 0, value: "Dupont, Jean" },
+      { tabId, row: 1, col: 1, value: "Jean" },
+      { tabId, row: 2, col: 0, value: "valeur" },
+      { tabId, row: 2, col: 1, value: "3" },
+    ]);
+  });
+
+  it("ignore les lignes vides du texte importé", async () => {
+    const { entry } = await createSpreadsheet(f.actorAlice, { title: "Import lignes vides" });
+    const detail = await getSpreadsheet(f.actorAlice, entry.id);
+    const tabId = detail.tabs[0]?.id;
+    if (!tabId) throw new Error("onglet manquant");
+
+    const result = await importCsv(f.actorAlice, entry.id, {
+      tabId,
+      text: "a\n\nb\n\n",
+    });
+    expect(result.imported).toBe(2);
+
+    const refreshed = await getSpreadsheet(f.actorAlice, entry.id);
+    expect(refreshed.cells.map((cell) => ({ row: cell.row, value: cell.value }))).toEqual([
+      { row: 0, value: "a" },
+      { row: 1, value: "b" },
+    ]);
+  });
+
+  it("n'écrit que dans l'onglet ciblé", async () => {
+    const { entry } = await createSpreadsheet(f.actorAlice, { title: "Onglets import" });
+    const detail = await getSpreadsheet(f.actorAlice, entry.id);
+    const firstTab = detail.tabs[0]?.id;
+    if (!firstTab) throw new Error("onglet manquant");
+
+    const tabs = await addTab(f.actorAlice, entry.id, "Cible");
+    const secondTab = tabs[1]?.id;
+    if (!secondTab) throw new Error("onglet manquant");
+
+    await saveCells(f.actorAlice, entry.id, {
+      tabId: firstTab,
+      updates: [{ row: 0, col: 0, value: "conservé" }],
+    });
+    await saveCells(f.actorAlice, entry.id, {
+      tabId: secondTab,
+      updates: [{ row: 0, col: 0, value: "remplacé" }],
+    });
+
+    await importCsv(f.actorAlice, entry.id, { tabId: secondTab, text: "cible" });
+
+    const refreshed = await getSpreadsheet(f.actorAlice, entry.id);
+    const first = refreshed.cells.filter((cell) => cell.tabId === firstTab);
+    const second = refreshed.cells.filter((cell) => cell.tabId === secondTab);
+    expect(first.map((cell) => cell.value)).toEqual(["conservé"]);
+    expect(second.map((cell) => cell.value)).toEqual(["cible"]);
+  });
+
+  it("refuse un import vide ou par un membre sans droit", async () => {
+    const { entry } = await createSpreadsheet(f.actorAlice, { title: "Import refusé" });
+    const detail = await getSpreadsheet(f.actorAlice, entry.id);
+    const tabId = detail.tabs[0]?.id;
+    if (!tabId) throw new Error("onglet manquant");
+
+    await expect(importCsv(f.actorAlice, entry.id, { tabId, text: "" })).rejects.toThrow(
+      "Aucune donnée à importer",
+    );
+    await expect(importCsv(f.actorAlice, entry.id, { tabId, text: "\n\r\n" })).rejects.toThrow(
+      "Aucune donnée à importer",
+    );
+
+    await saveCells(f.actorAlice, entry.id, {
+      tabId,
+      updates: [{ row: 0, col: 0, value: "avant" }],
+    });
+    await expect(importCsv(f.actorBruno, entry.id, { tabId, text: "x,y" })).rejects.toThrow(
+      SheetsError,
+    );
+
+    // Un import refusé laisse le contenu intact.
+    const refreshed = await getSpreadsheet(f.actorAlice, entry.id);
+    expect(refreshed.cells.map((cell) => cell.value)).toEqual(["avant"]);
+  });
+
+  it("valide le plafond de 20 000 cellules", async () => {
+    const { entry } = await createSpreadsheet(f.actorAlice, { title: "Import volumineux" });
+    const detail = await getSpreadsheet(f.actorAlice, entry.id);
+    const tabId = detail.tabs[0]?.id;
+    if (!tabId) throw new Error("onglet manquant");
+
+    const rows = 201;
+    const cells = 100;
+    const text = Array.from({ length: rows }, () =>
+      Array.from({ length: cells }, () => "x").join(","),
+    ).join("\n");
+    await expect(importCsv(f.actorAlice, entry.id, { tabId, text })).rejects.toThrow(
+      /Import limité à 20\s?000 cellules\./,
+    );
+
+    const refreshed = await getSpreadsheet(f.actorAlice, entry.id);
+    expect(refreshed.cells).toHaveLength(0);
   });
 });

@@ -15,6 +15,7 @@ import { Route as AppEntryIdRouteImport } from './routes/_app/$entryId'
 import { Route as AppRecentRouteImport } from './routes/_app/recent'
 import { Route as AppSharedRouteImport } from './routes/_app/shared'
 import { Route as AppTrashRouteImport } from './routes/_app/trash'
+import { Route as ApiHealthRouteImport } from './routes/api/health'
 import { Route as STokenRouteImport } from './routes/s/$token'
 import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
 import { Route as ApiDriveUploadRouteImport } from './routes/api/drive/upload'
@@ -50,6 +51,11 @@ const AppTrashRoute = AppTrashRouteImport.update({
   path: '/trash',
   getParentRoute: () => AppRoute,
 } as any)
+const ApiHealthRoute = ApiHealthRouteImport.update({
+  id: '/api/health',
+  path: '/api/health',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const STokenRoute = STokenRouteImport.update({
   id: '/s/$token',
   path: '/s/$token',
@@ -82,6 +88,7 @@ export interface FileRoutesByFullPath {
   '/recent': typeof AppRecentRoute
   '/shared': typeof AppSharedRoute
   '/trash': typeof AppTrashRoute
+  '/api/health': typeof ApiHealthRoute
   '/s/$token': typeof STokenRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/drive/upload': typeof ApiDriveUploadRoute
@@ -93,6 +100,7 @@ export interface FileRoutesByTo {
   '/recent': typeof AppRecentRoute
   '/shared': typeof AppSharedRoute
   '/trash': typeof AppTrashRoute
+  '/api/health': typeof ApiHealthRoute
   '/s/$token': typeof STokenRoute
   '/': typeof AppIndexRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
@@ -107,6 +115,7 @@ export interface FileRoutesById {
   '/_app/recent': typeof AppRecentRoute
   '/_app/shared': typeof AppSharedRoute
   '/_app/trash': typeof AppTrashRoute
+  '/api/health': typeof ApiHealthRoute
   '/s/$token': typeof STokenRoute
   '/_app/': typeof AppIndexRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
@@ -122,6 +131,7 @@ export interface FileRouteTypes {
     | '/recent'
     | '/shared'
     | '/trash'
+    | '/api/health'
     | '/s/$token'
     | '/api/auth/$'
     | '/api/drive/upload'
@@ -133,6 +143,7 @@ export interface FileRouteTypes {
     | '/recent'
     | '/shared'
     | '/trash'
+    | '/api/health'
     | '/s/$token'
     | '/'
     | '/api/auth/$'
@@ -146,6 +157,7 @@ export interface FileRouteTypes {
     | '/_app/recent'
     | '/_app/shared'
     | '/_app/trash'
+    | '/api/health'
     | '/s/$token'
     | '/_app/'
     | '/api/auth/$'
@@ -156,6 +168,7 @@ export interface FileRouteTypes {
 }
 export interface RootRouteChildren {
   AppRoute: typeof AppRouteWithChildren
+  ApiHealthRoute: typeof ApiHealthRoute
   STokenRoute: typeof STokenRoute
   ApiAuthSplatRoute: typeof ApiAuthSplatRoute
   ApiDriveUploadRoute: typeof ApiDriveUploadRoute
@@ -206,6 +219,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/trash'
       preLoaderRoute: typeof AppTrashRouteImport
       parentRoute: typeof AppRoute
+    }
+    '/api/health': {
+      id: '/api/health'
+      path: '/api/health'
+      fullPath: '/api/health'
+      preLoaderRoute: typeof ApiHealthRouteImport
+      parentRoute: typeof rootRouteImport
     }
     '/s/$token': {
       id: '/s/$token'
@@ -265,6 +285,7 @@ const AppRouteWithChildren = AppRoute._addFileChildren(AppRouteChildren)
 
 const rootRouteChildren: RootRouteChildren = {
   AppRoute: AppRouteWithChildren,
+  ApiHealthRoute: ApiHealthRoute,
   STokenRoute: STokenRoute,
   ApiAuthSplatRoute: ApiAuthSplatRoute,
   ApiDriveUploadRoute: ApiDriveUploadRoute,

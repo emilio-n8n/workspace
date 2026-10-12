@@ -37,23 +37,31 @@ Agent (stdio ou HTTP) ──► apps/mcp-server ──► modules/*/service.ts �
 | `errors` | typées — jamais de détail interne au-delà du message métier |
 | `audit` | acteur, org, outil, résultat (succès **et** refus) dans `audit_events` |
 
-## Outils livrés (v1)
+## Outils livrés (v2 — 25)
 
 | Outil | Scopes | Description |
 |---|---|---|
 | `me.whoami` | — (jeton valide) | Identité, organisation et scopes du jeton courant |
-| `audit.recent` | `audit:read` | Derniers événements d'audit de l'organisation |
+| `audit.recent` | `audit:read` | Derniers événements d'audit (réservé owner/admin de l'organisation) |
 | `files.search` | `drive:read` | Recherche de fichiers accessibles (partages hérités compris) |
-| `files.read` | `drive:read` | Lecture d'un fichier texte (text/\*, JSON, Markdown, XML), tronquée à 60 k caractères |
+| `files.read` | `drive:read` | Lecture d'un fichier texte (tronquée à 60 k caractères) |
 | `docs.read` | `docs:read` | Lecture du texte d'un document (extraction plain text) |
-| `tasks.lists` | `tasks:read` | Listes de tâches accessibles (personnelles et partagées) avec le rôle |
-| `tasks.list` | `tasks:read` | Tâches d'une liste (ou de toutes) : statut, priorité, échéance |
-| `tasks.create` | `tasks:write` | Création d'une tâche dans une liste accessible en écriture |
+| `tasks.lists` / `tasks.list` | `tasks:read` | Listes accessibles avec rôle ; tâches (statut, priorité, échéance) |
+| `tasks.create` / `tasks.update` / `tasks.complete` | `tasks:write` | Création, mise à jour, terminaison |
+| `calendar.list` / `calendar.create` | `calendar:read` / `calendar:write` | Événements par plage ; création dans l'agenda personnel |
+| `calendar.delete` | `calendar:write` | Suppression — **confirmation littérale requise** (`confirm: "SUPPRIMER"`) |
+| `forms.list` / `forms.responses` | `forms:read` | Formulaires ; réponses avec intitulés (éditeurs) |
+| `sheets.read` | `sheets:read` | Valeurs **calculées** d'un onglet (50×20 maximum) |
+| `slides.read` | `slides:read` | Plan d'une présentation (titres, notes, textes) |
+| `chat.list` / `chat.read` / `chat.send` | `chat:read` / `chat:write` | Conversations, messages, envoi |
+| `mail.list` / `mail.read` / `mail.send` | `mail:read` / `mail:write` | Dossiers, lecture (corps tronqué), envoi (erreurs visibles) |
+| `classroom.list` | `classroom:read` | Cours avec rôle, élèves et devoirs |
+| `sites.read` | `sites:read` | Pages d'un site et contenu Markdown d'une page |
 
 ## Feuille de route des outils
 
-- Prochaines briques : `tasks.update` / `tasks.delete` (confirmation explicite pour la suppression), `docs.create`, `docs.update`, `files.write`, `files.delete` (confirmation), recherche plein texte.
-- Phases suivantes : Calendar, Tasks, Forms, administration selon permissions — toujours sous les mêmes règles.
+- Prochaines briques : `files.write` / `files.delete` (confirmation), recherche plein texte transverse, `sheets.write`, `slides.write`.
+- Les outils destructifs exigent toujours une confirmation littérale (principe : aucun agent ne supprime par accident).
 
 ## Sécurité et tests obligatoires
 

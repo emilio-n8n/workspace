@@ -18,6 +18,7 @@
     "@tanstack/react-router": "1.170.42",
     "@tanstack/react-router-devtools": "1.167.2",
     "@tanstack/react-start": "1.168.61",
+    "@workspace/audit": "workspace:*",
     "@workspace/auth": "workspace:*",
     "@workspace/config": "workspace:*",
     "@workspace/database": "workspace:*",
@@ -27,6 +28,7 @@
     "react-dom": "^19.2.0",
     "tailwindcss": "^4.1.18",
     "@workspace/drive": "workspace:*",
+    "@workspace/search": "workspace:*",
     "zod": "^4.1.12",
     "drizzle-orm": "^0.45.4"
   },

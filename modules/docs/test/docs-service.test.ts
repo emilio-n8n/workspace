@@ -168,6 +168,140 @@ describe("docs — cycle de vie", () => {
   });
 });
 
+describe("docs — verrouillage optimiste (autosave)", () => {
+  it("accepte une base à jour et retourne une nouvelle révision", async () => {
+    const { entry } = await createDocument(f.actorAlice, { title: "Concurrent" });
+    const initial = await getDocumentByFileId(f.actorAlice, entry.id);
+    expect(typeof initial.revision).toBe("string");
+
+    const saved = await saveDocument(f.actorAlice, entry.id, {
+      content: contentV2,
+      mode: "replace-latest",
+      baseUpdatedAt: initial.revision,
+    });
+
+    expect(saved.version).toBe(1);
+    expect(saved.updatedAt).not.toBe(initial.revision);
+
+    const reread = await getDocumentByFileId(f.actorAlice, entry.id);
+    expect(reread.revision).toBe(saved.updatedAt);
+    expect(reread.content).toEqual(contentV2);
+  });
+
+  it("refuse une base périmée sans toucher au contenu (conflit)", async () => {
+    const { entry } = await createDocument(f.actorAlice, { title: "Concurrent" });
+    const initial = await getDocumentByFileId(f.actorAlice, entry.id);
+
+    // Un premier client sauvegarde…
+    const first = await saveDocument(f.actorAlice, entry.id, {
+      content: contentV2,
+      baseUpdatedAt: initial.revision,
+    });
+
+    // …puis un second écrase avec un contenu plus récent.
+    const newerContent = {
+      type: "doc",
+      content: [{ type: "paragraph", content: [{ type: "text", text: "Plus récent" }] }],
+    };
+    const second = await saveDocument(f.actorAlice, entry.id, {
+      content: newerContent,
+      baseUpdatedAt: first.updatedAt,
+    });
+    expect(second.updatedAt).not.toBe(first.updatedAt);
+
+    // Le premier client rejoue sa sauvegarde avec une base périmée : refus.
+    await expect(
+      saveDocument(f.actorAlice, entry.id, {
+        content: contentV2,
+        baseUpdatedAt: first.updatedAt,
+      }),
+    ).rejects.toMatchObject({
+      name: "DocsError",
+      code: "conflict",
+      message: expect.stringContaining("modifié ailleurs"),
+    });
+
+    // Le contenu du second client n'a pas été écrasé.
+    const reread = await getDocumentByFileId(f.actorAlice, entry.id);
+    expect(reread.content).toEqual(newerContent);
+    expect(reread.revision).toBe(second.updatedAt);
+  });
+
+  it("append retourne une révision fraîche sans exiger de base", async () => {
+    const { entry } = await createDocument(f.actorAlice, { title: "Concurrent" });
+    const initial = await getDocumentByFileId(f.actorAlice, entry.id);
+
+    const snapshot = await saveDocument(f.actorAlice, entry.id, {
+      content: contentV2,
+      mode: "append",
+    });
+    expect(snapshot.version).toBe(2);
+    expect(snapshot.updatedAt).not.toBe(initial.revision);
+
+    const later = await saveDocument(f.actorAlice, entry.id, {
+      content: contentV2,
+      mode: "append",
+    });
+    expect(later.version).toBe(3);
+    expect(later.updatedAt).not.toBe(snapshot.updatedAt);
+
+    expect((await getDocumentByFileId(f.actorAlice, entry.id)).revision).toBe(later.updatedAt);
+  });
+
+  it("enchaîne deux sauvegardes avec la révision retournée comme base", async () => {
+    const { entry } = await createDocument(f.actorAlice, { title: "Concurrent" });
+    const initial = await getDocumentByFileId(f.actorAlice, entry.id);
+
+    const first = await saveDocument(f.actorAlice, entry.id, {
+      content: contentV2,
+      baseUpdatedAt: initial.revision,
+    });
+    const second = await saveDocument(f.actorAlice, entry.id, {
+      content: {
+        type: "doc",
+        content: [{ type: "paragraph", content: [{ type: "text", text: "Encore" }] }],
+      },
+      baseUpdatedAt: first.updatedAt,
+    });
+
+    expect(second.version).toBe(1);
+    expect(second.updatedAt).not.toBe(first.updatedAt);
+  });
+
+  it("deux sauvegardes simultanées sur la même base : une seule passe", async () => {
+    const { entry } = await createDocument(f.actorAlice, { title: "Concurrent" });
+    const initial = await getDocumentByFileId(f.actorAlice, entry.id);
+
+    const attempt = (text: string) =>
+      saveDocument(f.actorAlice, entry.id, {
+        content: {
+          type: "doc",
+          content: [{ type: "paragraph", content: [{ type: "text", text }] }],
+        },
+        baseUpdatedAt: initial.revision,
+      }).then(
+        (result) => ({ ok: true as const, result }),
+        (error: unknown) => ({ ok: false as const, error }),
+      );
+
+    const [a, b] = await Promise.all([attempt("Onglet A"), attempt("Onglet B")]);
+
+    // Le verrou de document (SELECT … FOR UPDATE) sérialise les deux
+    // transactions : la seconde voit la révision avancée et échoue.
+    expect([a.ok, b.ok].filter(Boolean)).toHaveLength(1);
+
+    const loser = a.ok ? b : a;
+    if (loser.ok) throw new Error("les deux sauvegardes ont été acceptées");
+    expect(loser.error).toBeInstanceOf(DocsError);
+    expect(loser.error).toMatchObject({ code: "conflict" });
+
+    // Le contenu final est exactement celui du gagnant, sans mélange.
+    const winnerText = a.ok ? "Onglet A" : "Onglet B";
+    const reread = await getDocumentByFileId(f.actorAlice, entry.id);
+    expect(JSON.stringify(reread.content)).toContain(winnerText);
+  });
+});
+
 describe("docs — permissions et isolation", () => {
   it("viewer lit mais ne modifie pas ; editor modifie ; révocation immédiate", async () => {
     const { entry } = await createDocument(f.actorAlice, { title: "Partagé" });

@@ -17,7 +17,8 @@
     "format": "biome format --write .",
     "generate-routes": "turbo run generate-routes",
     "db:migrate": "node scripts/db-migrate-all.mjs",
-    "check:design": "node scripts/contrast-check.mjs"
+    "check:design": "node scripts/contrast-check.mjs",
+    "seed:demo": "tsx scripts/seed-demo.mts"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.15",
@@ -25,6 +26,7 @@
     "@workspace/config": "workspace:*",
     "@workspace/database": "workspace:*",
     "drizzle-orm": "^0.45.4",
+    "tsx": "^4.19.0",
     "turbo": "^2.11.7",
     "typescript": "^6.0.3"
   }

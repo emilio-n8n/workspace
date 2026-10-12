@@ -1,7 +1,6 @@
-import { getDb, schema as coreSchema } from "@workspace/database";
-import { and, eq } from "drizzle-orm";
 import { createServerFn } from "@tanstack/react-start";
 import { getRequest } from "@tanstack/react-start/server";
+import { recordAudit } from "@workspace/audit";
 import {
   getSession,
   issueApiToken,
@@ -10,6 +9,8 @@ import {
   WORKSPACE_SCOPES,
   type WorkspaceScope,
 } from "@workspace/auth";
+import { schema as coreSchema, getDb } from "@workspace/database";
+import { and, eq } from "drizzle-orm";
 import { z } from "zod";
 
 export type TokenView = {
@@ -83,6 +84,15 @@ export const createTokenFn = createServerFn({ method: "POST" })
       name: data.name,
       scopes: data.scopes as WorkspaceScope[],
     });
+    await recordAudit({
+      orgId,
+      actorUserId: userId,
+      action: "auth.token.create",
+      resourceType: "api_token",
+      resourceId: issued.id,
+      result: "success",
+      metadata: { name: data.name, scopes: data.scopes.join(",") },
+    });
     return { id: issued.id, token: issued.token, prefix: issued.prefix };
   });
 
@@ -92,7 +102,15 @@ export const revokeTokenFn = createServerFn({ method: "POST" })
   .validator((input: unknown) => revokeTokenInput.parse(input))
   .handler(async ({ data }) => {
     const request = getRequest();
-    const { userId } = await requireSession(request.headers);
+    const { userId, orgId } = await requireSession(request.headers);
     const revoked = await revokeApiToken(userId, data.id);
+    await recordAudit({
+      orgId,
+      actorUserId: userId,
+      action: "auth.token.revoke",
+      resourceType: "api_token",
+      resourceId: data.id,
+      result: "success",
+    });
     return { revoked };
   });

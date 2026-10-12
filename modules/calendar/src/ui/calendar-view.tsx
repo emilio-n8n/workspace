@@ -1,4 +1,15 @@
-import { Badge, Button, cn, Dialog, Input, Label } from "@workspace/ui";
+import {
+  Alert,
+  Badge,
+  Button,
+  ConfirmDialog,
+  cn,
+  Dialog,
+  Input,
+  Label,
+  type SegmentedTabItem,
+  SegmentedTabs,
+} from "@workspace/ui";
 import { type FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import {
   type CalendarOption,
@@ -13,6 +24,11 @@ import {
 } from "../server.ts";
 
 type ViewMode = "month" | "week";
+
+const MODE_TABS: SegmentedTabItem<ViewMode>[] = [
+  { id: "month", label: "Mois" },
+  { id: "week", label: "Semaine" },
+];
 
 const DAY_LABELS = ["lun", "mar", "mer", "jeu", "ven", "sam", "dim"];
 const MONTH_LABELS = [
@@ -389,23 +405,12 @@ export function CalendarView() {
           </Button>
         </div>
         <div className="ml-auto flex items-center gap-2">
-          <div className="flex overflow-hidden rounded-lg border border-border">
-            {(["month", "week"] as const).map((value) => (
-              <button
-                key={value}
-                type="button"
-                onClick={() => setMode(value)}
-                className={cn(
-                  "px-3 py-1.5 text-xs font-medium transition-colors",
-                  mode === value
-                    ? "bg-primary text-primary-foreground"
-                    : "bg-card text-muted-foreground hover:bg-muted",
-                )}
-              >
-                {value === "month" ? "Mois" : "Semaine"}
-              </button>
-            ))}
-          </div>
+          <SegmentedTabs
+            items={MODE_TABS}
+            value={mode}
+            onChange={setMode}
+            ariaLabel="Affichage du calendrier"
+          />
           <Button size="sm" onClick={() => openCreate(new Date())}>
             Nouvel événement
           </Button>
@@ -428,14 +433,7 @@ export function CalendarView() {
         </button>
       </div>
 
-      {error ? (
-        <p
-          role="alert"
-          className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive"
-        >
-          {error}
-        </p>
-      ) : null}
+      {error ? <Alert tone="danger">{error}</Alert> : null}
 
       {loading ? (
         <p className="text-sm text-muted-foreground">Chargement…</p>
@@ -506,6 +504,8 @@ export function CalendarView() {
               })}
             </div>
           </div>
+          {/* Pas d'EmptyState ici : la carte serait trop lourde dans la grille du mois,
+              simple ligne atténuée. L'absence d'agenda est gérée par l'auto-création. */}
           {events.length === 0 ? (
             <p className="text-sm text-muted-foreground">Aucun événement sur cette période.</p>
           ) : null}
@@ -644,25 +644,20 @@ export function CalendarView() {
       </Dialog>
 
       {/* --- Confirmation de suppression --------------------------------------- */}
-      <Dialog
+      <ConfirmDialog
         open={deleteOpen}
         onClose={() => setDeleteOpen(false)}
+        onConfirm={() => void onConfirmDelete()}
         title="Supprimer l'événement ?"
-      >
-        <p className="text-sm text-muted-foreground">
-          {selected
+        message={
+          selected
             ? `« ${selected.title} » sera définitivement supprimé.`
-            : "Cette action est définitive."}
-        </p>
-        <div className="mt-4 flex justify-end gap-2">
-          <Button variant="ghost" onClick={() => setDeleteOpen(false)}>
-            Annuler
-          </Button>
-          <Button variant="destructive" loading={busy} onClick={() => void onConfirmDelete()}>
-            Supprimer
-          </Button>
-        </div>
-      </Dialog>
+            : "Cette action est définitive."
+        }
+        confirmLabel="Supprimer"
+        busy={busy}
+        destructive
+      />
 
       {/* --- Création / édition ----------------------------------------------- */}
       <Dialog

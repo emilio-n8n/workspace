@@ -69,6 +69,7 @@ Prouver de bout en bout : authentification → stockage → permissions → édi
 
 - Les contrats des packages communs sont gelés (P1 ✅) ; les modules Phase 3 s'y appuient sans les modifier.
 - Vague qualité « L11 » (2026-10-11) : 3 audits sévères (~260 constats consignés dans `docs/audits/`), 10 escouades de correction, contraste WCAG **calculé** (`pnpm check:design`, 26/26 paires), lois de layout dérivées (`docs/design-system/layout-laws.md`).
+- Vague « Excellence » (2026-10-12) : trace d'audit des mutations web (`@workspace/audit`), `/api/health` sur les 14 apps, verrous optimistes Docs, Drive sans N+1 + index trigram, **recherche globale** (`@workspace/search`), import CSV Sheets, MCP v2 (confirmation destructive), adoption des primitives UI, `pnpm seed:demo`, déploiement Vercel documenté (14 projets, SSO par domaine).
 - Chaque ADR moteur conditionne son module (POC listés avant développement).
 - Le serveur MCP utilise exclusivement les services de modules — toute nouvelle capacité passe par eux.
 

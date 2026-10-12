@@ -11,6 +11,7 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as AppRouteImport } from './routes/_app'
 import { Route as AppIndexRouteImport } from './routes/_app/index'
+import { Route as ApiHealthRouteImport } from './routes/api/health'
 import { Route as FSlugRouteImport } from './routes/f.$slug'
 import { Route as AppFormFileIdRouteImport } from './routes/_app/form.$fileId'
 import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
@@ -24,6 +25,11 @@ const AppIndexRoute = AppIndexRouteImport.update({
   id: '/',
   path: '/',
   getParentRoute: () => AppRoute,
+} as any)
+const ApiHealthRoute = ApiHealthRouteImport.update({
+  id: '/api/health',
+  path: '/api/health',
+  getParentRoute: () => rootRouteImport,
 } as any)
 const FSlugRoute = FSlugRouteImport.update({
   id: '/f/$slug',
@@ -48,12 +54,14 @@ const ApiFormsExportFileIdRoute = ApiFormsExportFileIdRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof AppIndexRoute
+  '/api/health': typeof ApiHealthRoute
   '/f/$slug': typeof FSlugRoute
   '/form/$fileId': typeof AppFormFileIdRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/forms/export/$fileId': typeof ApiFormsExportFileIdRoute
 }
 export interface FileRoutesByTo {
+  '/api/health': typeof ApiHealthRoute
   '/f/$slug': typeof FSlugRoute
   '/': typeof AppIndexRoute
   '/form/$fileId': typeof AppFormFileIdRoute
@@ -63,6 +71,7 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/_app': typeof AppRouteWithChildren
+  '/api/health': typeof ApiHealthRoute
   '/f/$slug': typeof FSlugRoute
   '/_app/': typeof AppIndexRoute
   '/_app/form/$fileId': typeof AppFormFileIdRoute
@@ -73,12 +82,14 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/api/health'
     | '/f/$slug'
     | '/form/$fileId'
     | '/api/auth/$'
     | '/api/forms/export/$fileId'
   fileRoutesByTo: FileRoutesByTo
   to:
+    | '/api/health'
     | '/f/$slug'
     | '/'
     | '/form/$fileId'
@@ -87,6 +98,7 @@ export interface FileRouteTypes {
   id:
     | '__root__'
     | '/_app'
+    | '/api/health'
     | '/f/$slug'
     | '/_app/'
     | '/_app/form/$fileId'
@@ -96,6 +108,7 @@ export interface FileRouteTypes {
 }
 export interface RootRouteChildren {
   AppRoute: typeof AppRouteWithChildren
+  ApiHealthRoute: typeof ApiHealthRoute
   FSlugRoute: typeof FSlugRoute
   ApiAuthSplatRoute: typeof ApiAuthSplatRoute
   ApiFormsExportFileIdRoute: typeof ApiFormsExportFileIdRoute
@@ -116,6 +129,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/'
       preLoaderRoute: typeof AppIndexRouteImport
       parentRoute: typeof AppRoute
+    }
+    '/api/health': {
+      id: '/api/health'
+      path: '/api/health'
+      fullPath: '/api/health'
+      preLoaderRoute: typeof ApiHealthRouteImport
+      parentRoute: typeof rootRouteImport
     }
     '/f/$slug': {
       id: '/f/$slug'
@@ -162,6 +182,7 @@ const AppRouteWithChildren = AppRoute._addFileChildren(AppRouteChildren)
 
 const rootRouteChildren: RootRouteChildren = {
   AppRoute: AppRouteWithChildren,
+  ApiHealthRoute: ApiHealthRoute,
   FSlugRoute: FSlugRoute,
   ApiAuthSplatRoute: ApiAuthSplatRoute,
   ApiFormsExportFileIdRoute: ApiFormsExportFileIdRoute,

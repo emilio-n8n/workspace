@@ -1,4 +1,4 @@
-import { Button, cn } from "@workspace/ui";
+import { Alert, Button, cn } from "@workspace/ui";
 import type { Room as LiveKitRoom, Participant } from "livekit-client";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getRoomFn, getRoomTokenFn, type RoomToken, type RoomView } from "../server.ts";
@@ -167,9 +167,7 @@ export function JoinRoom({ slug }: { slug: string }) {
   if (phase === "error") {
     return (
       <div className="mx-auto flex max-w-xl flex-col gap-3">
-        <p role="alert" className="text-sm text-destructive">
-          {error}
-        </p>
+        <Alert tone="danger">{error}</Alert>
         <a href="/" className="text-sm font-medium text-primary hover:underline">
           ← Retour aux salles
         </a>
@@ -187,6 +185,7 @@ export function JoinRoom({ slug }: { slug: string }) {
             <Button
               size="sm"
               variant={micOn ? "outline" : "primary"}
+              aria-pressed={micOn}
               onClick={() => void toggleMic()}
             >
               {micOn ? "Couper le micro" : "Activer le micro"}
@@ -194,6 +193,7 @@ export function JoinRoom({ slug }: { slug: string }) {
             <Button
               size="sm"
               variant={camOn ? "outline" : "primary"}
+              aria-pressed={camOn}
               onClick={() => void toggleCam()}
             >
               {camOn ? "Couper la caméra" : "Activer la caméra"}
@@ -222,8 +222,7 @@ export function JoinRoom({ slug }: { slug: string }) {
         <p className="text-sm text-muted-foreground">Salle /room/{slug}</p>
 
         {token && !token.configured ? (
-          <div className="flex flex-col gap-2 rounded-lg border border-border bg-muted p-3 text-sm text-muted-foreground">
-            <p className="font-medium text-foreground">Serveur média non configuré</p>
+          <Alert tone="info" title="Serveur média non configuré">
             <p>
               La salle et son lien fonctionnent, mais l'audio/vidéo nécessite un serveur LiveKit.
               Renseignez <code className="rounded bg-background px-1">LIVEKIT_URL</code>,{" "}
@@ -231,7 +230,7 @@ export function JoinRoom({ slug }: { slug: string }) {
               <code className="rounded bg-background px-1">LIVEKIT_API_SECRET</code> pour activer la
               visioconférence (voir docs/modules/meet.md et ADR-0011).
             </p>
-          </div>
+          </Alert>
         ) : null}
 
         {phase === "ended" ? (

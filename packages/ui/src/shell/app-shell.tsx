@@ -46,6 +46,14 @@ export function AppShell({
   const activeApp = apps.find((app) => app.id === activeAppId) ?? apps[0];
 
   const paletteActions: PaletteAction[] = [
+    {
+      id: "action-search",
+      label: "Rechercher dans toute la suite…",
+      group: "Actions",
+      onSelect: () => {
+        window.location.assign(`${homeHref}/recherche`);
+      },
+    },
     ...apps
       .filter((app) => app.shipped && app.href)
       .map((app) => ({

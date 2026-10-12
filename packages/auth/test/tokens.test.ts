@@ -3,6 +3,7 @@ import { closeDb, getDb, schema } from "@workspace/database";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  API_TOKEN_DEFAULT_TTL_MS,
   authenticateApiToken,
   issueApiToken,
   listApiTokens,
@@ -154,5 +155,44 @@ describe("jetons d'API — émission et authentification", () => {
     expect(tokenHasScope(principal, "drive:read")).toBe(true);
     expect(tokenHasScope(principal, "drive:write")).toBe(false);
     expect(tokenHasScope(principal, "audit:read")).toBe(false);
+  });
+
+  it("applique une expiration par défaut de 90 jours", async () => {
+    const before = Date.now();
+    const issued = await issueApiToken({
+      userId: fixtures.userId,
+      orgId: fixtures.orgId,
+      name: "Expiration par défaut",
+      scopes: ["drive:read"],
+    });
+    const after = Date.now();
+
+    const db = getDb();
+    const [row] = await db.select().from(apiTokens).where(eq(apiTokens.id, issued.id));
+    expect(row?.expiresAt).not.toBeNull();
+    const expiresAt = row?.expiresAt?.getTime() ?? 0;
+    expect(expiresAt).toBeGreaterThanOrEqual(before + API_TOKEN_DEFAULT_TTL_MS);
+    expect(expiresAt).toBeLessThanOrEqual(after + API_TOKEN_DEFAULT_TTL_MS);
+
+    // La projection « liste » expose bien cette expiration.
+    const list = await listApiTokens(fixtures.userId, fixtures.orgId);
+    expect(list[0]?.expiresAt?.getTime()).toBe(expiresAt);
+  });
+
+  it("expiresAt: null émet un jeton sans expiration (échappatoire)", async () => {
+    const issued = await issueApiToken({
+      userId: fixtures.userId,
+      orgId: fixtures.orgId,
+      name: "Sans expiration",
+      scopes: ["drive:read"],
+      expiresAt: null,
+    });
+
+    const db = getDb();
+    const [row] = await db.select().from(apiTokens).where(eq(apiTokens.id, issued.id));
+    expect(row?.expiresAt).toBeNull();
+
+    // Un jeton sans expiration reste authentifiable.
+    expect(await authenticateApiToken(issued.token)).not.toBeNull();
   });
 });

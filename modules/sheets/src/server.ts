@@ -7,6 +7,7 @@ import {
   createSpreadsheet,
   deleteTab,
   getSpreadsheet,
+  importCsv,
   listSpreadsheets,
   renameSpreadsheet,
   renameTab,
@@ -66,6 +67,21 @@ export const saveCellsFn = createServerFn({ method: "POST" })
   .handler(async ({ data }) => {
     const { actor } = await requireActor(getRequest().headers);
     return saveCells(actor, data.fileId, { tabId: data.tabId, updates: data.updates });
+  });
+
+export const importCsvFn = createServerFn({ method: "POST" })
+  .validator((input: unknown) =>
+    z
+      .object({
+        fileId: z.string().uuid(),
+        tabId: z.string().uuid(),
+        text: z.string().max(2_000_000),
+      })
+      .parse(input),
+  )
+  .handler(async ({ data }) => {
+    const { actor } = await requireActor(getRequest().headers);
+    return importCsv(actor, data.fileId, { tabId: data.tabId, text: data.text });
   });
 
 export const addTabFn = createServerFn({ method: "POST" })

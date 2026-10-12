@@ -1,6 +1,6 @@
 import { EditorContent, type JSONContent, useEditor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
-import { Button, cn } from "@workspace/ui";
+import { Alert, Button, cn } from "@workspace/ui";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { saveDocumentFn } from "../server.ts";
 
@@ -8,19 +8,45 @@ type Props = {
   fileId: string;
   initialContent: unknown;
   canEdit: boolean;
+  /** Révision connue au chargement (voir `getDocumentFn().revision`). */
+  initialRevision?: string;
+  /** Recharge le document côté hôte ; à défaut, la page est rechargée. */
+  onReload?: () => void;
 };
 
-type SaveStatus = "idle" | "saving" | "saved" | "error";
+type SaveStatus = "idle" | "saving" | "saved" | "error" | "conflict";
 type SaveMode = "replace-latest" | "append";
 
 const AUTOSAVE_DELAY_MS = 1200;
+
+/** Extrait le message d'une erreur, y compris sérialisée par le serveur. */
+function errorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (typeof error === "string") return error;
+  if (error && typeof error === "object") {
+    const record = error as { message?: unknown; data?: { message?: unknown } };
+    if (typeof record.message === "string") return record.message;
+    if (typeof record.data?.message === "string") return record.data.message;
+  }
+  return "";
+}
+
+/** Le service signale un conflit d'autosave par ce message. */
+const isConflictError = (error: unknown): boolean =>
+  errorMessage(error).includes("modifié ailleurs");
 
 /**
  * Éditeur de documents (Tiptap 3 — ProseMirror).
  * - autosave continu (`replace-latest`) ;
  * - « Enregistrer une version » crée un instantané explicite (`append`).
  */
-export function DocumentEditor({ fileId, initialContent, canEdit }: Props) {
+export function DocumentEditor({
+  fileId,
+  initialContent,
+  canEdit,
+  initialRevision,
+  onReload,
+}: Props) {
   const [status, setStatus] = useState<SaveStatus>("idle");
   const [dirty, setDirty] = useState(false);
   const [lastSavedAt, setLastSavedAt] = useState<string | null>(null);
@@ -29,6 +55,10 @@ export function DocumentEditor({ fileId, initialContent, canEdit }: Props) {
   const queuedRef = useRef<{ content: unknown; mode: SaveMode } | null>(null);
   const dirtyRef = useRef(false);
   const latestRef = useRef<unknown>(null);
+  /** Dernière révision connue (chargement ou réponse de sauvegarde). */
+  const revisionRef = useRef<string | undefined>(initialRevision);
+  /** Après un conflit, on n'écrase plus rien : rechargez la page. */
+  const conflictRef = useRef(false);
 
   /**
    * Enregistre `content`. Si un enregistrement est déjà en vol, le contenu le
@@ -38,6 +68,10 @@ export function DocumentEditor({ fileId, initialContent, canEdit }: Props) {
    */
   const persist = useCallback(
     async (content: unknown, mode: SaveMode) => {
+      // Un conflit n'est jamais réessayé automatiquement : l'utilisateur doit
+      // recharger pour repartir de la version la plus récente.
+      if (conflictRef.current) return;
+
       if (savingRef.current) {
         const pending = queuedRef.current;
         queuedRef.current = {
@@ -53,9 +87,15 @@ export function DocumentEditor({ fileId, initialContent, canEdit }: Props) {
         while (current) {
           setStatus("saving");
           try {
-            await saveDocumentFn({
-              data: { fileId, content: current.content, mode: current.mode },
+            const saved = await saveDocumentFn({
+              data: {
+                fileId,
+                content: current.content,
+                mode: current.mode,
+                baseUpdatedAt: revisionRef.current,
+              },
             });
+            revisionRef.current = saved.updatedAt;
             if (queuedRef.current === null) {
               dirtyRef.current = false;
               setDirty(false);
@@ -64,7 +104,13 @@ export function DocumentEditor({ fileId, initialContent, canEdit }: Props) {
             setLastSavedAt(
               new Date().toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" }),
             );
-          } catch {
+          } catch (error) {
+            if (isConflictError(error)) {
+              conflictRef.current = true;
+              queuedRef.current = null;
+              setStatus("conflict");
+              break;
+            }
             setStatus("error");
           }
           const queued = queuedRef.current;
@@ -96,7 +142,7 @@ export function DocumentEditor({ fileId, initialContent, canEdit }: Props) {
       },
     },
     onUpdate: ({ editor: instance }) => {
-      if (!canEdit) return;
+      if (!canEdit || conflictRef.current) return;
       const content = instance.getJSON();
       latestRef.current = content;
       dirtyRef.current = true;
@@ -145,13 +191,15 @@ export function DocumentEditor({ fileId, initialContent, canEdit }: Props) {
       ? "Enregistrement…"
       : status === "saved"
         ? `Enregistré${lastSavedAt ? ` à ${lastSavedAt}` : ""}`
-        : status === "error"
-          ? "Échec de l'enregistrement"
-          : canEdit
-            ? dirty
-              ? "Modifications non enregistrées"
-              : "Aucune modification"
-            : "Lecture seule";
+        : status === "conflict"
+          ? "Modifié ailleurs"
+          : status === "error"
+            ? "Échec de l'enregistrement"
+            : canEdit
+              ? dirty
+                ? "Modifications non enregistrées"
+                : "Aucune modification"
+              : "Lecture seule";
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -272,7 +320,7 @@ export function DocumentEditor({ fileId, initialContent, canEdit }: Props) {
           <span
             className={cn(
               "text-xs text-muted-foreground",
-              status === "error" && "text-destructive",
+              (status === "error" || status === "conflict") && "text-destructive",
             )}
             role="status"
           >
@@ -292,6 +340,7 @@ export function DocumentEditor({ fileId, initialContent, canEdit }: Props) {
             <Button
               size="sm"
               variant="outline"
+              disabled={status === "conflict"}
               onClick={() => void persist(editor.getJSON(), "append")}
             >
               Enregistrer une version
@@ -299,6 +348,29 @@ export function DocumentEditor({ fileId, initialContent, canEdit }: Props) {
           ) : null}
         </div>
       </div>
+
+      {status === "conflict" ? (
+        <div className="border-b border-border px-3 py-2">
+          <Alert
+            tone="warning"
+            className="flex flex-wrap items-center gap-x-3 gap-y-2 py-1.5 text-xs"
+          >
+            <span className="flex-1">
+              Le document a été modifié ailleurs ; votre contenu reste affiché. Rechargez la page
+              pour repartir de la version la plus récente.
+            </span>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="h-6 px-2 text-xs"
+              onClick={() => (onReload ? onReload() : window.location.reload())}
+            >
+              Recharger la page
+            </Button>
+          </Alert>
+        </div>
+      ) : null}
 
       <div className="min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto w-full max-w-3xl px-6 py-8">

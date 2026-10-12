@@ -1,4 +1,4 @@
-import { Button, cn, Dialog, Input, Label } from "@workspace/ui";
+import { Alert, Button, ConfirmDialog, cn, Dialog, Input, Label } from "@workspace/ui";
 import { type FormEvent, useCallback, useEffect, useState } from "react";
 import { renderMarkdown } from "../markdown.ts";
 import {
@@ -211,14 +211,7 @@ export function SiteEditor({ fileId }: { fileId: string }) {
         </div>
       </header>
 
-      {error ? (
-        <p
-          role="alert"
-          className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive"
-        >
-          {error}
-        </p>
-      ) : null}
+      {error ? <Alert tone="danger">{error}</Alert> : null}
 
       <div className="flex flex-col gap-3 lg:flex-row">
         <aside className="flex shrink-0 flex-col gap-2 lg:w-56">
@@ -320,52 +313,30 @@ export function SiteEditor({ fileId }: { fileId: string }) {
         </form>
       </Dialog>
 
-      <Dialog
+      <ConfirmDialog
         open={pendingPageId !== null}
         onClose={() => setPendingPageId(null)}
+        onConfirm={confirmDiscard}
         title="Modifications non enregistrées"
-      >
-        <div className="flex flex-col gap-4">
-          <p className="text-sm text-muted-foreground">
-            Abandonner les modifications non enregistrées ?
-          </p>
-          <div className="flex justify-end gap-2">
-            <Button type="button" variant="ghost" onClick={() => setPendingPageId(null)}>
-              Annuler
-            </Button>
-            <Button type="button" variant="destructive" onClick={confirmDiscard}>
-              Abandonner
-            </Button>
-          </div>
-        </div>
-      </Dialog>
+        message="Abandonner les modifications non enregistrées ?"
+        confirmLabel="Abandonner"
+        destructive
+      />
 
-      <Dialog
+      <ConfirmDialog
         open={pageToDelete !== null}
         onClose={() => setPageToDelete(null)}
+        onConfirm={() => {
+          const page = pageToDelete;
+          setPageToDelete(null);
+          if (page) void onDeletePage(page);
+        }}
         title={pageToDelete ? `Supprimer la page « ${pageToDelete.title} » ?` : "Supprimer la page"}
-      >
-        <div className="flex flex-col gap-4">
-          <p className="text-sm text-muted-foreground">Cette action est définitive.</p>
-          <div className="flex justify-end gap-2">
-            <Button type="button" variant="ghost" onClick={() => setPageToDelete(null)}>
-              Annuler
-            </Button>
-            <Button
-              type="button"
-              variant="destructive"
-              loading={busy}
-              onClick={() => {
-                const page = pageToDelete;
-                setPageToDelete(null);
-                if (page) void onDeletePage(page);
-              }}
-            >
-              Supprimer
-            </Button>
-          </div>
-        </div>
-      </Dialog>
+        message="Cette action est définitive."
+        confirmLabel="Supprimer"
+        busy={busy}
+        destructive
+      />
     </div>
   );
 }

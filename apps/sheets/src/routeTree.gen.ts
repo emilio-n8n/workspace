@@ -11,6 +11,7 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as AppRouteImport } from './routes/_app'
 import { Route as AppIndexRouteImport } from './routes/_app/index'
+import { Route as ApiHealthRouteImport } from './routes/api/health'
 import { Route as AppSheetFileIdRouteImport } from './routes/_app/sheet.$fileId'
 import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
 import { Route as ApiSheetsExportFileIdRouteImport } from './routes/api/sheets/export/$fileId'
@@ -23,6 +24,11 @@ const AppIndexRoute = AppIndexRouteImport.update({
   id: '/',
   path: '/',
   getParentRoute: () => AppRoute,
+} as any)
+const ApiHealthRoute = ApiHealthRouteImport.update({
+  id: '/api/health',
+  path: '/api/health',
+  getParentRoute: () => rootRouteImport,
 } as any)
 const AppSheetFileIdRoute = AppSheetFileIdRouteImport.update({
   id: '/sheet/$fileId',
@@ -42,11 +48,13 @@ const ApiSheetsExportFileIdRoute = ApiSheetsExportFileIdRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof AppIndexRoute
+  '/api/health': typeof ApiHealthRoute
   '/sheet/$fileId': typeof AppSheetFileIdRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/sheets/export/$fileId': typeof ApiSheetsExportFileIdRoute
 }
 export interface FileRoutesByTo {
+  '/api/health': typeof ApiHealthRoute
   '/': typeof AppIndexRoute
   '/sheet/$fileId': typeof AppSheetFileIdRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
@@ -55,6 +63,7 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/_app': typeof AppRouteWithChildren
+  '/api/health': typeof ApiHealthRoute
   '/_app/': typeof AppIndexRoute
   '/_app/sheet/$fileId': typeof AppSheetFileIdRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
@@ -63,12 +72,22 @@ export interface FileRoutesById {
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
-    '/' | '/sheet/$fileId' | '/api/auth/$' | '/api/sheets/export/$fileId'
+    | '/'
+    | '/api/health'
+    | '/sheet/$fileId'
+    | '/api/auth/$'
+    | '/api/sheets/export/$fileId'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/sheet/$fileId' | '/api/auth/$' | '/api/sheets/export/$fileId'
+  to:
+    | '/api/health'
+    | '/'
+    | '/sheet/$fileId'
+    | '/api/auth/$'
+    | '/api/sheets/export/$fileId'
   id:
     | '__root__'
     | '/_app'
+    | '/api/health'
     | '/_app/'
     | '/_app/sheet/$fileId'
     | '/api/auth/$'
@@ -77,6 +96,7 @@ export interface FileRouteTypes {
 }
 export interface RootRouteChildren {
   AppRoute: typeof AppRouteWithChildren
+  ApiHealthRoute: typeof ApiHealthRoute
   ApiAuthSplatRoute: typeof ApiAuthSplatRoute
   ApiSheetsExportFileIdRoute: typeof ApiSheetsExportFileIdRoute
 }
@@ -96,6 +116,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/'
       preLoaderRoute: typeof AppIndexRouteImport
       parentRoute: typeof AppRoute
+    }
+    '/api/health': {
+      id: '/api/health'
+      path: '/api/health'
+      fullPath: '/api/health'
+      preLoaderRoute: typeof ApiHealthRouteImport
+      parentRoute: typeof rootRouteImport
     }
     '/_app/sheet/$fileId': {
       id: '/_app/sheet/$fileId'
@@ -135,6 +162,7 @@ const AppRouteWithChildren = AppRoute._addFileChildren(AppRouteChildren)
 
 const rootRouteChildren: RootRouteChildren = {
   AppRoute: AppRouteWithChildren,
+  ApiHealthRoute: ApiHealthRoute,
   ApiAuthSplatRoute: ApiAuthSplatRoute,
   ApiSheetsExportFileIdRoute: ApiSheetsExportFileIdRoute,
 }

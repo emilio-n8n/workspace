@@ -7,7 +7,7 @@ import {
   Scripts,
 } from "@tanstack/react-router";
 import { TanStackRouterDevtoolsPanel } from "@tanstack/react-router-devtools";
-import { themeInitScript } from "@workspace/ui";
+import { BrandMark, themeInitScript } from "@workspace/ui";
 import { type ReactNode, useEffect } from "react";
 import appCss from "../styles.css?url";
 
@@ -32,40 +32,48 @@ export const Route = createRootRoute({
 
 function NotFoundDocument() {
   return (
-    <main className="flex min-h-screen flex-col items-center justify-center gap-3 bg-background px-6 text-center text-foreground">
-      <p className="text-sm font-medium uppercase tracking-widest text-muted-foreground">404</p>
-      <h1 className="text-2xl font-semibold tracking-tight">Page introuvable</h1>
-      <p className="max-w-md text-sm text-muted-foreground">
-        L'adresse demandée n'existe pas ou a été déplacée.
-      </p>
-      <Link
-        to="/"
-        className="mt-2 text-sm font-medium text-primary underline-offset-4 hover:underline"
-      >
-        Revenir à l'accueil
-      </Link>
+    <main className="flex min-h-dvh items-center justify-center bg-background p-6 text-foreground">
+      <div className="flex w-full max-w-md flex-col items-center gap-3 rounded-xl border border-border bg-card p-8 text-center shadow-soft">
+        <BrandMark />
+        <h1 className="font-display text-2xl font-semibold tracking-tight">Page introuvable</h1>
+        <p className="text-sm text-muted-foreground">
+          La page demandée n'existe pas ou a été déplacée.
+        </p>
+        <Link
+          to="/"
+          className="rounded-md bg-primary px-3 py-2 text-sm text-primary-foreground hover:opacity-90"
+        >
+          Revenir à l'accueil
+        </Link>
+      </div>
     </main>
   );
 }
 
-function ErrorDocument({ error }: ErrorComponentProps) {
+function ErrorDocument({ error, reset }: ErrorComponentProps) {
   const message = error instanceof Error ? error.message : String(error);
   return (
-    <main className="flex min-h-screen flex-col items-center justify-center gap-3 bg-background px-6 text-center text-foreground">
-      <h1 className="text-2xl font-semibold tracking-tight">Une erreur est survenue</h1>
-      <p className="max-w-md text-sm text-muted-foreground">
-        L'opération n'a pas pu aboutir. Réessayez ; si le problème persiste, consultez les journaux
-        de l'instance.
-      </p>
-      {import.meta.env.DEV ? (
-        <p className="max-w-lg text-xs text-muted-foreground/70">{message}</p>
-      ) : null}
-      <Link
-        to="/"
-        className="mt-2 text-sm font-medium text-primary underline-offset-4 hover:underline"
-      >
-        Revenir à l'accueil
-      </Link>
+    <main className="flex min-h-dvh items-center justify-center bg-background p-6 text-foreground">
+      <div className="flex w-full max-w-md flex-col items-center gap-3 rounded-xl border border-border bg-card p-8 text-center shadow-soft">
+        <BrandMark />
+        <h1 className="font-display text-2xl font-semibold tracking-tight">
+          Une erreur est survenue
+        </h1>
+        <p className="text-sm text-muted-foreground">Réessayez ou revenez à l'accueil.</p>
+        <p className="break-words text-xs text-muted-foreground">{message}</p>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={reset}
+            className="rounded-md bg-primary px-3 py-2 text-sm text-primary-foreground hover:opacity-90"
+          >
+            Réessayer
+          </button>
+          <Link to="/" className="rounded-md border border-border px-3 py-2 text-sm hover:bg-muted">
+            Revenir à l'accueil
+          </Link>
+        </div>
+      </div>
     </main>
   );
 }

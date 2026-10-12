@@ -3,10 +3,31 @@ import { getDb, schema } from "@workspace/database";
 import { and, desc, eq, gt, isNull, or, sql } from "drizzle-orm";
 import { isWorkspaceScope, type WorkspaceScope } from "./scopes.ts";
 
+/**
+ * Jetons d'API / MCP (ADR-0006).
+ *
+ * Propriétés de sécurité :
+ * - Le secret n'est affiché qu'à l'émission ; seule son empreinte SHA-256 est
+ *   stockée (`api_tokens.token_hash`), jamais le clair — ni en base ni en
+ *   journal.
+ * - L'authentification filtre d'abord en SQL (empreinte, révocation,
+ *   expiration) puis compare l'empreinte en temps constant
+ *   (`timingSafeEqual`), défense en profondeur.
+ * - `lastUsedAt` est mis à jour au plus une fois toutes les 5 minutes : pas
+ *   d'écriture à chaque requête d'agent (MCP, intégration).
+ * - Les scopes sont validés à l'émission contre `WORKSPACE_SCOPES`
+ *   (`isWorkspaceScope`) et l'accès est refusé par défaut (`tokenHasScope`).
+ * - Expiration : 90 jours par défaut (voir `API_TOKEN_DEFAULT_TTL_MS`) ;
+ *   `expiresAt: null` émet volontairement un jeton sans expiration
+ *   (échappatoire explicite, à éviter).
+ */
 const { apiTokens } = schema;
 
 /** Préfixe visible des jetons Workspace. */
 export const TOKEN_PREFIX = "wsk_";
+
+/** Expiration par défaut d'un jeton d'API : 90 jours, en millisecondes. */
+export const API_TOKEN_DEFAULT_TTL_MS = 90 * 24 * 60 * 60 * 1000;
 
 export function hashToken(token: string): string {
   return createHash("sha256").update(token).digest("hex");
@@ -40,6 +61,8 @@ export type TokenPrincipal = {
 /**
  * Émet un jeton scoped pour (utilisateur, organisation).
  * Le jeton n'est retourné qu'ici ; seul son SHA-256 est stocké.
+ * `expiresAt` omis → expiration par défaut à 90 jours ; `expiresAt: null`
+ * → jeton sans expiration (échappatoire explicite, déconseillée).
  */
 export async function issueApiToken(input: {
   userId: string;
@@ -58,6 +81,13 @@ export async function issueApiToken(input: {
   const token = `${TOKEN_PREFIX}${secret}`;
   const prefix = `${TOKEN_PREFIX}${secret.slice(0, 6)}…`;
 
+  // Jamais d'expiration infinie par défaut : un jeton oublié reste borné à
+  // 90 jours. Seul un `expiresAt: null` explicite (échappatoire) l'évite.
+  const expiresAt =
+    input.expiresAt === undefined
+      ? new Date(Date.now() + API_TOKEN_DEFAULT_TTL_MS)
+      : input.expiresAt;
+
   const db = getDb();
   const [row] = await db
     .insert(apiTokens)
@@ -68,7 +98,7 @@ export async function issueApiToken(input: {
       prefix,
       tokenHash: hashToken(token),
       scopes: [...input.scopes],
-      expiresAt: input.expiresAt ?? null,
+      expiresAt,
     })
     .returning({ id: apiTokens.id });
 

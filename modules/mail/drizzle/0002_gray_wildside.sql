@@ -1,0 +1,2 @@
+CREATE INDEX "mail_messages_mailbox_folder_created_idx" ON "mail_messages" USING btree ("mailbox_id","folder","created_at" DESC NULLS LAST);--> statement-breakpoint
+CREATE INDEX "mail_messages_mailbox_read_idx" ON "mail_messages" USING btree ("mailbox_id","read_at");

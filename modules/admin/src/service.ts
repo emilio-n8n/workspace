@@ -1,3 +1,4 @@
+import { recordAudit } from "@workspace/audit";
 import { schema as core, getDb } from "@workspace/database";
 import { driveFiles } from "@workspace/drive";
 import type { Actor } from "@workspace/permissions";
@@ -146,6 +147,15 @@ export async function addMemberByEmail(actor: Actor, email: string): Promise<Mem
     throw new AdminError("conflict", "Cette personne est déjà membre de l'organisation.");
   }
 
+  await recordAudit({
+    orgId: actor.orgId,
+    actorUserId: actor.userId,
+    action: "admin.member.add",
+    resourceType: "member",
+    resourceId: user.id,
+    result: "success",
+  });
+
   return {
     userId: user.id,
     name: user.name,
@@ -179,6 +189,16 @@ export async function updateMemberRole(
     .update(core.member)
     .set({ role })
     .where(and(eq(core.member.organizationId, actor.orgId), eq(core.member.userId, userId)));
+
+  await recordAudit({
+    orgId: actor.orgId,
+    actorUserId: actor.userId,
+    action: "admin.member.role",
+    resourceType: "member",
+    resourceId: userId,
+    result: "success",
+    metadata: { role },
+  });
 }
 
 export async function removeMember(actor: Actor, userId: string): Promise<void> {
@@ -197,6 +217,15 @@ export async function removeMember(actor: Actor, userId: string): Promise<void> 
   await db()
     .delete(core.member)
     .where(and(eq(core.member.organizationId, actor.orgId), eq(core.member.userId, userId)));
+
+  await recordAudit({
+    orgId: actor.orgId,
+    actorUserId: actor.userId,
+    action: "admin.member.remove",
+    resourceType: "member",
+    resourceId: userId,
+    result: "success",
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -210,6 +239,16 @@ export async function updateOrgProfile(actor: Actor, input: { name: string }): P
     throw new AdminError("validation", "Le nom doit contenir entre 1 et 150 caractères.");
   }
   await db().update(core.organization).set({ name }).where(eq(core.organization.id, actor.orgId));
+
+  await recordAudit({
+    orgId: actor.orgId,
+    actorUserId: actor.userId,
+    action: "admin.org.update",
+    resourceType: "organization",
+    resourceId: actor.orgId,
+    result: "success",
+    metadata: { name },
+  });
 }
 
 export async function getOverview(actor: Actor): Promise<OrgOverview> {
@@ -271,6 +310,16 @@ export async function updateQuota(actor: Actor, quotaBytes: number | null): Prom
       target: core.orgSettings.orgId,
       set: { storageQuotaBytes: quotaBytes },
     });
+
+  await recordAudit({
+    orgId: actor.orgId,
+    actorUserId: actor.userId,
+    action: "admin.quota.update",
+    resourceType: "org_settings",
+    resourceId: actor.orgId,
+    result: "success",
+    metadata: { quotaBytes },
+  });
 }
 
 export async function listAudit(actor: Actor, limit = 100): Promise<AuditEntry[]> {

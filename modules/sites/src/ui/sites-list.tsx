@@ -1,5 +1,14 @@
 import { useNavigate } from "@tanstack/react-router";
-import { Button, Dialog, Input, Label } from "@workspace/ui";
+import {
+  Alert,
+  Button,
+  Dialog,
+  EmptyState,
+  IconGlobe,
+  Input,
+  Label,
+  PageHeader,
+} from "@workspace/ui";
 import { type FormEvent, useCallback, useEffect, useState } from "react";
 import { createSiteFn, listSitesFn } from "../server.ts";
 
@@ -64,35 +73,31 @@ export function SitesList() {
 
   return (
     <div className="mx-auto flex max-w-4xl flex-col gap-4">
-      <header className="flex flex-wrap items-center gap-2">
-        <div>
-          <h1 className="font-display text-2xl font-semibold tracking-tight">Sites internes</h1>
-          <p className="text-sm text-muted-foreground">
-            Pages en Markdown rendu en HTML sûr, réunies dans un site d'équipe.
-          </p>
-        </div>
-        <Button className="ml-auto" size="sm" onClick={() => setDialogOpen(true)}>
-          Nouveau site
-        </Button>
-      </header>
+      <PageHeader
+        title="Sites internes"
+        description="Pages en Markdown rendu en HTML sûr, réunies dans un site d'équipe."
+        actions={
+          <Button size="sm" onClick={() => setDialogOpen(true)}>
+            Nouveau site
+          </Button>
+        }
+      />
 
-      {error ? (
-        <p
-          role="alert"
-          className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive"
-        >
-          {error}
-        </p>
-      ) : null}
+      {error ? <Alert tone="danger">{error}</Alert> : null}
 
       {loading ? (
         <p className="text-sm text-muted-foreground">Chargement…</p>
       ) : sites.length === 0 ? (
-        <div className="rounded-xl border border-border bg-card p-8 text-center">
-          <p className="text-sm text-muted-foreground">
-            Aucun site pour le moment. Créez-en un — il apparaîtra aussi dans le Drive.
-          </p>
-        </div>
+        <EmptyState
+          icon={<IconGlobe />}
+          title="Aucun site pour le moment"
+          hint="Créez-en un — il apparaîtra aussi dans le Drive."
+          action={
+            <Button size="sm" onClick={() => setDialogOpen(true)}>
+              Nouveau site
+            </Button>
+          }
+        />
       ) : (
         <ul className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           {sites.map((site) => (

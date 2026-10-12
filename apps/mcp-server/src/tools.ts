@@ -1,9 +1,12 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { TokenPrincipal } from "@workspace/auth";
+import { deleteEvent } from "@workspace/calendar";
+import { listMessages as listChatMessages } from "@workspace/chat";
 import { getDb, schema } from "@workspace/database";
 import { getDocumentByFileId, toPlainText } from "@workspace/docs";
 import { download, searchEntries } from "@workspace/drive";
-import { createTask, listLists, listTasks } from "@workspace/tasks";
+import { getMessage } from "@workspace/mail";
+import { createTask, listLists, listTasks, updateTask } from "@workspace/tasks";
 import { and, desc, eq } from "drizzle-orm";
 import { z } from "zod";
 import { errorResult, requireScope, withAudit } from "./audit.ts";
@@ -360,6 +363,176 @@ export function registerTools(server: McpServer, principal: TokenPrincipal): voi
               ),
             },
           ],
+        };
+      }),
+  );
+
+  server.registerTool(
+    "tasks.update",
+    {
+      title: "Modifier une tâche",
+      description:
+        "Modifie le titre, le statut, la priorité ou l'échéance d'une tâche accessible en écriture (les champs omis restent inchangés, `dueAt: null` efface l'échéance). Scope requis : tasks:write.",
+      inputSchema: {
+        taskId: z.string().uuid(),
+        title: z.string().min(1).max(500).optional(),
+        status: z.enum(["todo", "in_progress", "done"]).optional(),
+        priority: z.enum(["low", "medium", "high"]).optional(),
+        dueAt: z.string().nullable().optional(),
+      },
+    },
+    async ({ taskId, title, status, priority, dueAt }) =>
+      withAudit(principal, "tasks.update", async () => {
+        requireScope(principal, "tasks:write");
+
+        const task = await updateTask(actor, taskId, { title, status, priority, dueAt });
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify(
+                {
+                  id: task.id,
+                  title: task.title,
+                  status: task.status,
+                  priority: task.priority,
+                  dueAt: task.dueAt?.toISOString() ?? null,
+                },
+                null,
+                2,
+              ),
+            },
+          ],
+        };
+      }),
+  );
+
+  server.registerTool(
+    "tasks.complete",
+    {
+      title: "Terminer une tâche",
+      description:
+        "Marque une tâche accessible en écriture comme terminée (statut « done »). Scope requis : tasks:write.",
+      inputSchema: {
+        taskId: z.string().uuid(),
+      },
+    },
+    async ({ taskId }) =>
+      withAudit(principal, "tasks.complete", async () => {
+        requireScope(principal, "tasks:write");
+
+        const task = await updateTask(actor, taskId, { status: "done" });
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify({ id: task.id, status: task.status }, null, 2),
+            },
+          ],
+        };
+      }),
+  );
+
+  server.registerTool(
+    "mail.read",
+    {
+      title: "Lire un message",
+      description:
+        "Lit un message de la boîte du propriétaire du jeton (corps tronqué au-delà de la limite d'affichage). Scope requis : mail:read.",
+      inputSchema: {
+        messageId: z.string().uuid(),
+      },
+    },
+    async ({ messageId }) =>
+      withAudit(principal, "mail.read", async () => {
+        requireScope(principal, "mail:read");
+
+        const message = await getMessage(actor, messageId);
+        const { text, truncated } = truncate(message.body);
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify(
+                {
+                  id: message.id,
+                  from: message.fromAddress,
+                  to: message.toAddresses,
+                  subject: message.subject,
+                  body: text,
+                  truncated,
+                  starred: message.starred,
+                  sendError: message.sendError,
+                  createdAt: message.createdAt,
+                },
+                null,
+                2,
+              ),
+            },
+          ],
+        };
+      }),
+  );
+
+  server.registerTool(
+    "chat.read",
+    {
+      title: "Lire les messages d'une conversation",
+      description:
+        "Derniers messages d'une conversation dont le propriétaire du jeton est membre, du plus ancien au plus récent. Scope requis : chat:read.",
+      inputSchema: {
+        channelId: z.string().uuid(),
+        limit: z.number().int().min(1).max(100).optional(),
+      },
+    },
+    async ({ channelId, limit }) =>
+      withAudit(principal, "chat.read", async () => {
+        requireScope(principal, "chat:read");
+
+        const messages = await listChatMessages(actor, channelId, { limit: limit ?? 50 });
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify(
+                messages.map((message) => ({
+                  authorName: message.authorName,
+                  body: message.body,
+                  createdAt: message.createdAt,
+                })),
+                null,
+                2,
+              ),
+            },
+          ],
+        };
+      }),
+  );
+
+  server.registerTool(
+    "calendar.delete",
+    {
+      title: "Supprimer un événement",
+      description:
+        'Supprime définitivement un événement modifiable. Confirmation explicite obligatoire : `confirm: "SUPPRIMER"`. Scope requis : calendar:write.',
+      inputSchema: {
+        eventId: z.string().uuid(),
+        // Optionnel au niveau du schéma pour que l'absence de confirmation
+        // arrive jusqu'au gestionnaire et reçoive un message explicite,
+        // plutôt qu'un refus de validation générique du SDK.
+        confirm: z.literal("SUPPRIMER").optional(),
+      },
+    },
+    async ({ eventId, confirm }) =>
+      withAudit(principal, "calendar.delete", async () => {
+        requireScope(principal, "calendar:write");
+        if (confirm !== "SUPPRIMER") {
+          return errorResult('Confirmation requise : passez confirm: "SUPPRIMER".');
+        }
+
+        await deleteEvent(actor, eventId);
+        return {
+          content: [{ type: "text" as const, text: JSON.stringify({ ok: true }, null, 2) }],
         };
       }),
   );

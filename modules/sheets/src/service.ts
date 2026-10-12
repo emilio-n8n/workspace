@@ -10,17 +10,18 @@ import {
 } from "@workspace/drive";
 import { type Actor, roleSatisfies } from "@workspace/permissions";
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
+import { MAX_CELL_CHARS, MAX_COLS, MAX_ROWS, parseCsv } from "./csv.ts";
 import { cellKey, evaluateCells, formatValue } from "./formula.ts";
 import { type SheetTabRow, sheetCells, sheetTabs, spreadsheets } from "./schema.ts";
+
+export { MAX_CELL_CHARS, MAX_COLS, MAX_ROWS } from "./csv.ts";
 
 /** Type MIME du pointeur Drive d'une feuille de calcul Workspace. */
 export const SHEETS_MIME = "application/vnd.workspace.sheets+json";
 
-export const MAX_ROWS = 1000;
-export const MAX_COLS = 100;
 const MAX_UPDATES_PER_SAVE = 2000;
-const MAX_CELL_CHARS = 1000;
 const MAX_CELLS_PER_LOAD = 50_000;
+const MAX_CELLS_PER_IMPORT = 20_000;
 /** Taille des lots d'écriture (4 colonnes par ligne, bien sous la limite de paramètres PG). */
 const SAVE_CHUNK = 500;
 /** Nombre maximal d'onglets par feuille. */
@@ -188,6 +189,54 @@ export async function getSpreadsheet(actor: Actor, fileId: string): Promise<Spre
   };
 }
 
+// ---------------------------------------------------------------------------
+// Écriture de cellules (sauvegarde et import)
+// ---------------------------------------------------------------------------
+
+type CellUpdate = { row: number; col: number; value: string };
+
+/** Cellule dans les bornes de la grille et sous la limite de caractères. */
+function assertCell(update: CellUpdate): void {
+  if (
+    !Number.isInteger(update.row) ||
+    !Number.isInteger(update.col) ||
+    update.row < 0 ||
+    update.row >= MAX_ROWS ||
+    update.col < 0 ||
+    update.col >= MAX_COLS
+  ) {
+    throw new SheetsError("validation", "Cellule hors limites.");
+  }
+  if (update.value.length > MAX_CELL_CHARS) {
+    throw new SheetsError("validation", `Cellule limitée à ${MAX_CELL_CHARS} caractères.`);
+  }
+}
+
+/** Upsert multi-lignes par lots — chemin d'écriture partagé sauvegarde / import. */
+async function upsertCells(
+  tx: Parameters<Parameters<typeof withTransaction>[0]>[0],
+  tabId: string,
+  upserts: CellUpdate[],
+): Promise<void> {
+  for (let offset = 0; offset < upserts.length; offset += SAVE_CHUNK) {
+    const chunk = upserts.slice(offset, offset + SAVE_CHUNK);
+    await tx
+      .insert(sheetCells)
+      .values(
+        chunk.map((update) => ({
+          tabId,
+          row: update.row,
+          col: update.col,
+          value: update.value,
+        })),
+      )
+      .onConflictDoUpdate({
+        target: [sheetCells.tabId, sheetCells.row, sheetCells.col],
+        set: { value: sql`excluded.value` },
+      });
+  }
+}
+
 /** Sauvegarde par lots de cellules (mise à jour creuse, valeur vide = efface). */
 export async function saveCells(
   actor: Actor,
@@ -217,19 +266,7 @@ export async function saveCells(
   if (!tab) throw new SheetsError("not_found", "Onglet introuvable.");
 
   for (const update of updates) {
-    if (
-      !Number.isInteger(update.row) ||
-      !Number.isInteger(update.col) ||
-      update.row < 0 ||
-      update.row >= MAX_ROWS ||
-      update.col < 0 ||
-      update.col >= MAX_COLS
-    ) {
-      throw new SheetsError("validation", "Cellule hors limites.");
-    }
-    if (update.value.length > MAX_CELL_CHARS) {
-      throw new SheetsError("validation", `Cellule limitée à ${MAX_CELL_CHARS} caractères.`);
-    }
+    assertCell(update);
   }
 
   const deletions = updates.filter((update) => update.value === "");
@@ -255,27 +292,62 @@ export async function saveCells(
       `);
     }
 
-    for (let offset = 0; offset < upserts.length; offset += SAVE_CHUNK) {
-      const chunk = upserts.slice(offset, offset + SAVE_CHUNK);
-      await tx
-        .insert(sheetCells)
-        .values(
-          chunk.map((update) => ({
-            tabId: tab.id,
-            row: update.row,
-            col: update.col,
-            value: update.value,
-          })),
-        )
-        .onConflictDoUpdate({
-          target: [sheetCells.tabId, sheetCells.row, sheetCells.col],
-          set: { value: sql`excluded.value` },
-        });
-    }
+    await upsertCells(tx, tab.id, upserts);
   });
 
   await touchEntry(actor, fileId).catch(() => undefined);
   return { saved: updates.length };
+}
+
+/**
+ * Importe un texte CSV dans un onglet : le contenu actuel de l'onglet est
+ * remplacé (suppression puis insertion par lots), les cellules vides n'étant
+ * pas stockées. Passe par `parseCsv` (limites de la grille) puis contrôle le
+ * plafond global de cellules avant toute écriture.
+ */
+export async function importCsv(
+  actor: Actor,
+  fileId: string,
+  input: { tabId: string; text: string },
+): Promise<{ imported: number }> {
+  const { spreadsheet } = await requireSpreadsheet(actor, fileId);
+  await requireEditor(actor, fileId);
+
+  const [tab] = await db()
+    .select({ id: sheetTabs.id })
+    .from(sheetTabs)
+    .where(and(eq(sheetTabs.id, input.tabId), eq(sheetTabs.spreadsheetId, spreadsheet.id)))
+    .limit(1);
+  if (!tab) throw new SheetsError("not_found", "Onglet introuvable.");
+
+  const rows = parseCsv(input.text);
+  // Une ligne vide n'est pas une donnée (le parseur restitue la ligne telle
+  // quelle ; le service ne garde que les lignes qui portent au moins une cellule).
+  const dataRows = rows.filter((row) => row.some((cell) => cell !== ""));
+  if (dataRows.length === 0) {
+    throw new SheetsError("validation", "Aucune donnée à importer.");
+  }
+  const total = dataRows.reduce((count, row) => count + row.length, 0);
+  if (total > MAX_CELLS_PER_IMPORT) {
+    throw new SheetsError("validation", `Import limité à ${MAX_CELLS_PER_IMPORT} cellules.`);
+  }
+
+  const updates: CellUpdate[] = [];
+  dataRows.forEach((row, rowIndex) => {
+    row.forEach((value, col) => {
+      if (value !== "") updates.push({ row: rowIndex, col, value });
+    });
+  });
+  for (const update of updates) assertCell(update);
+
+  await withTransaction(async (tx) => {
+    // Remplacement atomique : un import raté ne vide jamais l'onglet.
+    await tx.delete(sheetCells).where(eq(sheetCells.tabId, tab.id));
+    await upsertCells(tx, tab.id, updates);
+  });
+
+  await touchEntry(actor, fileId).catch(() => undefined);
+  return { imported: updates.length };
 }
 
 export async function addTab(actor: Actor, fileId: string, name: string): Promise<TabView[]> {

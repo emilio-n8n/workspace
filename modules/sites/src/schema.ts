@@ -46,7 +46,11 @@ export const sitesPages = pgTable(
       .notNull()
       .$onUpdate(() => new Date()),
   },
-  (table) => [uniqueIndex("sites_pages_site_slug_uidx").on(table.siteId, table.slug)],
+  (table) => [
+    uniqueIndex("sites_pages_site_slug_uidx").on(table.siteId, table.slug),
+    // Rendu / navigation : pages d'un site triées par position.
+    index("sites_pages_site_position_idx").on(table.siteId, table.position),
+  ],
 );
 
 export type SiteRow = typeof sitesSites.$inferSelect;

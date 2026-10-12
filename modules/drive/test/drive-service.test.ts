@@ -12,10 +12,12 @@ import {
   effectiveRole,
   getAncestors,
   listEntries,
+  listTrash,
   listVersions,
   purge,
   rename,
   replaceContent,
+  resolveRolesForEntries,
   restore,
   revokeShareLink,
   shareEntry,
@@ -177,7 +179,8 @@ describe("drive — partage et héritage", () => {
     });
 
     // Promotion editor.
-    await revokeGrant({ type: "file", id: file.entry.id, orgId: f.orgId }, granted!.id);
+    if (!granted) throw new Error("grant viewer attendu");
+    await revokeGrant({ type: "file", id: file.entry.id, orgId: f.orgId }, granted.id);
     await createGrant({
       resource: { type: "file", id: file.entry.id, orgId: f.orgId },
       subject: { kind: "user", id: f.bruno },
@@ -418,5 +421,116 @@ describe("drive — liens de partage", () => {
   it("un jeton invalide ou inconnu ne donne rien", async () => {
     expect(await accessShareLink("jeton-invalide-mais-assez-long")).toBeNull();
     expect(await accessShareLink("")).toBeNull();
+  });
+});
+
+describe("drive — résolution par lots et pagination", () => {
+  it("résolution par lots : héritage profond, identique à la résolution unitaire", async () => {
+    const root = await createFolder(f.actorAlice, { name: "Racine" });
+    const middle = await createFolder(f.actorAlice, { parentId: root.id, name: "Milieu" });
+    const { entry: deep } = await uploadFile(f.actorAlice, {
+      parentId: middle.id,
+      name: "profond.txt",
+      body: bufferOf("hérité"),
+    });
+
+    await shareEntry(f.actorAlice, root.id, {
+      subject: { kind: "user", id: f.bruno },
+      role: "viewer",
+    });
+    await shareEntry(f.actorAlice, middle.id, {
+      subject: { kind: "user", id: f.bruno },
+      role: "editor",
+    });
+
+    // Lot et résolution unitaire donnent le même rôle.
+    const roles = await resolveRolesForEntries(f.actorBruno, [
+      { id: root.id, ownerId: f.alice },
+      { id: middle.id, ownerId: f.alice },
+      { id: deep.id, ownerId: f.alice },
+    ]);
+    expect(roles.get(root.id)).toBe("viewer");
+    expect(roles.get(middle.id)).toBe("editor");
+    expect(roles.get(deep.id)).toBe("editor");
+    for (const id of [root.id, middle.id, deep.id]) {
+      expect(roles.get(id)).toBe(await effectiveRole(f.actorBruno, id));
+    }
+
+    // Visibilité : le dossier partagé expose son contenu, téléchargement compris.
+    expect((await listEntries(f.actorBruno, { parentId: root.id })).map((row) => row.name)).toEqual(
+      ["Milieu"],
+    );
+    expect(
+      (await listEntries(f.actorBruno, { parentId: middle.id })).map((row) => row.name),
+    ).toEqual(["profond.txt"]);
+    expect((await download(f.actorBruno, deep.id)).body.toString()).toBe("hérité");
+
+    // Sémantique historique : le grant le plus proche prime sur un grant plus élevé.
+    await shareEntry(f.actorAlice, deep.id, {
+      subject: { kind: "user", id: f.bruno },
+      role: "viewer",
+    });
+    expect(await effectiveRole(f.actorBruno, deep.id)).toBe("viewer");
+  });
+
+  it("résolution par lots : un grant expiré n'ouvre aucun accès", async () => {
+    const folder = await createFolder(f.actorAlice, { name: "Expiré" });
+    const { entry: child } = await uploadFile(f.actorAlice, {
+      parentId: folder.id,
+      name: "expire.txt",
+      body: bufferOf("x"),
+    });
+
+    await createGrant({
+      resource: { type: "file", id: folder.id, orgId: f.orgId },
+      subject: { kind: "user", id: f.bruno },
+      role: "editor",
+      actor: f.actorAlice,
+      expiresAt: new Date(Date.now() - 60_000),
+    });
+
+    const roles = await resolveRolesForEntries(f.actorBruno, [{ id: child.id, ownerId: f.alice }]);
+    expect(roles.get(child.id)).toBeNull();
+    expect(await effectiveRole(f.actorBruno, child.id)).toBeNull();
+    expect(await listEntries(f.actorBruno, { parentId: folder.id })).toEqual([]);
+    await expect(download(f.actorBruno, child.id)).rejects.toMatchObject({ code: "forbidden" });
+    await expect(rename(f.actorBruno, child.id, "interdit.txt")).rejects.toMatchObject({
+      code: "forbidden",
+    });
+  });
+
+  it("corbeille paginée : bornes limit/offset assainies", async () => {
+    const db = getDb();
+    const base = 1_700_000_000_000;
+
+    for (let index = 0; index < 5; index += 1) {
+      const { entry } = await uploadFile(f.actorAlice, {
+        name: `corbeille-${index}.txt`,
+        body: bufferOf(String(index)),
+      });
+      await trash(f.actorAlice, entry.id);
+      // Dates distinctes : ordre de corbeille déterministe pour les bornes de page.
+      await db
+        .update(driveFiles)
+        .set({ trashedAt: new Date(base + index * 1000) })
+        .where(eq(driveFiles.id, entry.id));
+    }
+
+    const page = async (options: { limit?: number; offset?: number }) =>
+      (await listTrash(f.actorAlice, options)).map((row) => row.name);
+
+    // Plus récemment jeté en premier ; bornes exactes de page.
+    expect(await page({ limit: 2, offset: 0 })).toEqual(["corbeille-4.txt", "corbeille-3.txt"]);
+    expect(await page({ limit: 2, offset: 2 })).toEqual(["corbeille-2.txt", "corbeille-1.txt"]);
+    expect(await page({ limit: 2, offset: 4 })).toEqual(["corbeille-0.txt"]);
+    expect(await page({ limit: 2, offset: 6 })).toEqual([]);
+
+    // Assainissement : limite ramenée dans 1..500, offset négatif → 0.
+    expect(await page({ limit: 0 })).toEqual(["corbeille-4.txt"]);
+    expect(await page({ limit: 9999 })).toHaveLength(5);
+    expect(await page({ limit: 2, offset: -3 })).toEqual(["corbeille-4.txt", "corbeille-3.txt"]);
+
+    // Sans options, la vue complète reste celle d'avant pour un petit ensemble.
+    expect(await page({})).toHaveLength(5);
   });
 });

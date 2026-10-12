@@ -1,4 +1,19 @@
-import { Badge, Button, cn, Dialog, IconGrid, Input, Label } from "@workspace/ui";
+import {
+  Alert,
+  Badge,
+  Button,
+  ConfirmDialog,
+  cn,
+  Dialog,
+  EmptyState,
+  IconCheckSquare,
+  IconGrid,
+  Input,
+  Label,
+  PageHeader,
+  Toasts,
+  useToasts,
+} from "@workspace/ui";
 import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   createTaskFn,
@@ -67,7 +82,7 @@ export function TasksView() {
   const [tasks, setTasks] = useState<TaskView[] | null>(null);
   const [members, setMembers] = useState<MemberView[]>([]);
   const [filter, setFilter] = useState<Filter>("all");
-  const [error, setError] = useState<string | null>(null);
+  const { toasts, push, dismiss } = useToasts();
   const [listsError, setListsError] = useState<string | null>(null);
   const [tasksError, setTasksError] = useState<string | null>(null);
   const tasksRequestRef = useRef(0);
@@ -128,8 +143,6 @@ export function TasksView() {
     if (activeListId) void loadTasks(activeListId);
   }, [activeListId, loadTasks]);
 
-  const dismissError = useCallback(() => setError(null), []);
-
   useEffect(() => {
     void loadWorkspace();
   }, [loadWorkspace]);
@@ -176,7 +189,7 @@ export function TasksView() {
       await loadLists();
       setActiveListId(created.id);
     } catch {
-      setError("Création de liste impossible.");
+      push("danger", "Création de liste impossible.");
     } finally {
       setCreatingList(false);
     }
@@ -194,7 +207,7 @@ export function TasksView() {
       setQuickTitle("");
       await loadTasks(activeListId);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Création impossible.");
+      push("danger", caught instanceof Error ? caught.message : "Création impossible.");
     } finally {
       setCreatingTask(false);
     }
@@ -209,7 +222,7 @@ export function TasksView() {
     try {
       await updateTaskFn({ data: { taskId: task.id, status: next } });
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Mise à jour impossible.");
+      push("danger", caught instanceof Error ? caught.message : "Mise à jour impossible.");
     } finally {
       if (activeListId) await loadTasks(activeListId);
     }
@@ -235,7 +248,7 @@ export function TasksView() {
       setEditTarget(null);
       if (activeListId) await loadTasks(activeListId);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Enregistrement impossible.");
+      push("danger", caught instanceof Error ? caught.message : "Enregistrement impossible.");
     } finally {
       setSavingEdit(false);
     }
@@ -250,7 +263,7 @@ export function TasksView() {
       setEditTarget(null);
       if (activeListId) await loadTasks(activeListId);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Suppression impossible.");
+      push("danger", caught instanceof Error ? caught.message : "Suppression impossible.");
     } finally {
       setSavingEdit(false);
     }
@@ -265,7 +278,7 @@ export function TasksView() {
       setActiveListId(null);
       await loadLists();
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Suppression impossible.");
+      push("danger", caught instanceof Error ? caught.message : "Suppression impossible.");
     } finally {
       setDeletingList(false);
     }
@@ -273,9 +286,7 @@ export function TasksView() {
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-4">
-      <header className="flex flex-wrap items-center gap-2">
-        <h1 className="font-display text-2xl font-semibold tracking-tight">Tâches</h1>
-      </header>
+      <PageHeader title="Tâches" />
 
       <div className="flex min-h-0 flex-1 gap-4">
         {/* Listes */}
@@ -289,19 +300,21 @@ export function TasksView() {
           <nav className="flex-1 overflow-y-auto p-2" aria-label="Listes de tâches">
             {lists === null ? (
               listsError ? (
-                <div className="flex flex-col items-start gap-2 px-2 py-1">
-                  <p role="alert" className="text-xs text-destructive">
-                    {listsError}
-                  </p>
+                <Alert tone="danger" className="flex flex-col items-start gap-2 text-xs">
+                  <span>{listsError}</span>
                   <Button variant="outline" size="sm" onClick={() => void loadWorkspace()}>
                     Réessayer
                   </Button>
-                </div>
+                </Alert>
               ) : (
                 <p className="px-2 text-xs text-muted-foreground">Chargement…</p>
               )
             ) : lists.length === 0 ? (
-              <p className="px-2 text-xs text-muted-foreground">Aucune liste pour le moment</p>
+              <EmptyState
+                icon={<IconGrid />}
+                title="Aucune liste pour le moment"
+                className="gap-1 border-0 bg-transparent px-2 py-4 text-xs text-muted-foreground"
+              />
             ) : (
               <ul className="flex flex-col gap-0.5">
                 {lists.map((list) => (
@@ -336,17 +349,17 @@ export function TasksView() {
         {/* Panneau de la liste active */}
         <section className="flex min-w-0 flex-1 flex-col rounded-lg border border-border bg-card">
           {activeList === null ? (
-            <div className="flex flex-1 flex-col items-center justify-center gap-3 text-center">
-              <IconGrid />
-              <p className="font-medium">Aucune liste sélectionnée</p>
-              <p className="max-w-xs text-sm text-muted-foreground">
-                Créez une liste pour organiser vos tâches — personnelles ou partagées avec votre
-                organisation.
-              </p>
-              <Button size="sm" onClick={() => setNewListOpen(true)}>
-                Nouvelle liste
-              </Button>
-            </div>
+            <EmptyState
+              icon={<IconGrid />}
+              title="Aucune liste sélectionnée"
+              hint="Créez une liste pour organiser vos tâches — personnelles ou partagées avec votre organisation."
+              action={
+                <Button size="sm" onClick={() => setNewListOpen(true)}>
+                  Nouvelle liste
+                </Button>
+              }
+              className="flex-1 justify-center border-0 bg-transparent"
+            />
           ) : (
             <>
               <header className="flex flex-wrap items-center gap-2 border-b border-border px-3 py-2">
@@ -354,7 +367,11 @@ export function TasksView() {
                 <Button variant="ghost" size="sm" onClick={() => setShareOpen(true)}>
                   Partager
                 </Button>
-                <RenameListButton list={activeList} onRenamed={loadLists} onError={setError} />
+                <RenameListButton
+                  list={activeList}
+                  onRenamed={loadLists}
+                  onError={(message) => push("danger", message)}
+                />
                 {activeList.isOwner ? (
                   <Button
                     variant="ghost"
@@ -405,22 +422,29 @@ export function TasksView() {
 
               <div className="min-h-0 flex-1 overflow-y-auto">
                 {tasksError ? (
-                  <div className="flex flex-col items-start gap-2 p-4">
-                    <p role="alert" className="text-sm text-destructive">
-                      {tasksError}
-                    </p>
-                    <Button variant="outline" size="sm" onClick={retryTasks}>
-                      Réessayer
-                    </Button>
+                  <div className="p-4">
+                    <Alert tone="danger" className="flex flex-col items-start gap-2">
+                      <span>{tasksError}</span>
+                      <Button variant="outline" size="sm" onClick={retryTasks}>
+                        Réessayer
+                      </Button>
+                    </Alert>
                   </div>
                 ) : visibleTasks === null ? (
                   <p className="p-4 text-sm text-muted-foreground">Chargement…</p>
                 ) : visibleTasks.length === 0 ? (
-                  <p className="p-4 text-sm text-muted-foreground">
-                    {filter === "all"
-                      ? "Aucune tâche dans cette liste. Ajoutez-en une ci-dessus."
-                      : "Aucune tâche ne correspond à ce filtre."}
-                  </p>
+                  <div className="p-4">
+                    <EmptyState
+                      icon={<IconCheckSquare />}
+                      title={
+                        filter === "all"
+                          ? "Aucune tâche dans cette liste."
+                          : "Aucune tâche ne correspond à ce filtre."
+                      }
+                      hint={filter === "all" ? "Ajoutez-en une ci-dessus." : undefined}
+                      className="border-0 bg-transparent p-0"
+                    />
+                  </div>
                 ) : (
                   <ul className="flex flex-col">
                     {visibleTasks.map((task) => {
@@ -513,7 +537,7 @@ export function TasksView() {
         </section>
       </div>
 
-      {error ? <ErrorToast key={error} message={error} onDismiss={dismissError} /> : null}
+      <Toasts toasts={toasts} dismiss={dismiss} />
 
       <Dialog open={newListOpen} onClose={() => setNewListOpen(false)} title="Nouvelle liste">
         <form onSubmit={onCreateList} method="post" className="flex flex-col gap-4">
@@ -664,59 +688,35 @@ export function TasksView() {
         ) : null}
       </Dialog>
 
-      <Dialog
+      <ConfirmDialog
         open={confirmDeleteTask}
         onClose={() => setConfirmDeleteTask(false)}
+        onConfirm={() => void onDeleteTask()}
         title="Supprimer la tâche ?"
-      >
-        <div className="flex flex-col gap-4">
-          <p className="text-sm text-muted-foreground">
-            {editTarget
-              ? `« ${editTarget.title} » sera définitivement supprimée.`
-              : "Cette tâche sera définitivement supprimée."}
-          </p>
-          <div className="flex justify-end gap-2">
-            <Button type="button" variant="ghost" onClick={() => setConfirmDeleteTask(false)}>
-              Annuler
-            </Button>
-            <Button
-              type="button"
-              variant="destructive"
-              loading={savingEdit}
-              onClick={() => void onDeleteTask()}
-            >
-              Supprimer
-            </Button>
-          </div>
-        </div>
-      </Dialog>
+        message={
+          editTarget
+            ? `« ${editTarget.title} » sera définitivement supprimée.`
+            : "Cette tâche sera définitivement supprimée."
+        }
+        confirmLabel="Supprimer"
+        busy={savingEdit}
+        destructive
+      />
 
-      <Dialog
+      <ConfirmDialog
         open={confirmDeleteList}
         onClose={() => setConfirmDeleteList(false)}
+        onConfirm={() => void onDeleteList()}
         title="Supprimer la liste et toutes ses tâches ?"
-      >
-        <div className="flex flex-col gap-4">
-          <p className="text-sm text-muted-foreground">
-            {activeList
-              ? `« ${activeList.name} » et toutes ses tâches seront définitivement supprimées.`
-              : "Cette liste et toutes ses tâches seront définitivement supprimées."}
-          </p>
-          <div className="flex justify-end gap-2">
-            <Button type="button" variant="ghost" onClick={() => setConfirmDeleteList(false)}>
-              Annuler
-            </Button>
-            <Button
-              type="button"
-              variant="destructive"
-              loading={deletingList}
-              onClick={() => void onDeleteList()}
-            >
-              Supprimer la liste
-            </Button>
-          </div>
-        </div>
-      </Dialog>
+        message={
+          activeList
+            ? `« ${activeList.name} » et toutes ses tâches seront définitivement supprimées.`
+            : "Cette liste et toutes ses tâches seront définitivement supprimées."
+        }
+        confirmLabel="Supprimer la liste"
+        busy={deletingList}
+        destructive
+      />
 
       <ShareListDialog
         list={activeList}
@@ -728,31 +728,6 @@ export function TasksView() {
   );
 }
 
-/** Toast d'erreur éphémère (fermeture manuelle ou après 6 s). */
-function ErrorToast({ message, onDismiss }: { message: string; onDismiss: () => void }) {
-  useEffect(() => {
-    const timeout = setTimeout(onDismiss, 6000);
-    return () => clearTimeout(timeout);
-  }, [onDismiss]);
-
-  return (
-    <div
-      role="alert"
-      className="fixed bottom-4 right-4 z-50 flex max-w-md items-start gap-2 rounded-md border border-destructive/40 bg-card px-3 py-2 text-sm text-destructive shadow-lift"
-    >
-      <span className="min-w-0 flex-1">{message}</span>
-      <button
-        type="button"
-        aria-label="Fermer le message"
-        onClick={onDismiss}
-        className="shrink-0 text-muted-foreground transition-colors hover:text-foreground"
-      >
-        ✕
-      </button>
-    </div>
-  );
-}
-
 function RenameListButton({
   list,
   onRenamed,
@@ -760,7 +735,7 @@ function RenameListButton({
 }: {
   list: TaskListView;
   onRenamed: () => Promise<void>;
-  onError: (message: string | null) => void;
+  onError: (message: string) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState(list.name);

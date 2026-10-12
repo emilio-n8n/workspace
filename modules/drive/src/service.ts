@@ -6,15 +6,15 @@ import {
   createGrant,
   type GrantRole,
   type GrantSubject,
+  highestRole,
   listGrantedResourceIds,
   listGrants,
   type ResourceGrantRow,
-  resolveRole,
   revokeGrant,
   roleSatisfies,
 } from "@workspace/permissions";
 import { getStorage, orgKey } from "@workspace/storage";
-import { and, asc, desc, eq, ilike, inArray, isNull, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, ilike, inArray, isNull, lt, or, sql } from "drizzle-orm";
 import {
   type DriveEntry,
   type DriveVersion,
@@ -79,35 +79,170 @@ function escapeLike(query: string): string {
  * Interprétation des grants propre au module (voir docs/architecture/module-boundaries.md).
  */
 export async function effectiveRole(actor: Actor, entryId: string): Promise<GrantRole | null> {
-  let currentId: string | null = entryId;
+  const roles = await resolveRolesForEntries(actor, [{ id: entryId }]);
+  return roles.get(entryId) ?? null;
+}
+
+/** Entrée à résoudre : `ownerId` évite une requête supplémentaire pour la propriété. */
+export type EntryRoleRef = { id: string; ownerId?: string | null };
+
+type EntryNode = {
+  parentId: string | null;
+  ownerId: string;
+  orgId: string;
+};
+
+/**
+ * Groupes de l'acteur (équipes de l'organisation active).
+ * Même lecture que `@workspace/permissions` — dupliquée volontairement pour ne pas
+ * dépendre d'une API non exportée du paquet.
+ */
+async function loadActorGroupIds(actor: Actor): Promise<Set<string>> {
+  if (actor.groupIds) return new Set(actor.groupIds);
+
+  const rows = await db()
+    .select({ teamId: coreSchema.teamMember.teamId })
+    .from(coreSchema.teamMember)
+    .innerJoin(coreSchema.team, eq(coreSchema.teamMember.teamId, coreSchema.team.id))
+    .where(
+      and(
+        eq(coreSchema.teamMember.userId, actor.userId),
+        eq(coreSchema.team.organizationId, actor.orgId),
+      ),
+    );
+
+  return new Set(rows.map((row) => row.teamId));
+}
+
+/** Rôle applicable le plus élevé par élément, en une requête pour tout le lot. */
+async function loadGrantedRolesByNode(
+  actor: Actor,
+  nodeIds: readonly string[],
+): Promise<Map<string, GrantRole>> {
+  const byNode = new Map<string, GrantRole>();
+  if (nodeIds.length === 0) return byNode;
+
+  const now = new Date();
+  const rows = await db()
+    .select({
+      resourceId: coreSchema.resourceGrants.resourceId,
+      subjectType: coreSchema.resourceGrants.subjectType,
+      subjectId: coreSchema.resourceGrants.subjectId,
+      role: coreSchema.resourceGrants.role,
+    })
+    .from(coreSchema.resourceGrants)
+    .where(
+      and(
+        eq(coreSchema.resourceGrants.resourceType, "file"),
+        eq(coreSchema.resourceGrants.orgId, actor.orgId),
+        inArray(coreSchema.resourceGrants.resourceId, [...nodeIds]),
+        or(
+          isNull(coreSchema.resourceGrants.expiresAt),
+          gt(coreSchema.resourceGrants.expiresAt, now),
+        ),
+      ),
+    );
+
+  if (rows.length === 0) return byNode;
+
+  const hasGroupGrants = rows.some((row) => row.subjectType === "group");
+  const groups = hasGroupGrants ? await loadActorGroupIds(actor) : null;
+
+  for (const row of rows) {
+    const applies =
+      (row.subjectType === "org" && row.subjectId === actor.orgId) ||
+      (row.subjectType === "user" && row.subjectId === actor.userId) ||
+      (row.subjectType === "group" && (groups?.has(row.subjectId) ?? false));
+    if (!applies) continue;
+    byNode.set(row.resourceId, highestRole(byNode.get(row.resourceId), row.role) ?? row.role);
+  }
+
+  return byNode;
+}
+
+/**
+ * Rôles effectifs d'un lot d'entrées — remplace la boucle `effectiveRole`
+ * O(N × profondeur) des listes par un parcours d'ancêtres par niveaux :
+ *
+ * 1. propriété (`ownerId === actor.userId`) résolue sans requête ;
+ * 2. ascendance commune : BFS par niveaux, une requête par profondeur (≤ 32)
+ *    au lieu d'une par entrée et par niveau ;
+ * 3. une seule requête de grants sur tout l'ensemble, puis marche entrée → racine
+ *    en mémoire (le grant le plus proche prime, comme `effectiveRole`).
+ *
+ * Un ancêtre absent (supprimé) ou hors organisation annule la résolution (null),
+ * exactement comme l'ancienne marche requête par requête.
+ */
+export async function resolveRolesForEntries(
+  actor: Actor,
+  entries: readonly EntryRoleRef[],
+): Promise<Map<string, GrantRole | null>> {
+  const roles = new Map<string, GrantRole | null>();
+  if (entries.length === 0) return roles;
+
+  const pending = new Set<string>();
+  for (const entry of entries) {
+    if (entry.ownerId === actor.userId) roles.set(entry.id, "owner");
+    else pending.add(entry.id);
+  }
+  if (pending.size === 0) return roles;
+
+  const nodes = new Map<string, EntryNode>();
+  let frontier = [...pending];
   let depth = 0;
 
-  while (currentId && depth < MAX_DEPTH) {
-    const [entry] = await db()
+  while (frontier.length > 0 && depth < MAX_DEPTH) {
+    const rows = await db()
       .select({
-        ownerId: driveFiles.ownerId,
+        id: driveFiles.id,
         parentId: driveFiles.parentId,
+        ownerId: driveFiles.ownerId,
         orgId: driveFiles.orgId,
       })
       .from(driveFiles)
-      .where(eq(driveFiles.id, currentId))
-      .limit(1);
+      .where(and(eq(driveFiles.orgId, actor.orgId), inArray(driveFiles.id, frontier)));
 
-    if (!entry || entry.orgId !== actor.orgId) return null;
-    if (entry.ownerId === actor.userId) return "owner";
+    const next = new Set<string>();
+    for (const row of rows) {
+      if (nodes.has(row.id)) continue;
+      nodes.set(row.id, { parentId: row.parentId, ownerId: row.ownerId, orgId: row.orgId });
+      if (row.parentId && !nodes.has(row.parentId)) next.add(row.parentId);
+    }
 
-    const role = await resolveRole(actor, {
-      type: "file",
-      id: currentId,
-      orgId: actor.orgId,
-    });
-    if (role) return role;
-
-    currentId = entry.parentId;
+    frontier = [...next];
     depth += 1;
   }
 
-  return null;
+  const grantedByNode = await loadGrantedRolesByNode(actor, [...nodes.keys()]);
+
+  for (const entryId of pending) {
+    let current: string | null = entryId;
+    let resolved: GrantRole | null = null;
+    let steps = 0;
+
+    while (current && steps < MAX_DEPTH) {
+      const node = nodes.get(current);
+      if (!node || node.orgId !== actor.orgId) {
+        resolved = null;
+        break;
+      }
+      if (node.ownerId === actor.userId) {
+        resolved = "owner";
+        break;
+      }
+      const granted = grantedByNode.get(current);
+      if (granted) {
+        resolved = granted;
+        break;
+      }
+      current = node.parentId;
+      steps += 1;
+    }
+
+    roles.set(entryId, resolved);
+  }
+
+  return roles;
 }
 
 async function assertDrive(
@@ -205,16 +340,12 @@ export async function listEntries(
     )
     .orderBy(sql`case when ${driveFiles.kind} = 'folder' then 0 else 1 end`, asc(driveFiles.name));
 
-  const visible: DriveEntry[] = [];
-  for (const row of rows) {
-    if (row.ownerId === actor.userId) {
-      visible.push(row);
-      continue;
-    }
-    const role = await effectiveRole(actor, row.id);
-    if (roleSatisfies(role, "read")) visible.push(row);
-  }
-  return visible;
+  const roles = await resolveRolesForEntries(
+    actor,
+    rows.map((row) => ({ id: row.id, ownerId: row.ownerId })),
+  );
+
+  return rows.filter((row) => roleSatisfies(roles.get(row.id), "read"));
 }
 
 export async function getEntry(
@@ -225,8 +356,34 @@ export async function getEntry(
   return assertDrive(actor, "read", entryId, options);
 }
 
-/** Corbeille personnelle : éléments dont l'acteur est propriétaire (MVP). */
-export async function listTrash(actor: Actor): Promise<DriveEntry[]> {
+const PAGE_SIZE_MAX = 500;
+const TRASH_PAGE_SIZE = 100;
+const RECENT_PAGE_SIZE = 200;
+/** Fenêtre minimale scannée pour « Récents » : conserve la sémantique historique (200 lignes). */
+const RECENT_SCAN_MIN = 200;
+
+function clampPageSize(value: number | undefined, fallback: number): number {
+  const requested = value === undefined || !Number.isFinite(value) ? fallback : Math.trunc(value);
+  return Math.min(Math.max(requested, 1), PAGE_SIZE_MAX);
+}
+
+function clampOffset(value: number | undefined): number {
+  if (value === undefined || !Number.isFinite(value)) return 0;
+  return Math.max(Math.trunc(value), 0);
+}
+
+/**
+ * Corbeille personnelle : éléments dont l'acteur est propriétaire (MVP).
+ * Paginée (limit 1..500, défaut 100 ; offset ≥ 0) — ordre stable par date de mise
+ * à la corbeille.
+ */
+export async function listTrash(
+  actor: Actor,
+  options: { limit?: number; offset?: number } = {},
+): Promise<DriveEntry[]> {
+  const limit = clampPageSize(options.limit, TRASH_PAGE_SIZE);
+  const offset = clampOffset(options.offset);
+
   return db()
     .select()
     .from(driveFiles)
@@ -237,34 +394,38 @@ export async function listTrash(actor: Actor): Promise<DriveEntry[]> {
         eq(driveFiles.status, "trashed"),
       ),
     )
-    .orderBy(desc(driveFiles.trashedAt));
+    .orderBy(desc(driveFiles.trashedAt), desc(driveFiles.id))
+    .limit(limit)
+    .offset(offset);
 }
 
-/** Éléments modifiés récemment (accessibles), du plus récent au plus ancien. */
+/**
+ * Éléments modifiés récemment (accessibles), du plus récent au plus ancien.
+ * Paginée (limit 1..500, défaut 200) ; `before` borne la date de modification
+ * (curseur) et la fenêtre scannée reste au moins 200 lignes, comme avant, pour
+ * que la visibilité des premières pages soit identique.
+ */
 export async function listRecent(
   actor: Actor,
-  options: { limit?: number } = {},
+  options: { limit?: number; before?: Date } = {},
 ): Promise<DriveEntry[]> {
-  const limit = Math.min(Math.max(options.limit ?? 50, 1), 100);
+  const limit = clampPageSize(options.limit, RECENT_PAGE_SIZE);
+  const conditions = [eq(driveFiles.orgId, actor.orgId), eq(driveFiles.status, "active")];
+  if (options.before) conditions.push(lt(driveFiles.updatedAt, options.before));
 
   const rows = await db()
     .select()
     .from(driveFiles)
-    .where(and(eq(driveFiles.orgId, actor.orgId), eq(driveFiles.status, "active")))
-    .orderBy(desc(driveFiles.updatedAt))
-    .limit(200);
+    .where(and(...conditions))
+    .orderBy(desc(driveFiles.updatedAt), desc(driveFiles.id))
+    .limit(Math.max(limit, RECENT_SCAN_MIN));
 
-  const visible: DriveEntry[] = [];
-  for (const row of rows) {
-    if (visible.length >= limit) break;
-    if (row.ownerId === actor.userId) {
-      visible.push(row);
-      continue;
-    }
-    const role = await effectiveRole(actor, row.id);
-    if (roleSatisfies(role, "read")) visible.push(row);
-  }
-  return visible;
+  const roles = await resolveRolesForEntries(
+    actor,
+    rows.map((row) => ({ id: row.id, ownerId: row.ownerId })),
+  );
+
+  return rows.filter((row) => roleSatisfies(roles.get(row.id), "read")).slice(0, limit);
 }
 
 /** Éléments partagés avec l'acteur (hors fichiers qu'il possède), avec son rôle. */
@@ -286,9 +447,17 @@ export async function listSharedWithMe(
     )
     .orderBy(desc(driveFiles.updatedAt));
 
+  const roles = await resolveRolesForEntries(
+    actor,
+    rows.map((row) => ({ id: row.id, ownerId: row.ownerId })),
+  );
+
   return rows
     .filter((row) => row.ownerId !== actor.userId)
-    .map((row) => ({ entry: row, role: granted.get(row.id) ?? "viewer" }));
+    .map((row) => ({
+      entry: row,
+      role: roles.get(row.id) ?? granted.get(row.id) ?? "viewer",
+    }));
 }
 
 /** Recherche littérale par nom parmi les fichiers accessibles (agents, UI). */
@@ -315,17 +484,12 @@ export async function searchEntries(
     .orderBy(desc(driveFiles.updatedAt))
     .limit(100);
 
-  const visible: DriveEntry[] = [];
-  for (const row of rows) {
-    if (visible.length >= limit) break;
-    if (row.ownerId === actor.userId) {
-      visible.push(row);
-      continue;
-    }
-    const role = await effectiveRole(actor, row.id);
-    if (roleSatisfies(role, "read")) visible.push(row);
-  }
-  return visible;
+  const roles = await resolveRolesForEntries(
+    actor,
+    rows.map((row) => ({ id: row.id, ownerId: row.ownerId })),
+  );
+
+  return rows.filter((row) => roleSatisfies(roles.get(row.id), "read")).slice(0, limit);
 }
 
 /**

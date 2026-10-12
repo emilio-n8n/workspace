@@ -1,5 +1,17 @@
 import { useNavigate } from "@tanstack/react-router";
-import { Badge, Button, Dialog, Input, Label } from "@workspace/ui";
+import {
+  Alert,
+  Badge,
+  Button,
+  ConfirmDialog,
+  Dialog,
+  EmptyState,
+  IconClipboard,
+  IconGraduation,
+  Input,
+  Label,
+  PageHeader,
+} from "@workspace/ui";
 import { type FormEvent, useCallback, useEffect, useState } from "react";
 import {
   type CourseDetail,
@@ -90,40 +102,41 @@ export function ClassroomView() {
 
   return (
     <div className="mx-auto flex max-w-4xl flex-col gap-4">
-      <header className="flex flex-wrap items-center gap-2">
-        <div>
-          <h1 className="font-display text-2xl font-semibold tracking-tight">Cours</h1>
-          <p className="text-sm text-muted-foreground">
-            Créez un cours ou rejoignez-en un avec le code fourni par l'enseignant.
-          </p>
-        </div>
-        <div className="ml-auto flex items-center gap-2">
-          <Button size="sm" variant="outline" onClick={() => setJoinOpen(true)}>
-            Rejoindre avec un code
-          </Button>
-          <Button size="sm" onClick={() => setCreateOpen(true)}>
-            Créer un cours
-          </Button>
-        </div>
-      </header>
+      <PageHeader
+        title="Cours"
+        description="Créez un cours ou rejoignez-en un avec le code fourni par l'enseignant."
+        actions={
+          <>
+            <Button size="sm" variant="outline" onClick={() => setJoinOpen(true)}>
+              Rejoindre avec un code
+            </Button>
+            <Button size="sm" onClick={() => setCreateOpen(true)}>
+              Créer un cours
+            </Button>
+          </>
+        }
+      />
 
-      {error ? (
-        <p
-          role="alert"
-          className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive"
-        >
-          {error}
-        </p>
-      ) : null}
+      {error ? <Alert tone="danger">{error}</Alert> : null}
 
       {loading ? (
         <p className="text-sm text-muted-foreground">Chargement…</p>
       ) : courses.length === 0 ? (
-        <div className="rounded-xl border border-border bg-card p-8 text-center">
-          <p className="text-sm text-muted-foreground">
-            Aucun cours pour le moment. Créez-en un ou rejoignez un cours existant.
-          </p>
-        </div>
+        <EmptyState
+          icon={<IconGraduation />}
+          title="Aucun cours pour le moment"
+          hint="Créez-en un ou rejoignez un cours existant."
+          action={
+            <div className="flex flex-wrap items-center justify-center gap-2">
+              <Button size="sm" variant="outline" onClick={() => setJoinOpen(true)}>
+                Rejoindre avec un code
+              </Button>
+              <Button size="sm" onClick={() => setCreateOpen(true)}>
+                Créer un cours
+              </Button>
+            </div>
+          }
+        />
       ) : (
         <ul className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           {courses.map((course) => (
@@ -391,23 +404,22 @@ export function CoursePage({ courseId }: { courseId: string }) {
         </div>
       </header>
 
-      {error ? (
-        <p
-          role="alert"
-          className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive"
-        >
-          {error}
-        </p>
-      ) : null}
+      {error ? <Alert tone="danger">{error}</Alert> : null}
 
       {course ? (
         course.assignments.length === 0 ? (
-          <div className="rounded-xl border border-border bg-card p-8 text-center">
-            <p className="text-sm text-muted-foreground">
-              Aucun devoir pour le moment.
-              {course.role === "teacher" ? " Créez-en un pour vos élèves." : ""}
-            </p>
-          </div>
+          <EmptyState
+            icon={<IconClipboard />}
+            title="Aucun devoir pour le moment"
+            hint={course.role === "teacher" ? "Créez-en un pour vos élèves." : undefined}
+            action={
+              course.role === "teacher" ? (
+                <Button size="sm" onClick={() => setAssignmentOpen(true)}>
+                  Nouveau devoir
+                </Button>
+              ) : undefined
+            }
+          />
         ) : (
           <ul className="flex flex-col gap-2">
             {course.assignments.map((assignment) => (
@@ -540,31 +552,21 @@ export function CoursePage({ courseId }: { courseId: string }) {
         </form>
       </Dialog>
 
-      <Dialog
+      <ConfirmDialog
         open={deleteTarget !== null}
         onClose={() => setDeleteTarget(null)}
+        onConfirm={() => void confirmDeleteAssignment()}
         title="Supprimer le devoir"
-      >
-        <div className="flex flex-col gap-4">
-          <p className="text-sm text-muted-foreground">
+        message={
+          <>
             Supprimer le devoir et toutes les copies ?
             {deleteTarget ? ` « ${deleteTarget.title} »` : ""}
-          </p>
-          <div className="flex justify-end gap-2">
-            <Button type="button" variant="ghost" onClick={() => setDeleteTarget(null)}>
-              Annuler
-            </Button>
-            <Button
-              type="button"
-              variant="destructive"
-              loading={busy}
-              onClick={() => void confirmDeleteAssignment()}
-            >
-              Supprimer le devoir
-            </Button>
-          </div>
-        </div>
-      </Dialog>
+          </>
+        }
+        confirmLabel="Supprimer le devoir"
+        busy={busy}
+        destructive
+      />
 
       <Dialog
         open={submitTarget !== null}

@@ -1,5 +1,15 @@
 import { useNavigate } from "@tanstack/react-router";
-import { Badge, Button, Dialog, Input, Label } from "@workspace/ui";
+import {
+  Alert,
+  Badge,
+  Button,
+  Dialog,
+  EmptyState,
+  IconClipboard,
+  Input,
+  Label,
+  PageHeader,
+} from "@workspace/ui";
 import { type FormEvent, useCallback, useEffect, useState } from "react";
 import { createFormFn, type FormSummary, listFormsFn } from "../server.ts";
 
@@ -64,35 +74,31 @@ export function FormsList() {
 
   return (
     <div className="mx-auto flex max-w-4xl flex-col gap-4">
-      <header className="flex flex-wrap items-center gap-2">
-        <div>
-          <h1 className="font-display text-2xl font-semibold tracking-tight">Formulaires</h1>
-          <p className="text-sm text-muted-foreground">
-            Créez, ouvrez et collectez des réponses — chaque formulaire vit aussi dans le Drive.
-          </p>
-        </div>
-        <Button className="ml-auto" size="sm" onClick={() => setDialogOpen(true)}>
-          Nouveau formulaire
-        </Button>
-      </header>
+      <PageHeader
+        title="Formulaires"
+        description="Créez, ouvrez et collectez des réponses — chaque formulaire vit aussi dans le Drive."
+        actions={
+          <Button size="sm" onClick={() => setDialogOpen(true)}>
+            Nouveau formulaire
+          </Button>
+        }
+      />
 
-      {error ? (
-        <p
-          role="alert"
-          className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive"
-        >
-          {error}
-        </p>
-      ) : null}
+      {error ? <Alert tone="danger">{error}</Alert> : null}
 
       {loading ? (
         <p className="text-sm text-muted-foreground">Chargement…</p>
       ) : forms.length === 0 ? (
-        <div className="rounded-xl border border-border bg-card p-8 text-center">
-          <p className="text-sm text-muted-foreground">
-            Aucun formulaire pour le moment. Créez-en un pour commencer à collecter des réponses.
-          </p>
-        </div>
+        <EmptyState
+          icon={<IconClipboard />}
+          title="Aucun formulaire pour le moment"
+          hint="Créez-en un pour commencer à collecter des réponses."
+          action={
+            <Button size="sm" onClick={() => setDialogOpen(true)}>
+              Nouveau formulaire
+            </Button>
+          }
+        />
       ) : (
         <ul className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           {forms.map((form) => (

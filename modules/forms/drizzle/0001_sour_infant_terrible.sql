@@ -1,0 +1,2 @@
+CREATE INDEX "form_responses_form_submitted_idx" ON "form_responses" USING btree ("form_id","submitted_at" DESC NULLS LAST);--> statement-breakpoint
+CREATE INDEX "forms_org_updated_idx" ON "forms" USING btree ("org_id","updated_at" DESC NULLS LAST);

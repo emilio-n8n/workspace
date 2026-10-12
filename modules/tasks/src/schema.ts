@@ -61,6 +61,9 @@ export const tasks = pgTable(
   },
   (table) => [
     index("tasks_list_status_idx").on(table.listId, table.status),
+    // Pas de colonne `position` (contrairement à l'audit) : l'écran d'une liste
+    // trie par échéance croissante — adaptation sur due_at.
+    index("tasks_list_due_idx").on(table.listId, table.dueAt),
     index("tasks_assignee_idx").on(table.assigneeId),
     index("tasks_due_idx").on(table.dueAt),
   ],

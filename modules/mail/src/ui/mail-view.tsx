@@ -1,4 +1,17 @@
-import { Badge, Button, cn, Dialog, Input, Label } from "@workspace/ui";
+import {
+  Badge,
+  Button,
+  ConfirmDialog,
+  cn,
+  Dialog,
+  EmptyState,
+  IconMail,
+  Input,
+  Label,
+  PageHeader,
+  Toasts,
+  useToasts,
+} from "@workspace/ui";
 import { type FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import {
   deleteMessageFn,
@@ -22,6 +35,13 @@ const FOLDER_LABELS: Record<FolderKey, string> = {
   sent: "Envoyés",
   drafts: "Brouillons",
   trash: "Corbeille",
+};
+
+const EMPTY_HINTS: Record<FolderKey, string> = {
+  inbox: "Votre boîte est vide.",
+  sent: "Aucun message envoyé.",
+  drafts: "Aucun brouillon en cours.",
+  trash: "La corbeille est vide.",
 };
 
 function fmtDate(iso: string): string {
@@ -64,7 +84,8 @@ export function MailView() {
   const [composer, setComposer] = useState<Composer | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const { toasts, push, dismiss } = useToasts();
+  const [confirmDeleteForever, setConfirmDeleteForever] = useState(false);
 
   const refreshFolders = useCallback(async () => {
     setFolders(await listFoldersFn());
@@ -84,12 +105,12 @@ export function MailView() {
         setAddress(mailbox.address);
         await refreshFolders();
       } catch (caught) {
-        setError(caught instanceof Error ? caught.message : "Chargement impossible.");
+        push("danger", caught instanceof Error ? caught.message : "Chargement impossible.");
       } finally {
         setLoading(false);
       }
     })();
-  }, [refreshFolders]);
+  }, [refreshFolders, push]);
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -115,7 +136,7 @@ export function MailView() {
       setSelected(await getMessageFn({ data: { messageId } }));
       await refreshAll();
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Ouverture impossible.");
+      push("danger", caught instanceof Error ? caught.message : "Ouverture impossible.");
     }
   }
 
@@ -139,7 +160,6 @@ export function MailView() {
     event.preventDefault();
     if (!composer) return;
     setBusy(true);
-    setError(null);
     try {
       const result = await sendMailFn({
         data: {
@@ -151,14 +171,14 @@ export function MailView() {
         },
       });
       if (result.sendError) {
-        setError(result.sendError);
+        push("danger", result.sendError);
       }
       setComposer(null);
       setFolder("sent");
       setSelected(null);
       await refreshAll();
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Envoi impossible.");
+      push("danger", caught instanceof Error ? caught.message : "Envoi impossible.");
     } finally {
       setBusy(false);
     }
@@ -180,7 +200,7 @@ export function MailView() {
       setComposer(null);
       await refreshAll();
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Enregistrement impossible.");
+      push("danger", caught instanceof Error ? caught.message : "Enregistrement impossible.");
     } finally {
       setBusy(false);
     }
@@ -223,10 +243,11 @@ export function MailView() {
     setBusy(true);
     try {
       await deleteMessageFn({ data: { messageId: selected.id } });
+      setConfirmDeleteForever(false);
       setSelected(null);
       await refreshAll();
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Suppression impossible.");
+      push("danger", caught instanceof Error ? caught.message : "Suppression impossible.");
     } finally {
       setBusy(false);
     }
@@ -235,239 +256,248 @@ export function MailView() {
   const folderEntries = useMemo(() => Object.keys(FOLDER_LABELS) as FolderKey[], []);
 
   return (
-    <div className="mx-auto flex h-[calc(100vh-8.5rem)] max-w-6xl gap-3">
-      <aside className="flex w-52 shrink-0 flex-col gap-3 rounded-xl border border-border bg-card p-3">
-        <Button size="sm" onClick={() => openComposer()}>
-          Écrire
-        </Button>
-        <p className="truncate text-xs text-muted-foreground" title={address}>
-          {address || "…"}
-        </p>
-        <nav aria-label="Dossiers" className="flex flex-col gap-1">
-          {folderEntries.map((key) => {
-            const counts = folders?.[key];
-            return (
-              <button
-                key={key}
-                type="button"
-                onClick={() => {
-                  setFolder(key);
-                  setSelected(null);
-                  setUnreadOnly(false);
-                  setStarredOnly(false);
-                }}
-                className={cn(
-                  "flex items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm transition-colors",
-                  key === folder ? "bg-accent text-accent-foreground" : "hover:bg-muted",
-                )}
-              >
-                <span className="truncate">{FOLDER_LABELS[key]}</span>
-                <span className="ml-auto flex items-center gap-1">
-                  {counts && counts.unread > 0 && key !== "sent" && key !== "drafts" ? (
-                    <Badge>{counts.unread}</Badge>
-                  ) : null}
-                  <span className="text-xs text-muted-foreground">{counts?.total ?? ""}</span>
-                </span>
-              </button>
-            );
-          })}
-        </nav>
-        <div className="mt-auto flex flex-col gap-1 text-xs">
-          <button
-            type="button"
-            onClick={() => setUnreadOnly((current) => !current)}
-            className={cn(
-              "rounded-lg px-2 py-1.5 text-left transition-colors",
-              unreadOnly ? "bg-accent text-accent-foreground" : "hover:bg-muted",
-            )}
-          >
-            Non lus uniquement
-          </button>
-          <button
-            type="button"
-            onClick={() => setStarredOnly((current) => !current)}
-            className={cn(
-              "rounded-lg px-2 py-1.5 text-left transition-colors",
-              starredOnly ? "bg-accent text-accent-foreground" : "hover:bg-muted",
-            )}
-          >
-            Suivis ★
-          </button>
-        </div>
-      </aside>
+    <div className="mx-auto flex h-[calc(100vh-8.5rem)] max-w-6xl flex-col gap-3">
+      <PageHeader
+        title="Mail"
+        description={address ? `Boîte de ${address}` : undefined}
+        actions={
+          <Button size="sm" onClick={() => openComposer()}>
+            Écrire
+          </Button>
+        }
+      />
 
-      <section className="flex w-80 shrink-0 flex-col rounded-xl border border-border bg-card">
-        <div className="border-b border-border p-2">
-          <Input
-            aria-label="Rechercher dans les messages"
-            placeholder="Rechercher…"
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            className="h-8"
-          />
-        </div>
-        <ul className="flex flex-1 flex-col divide-y divide-border overflow-y-auto">
-          {loading ? (
-            <li className="p-3 text-xs text-muted-foreground">Chargement…</li>
-          ) : messages.length === 0 ? (
-            <li className="p-3 text-xs text-muted-foreground">Aucun message.</li>
-          ) : (
-            messages.map((message) => (
-              <li key={message.id}>
+      <div className="flex min-h-0 flex-1 gap-3">
+        <aside className="flex w-52 shrink-0 flex-col gap-3 rounded-xl border border-border bg-card p-3">
+          <p className="truncate text-xs text-muted-foreground" title={address}>
+            {address || "…"}
+          </p>
+          <nav aria-label="Dossiers" className="flex flex-col gap-1">
+            {folderEntries.map((key) => {
+              const counts = folders?.[key];
+              return (
                 <button
+                  key={key}
                   type="button"
-                  onClick={() => void openMessage(message.id)}
+                  onClick={() => {
+                    setFolder(key);
+                    setSelected(null);
+                    setUnreadOnly(false);
+                    setStarredOnly(false);
+                  }}
                   className={cn(
-                    "flex w-full flex-col gap-0.5 px-3 py-2 text-left text-sm transition-colors hover:bg-muted",
-                    message.id === selected?.id && "bg-accent/60",
-                    !message.read && "font-medium",
+                    "flex items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm transition-colors",
+                    key === folder ? "bg-accent text-accent-foreground" : "hover:bg-muted",
                   )}
                 >
-                  <span className="flex items-center gap-2">
-                    {!message.read ? (
-                      <span
-                        aria-label="Non lu"
-                        className="size-1.5 rounded-full bg-primary"
-                        role="img"
-                      />
+                  <span className="truncate">{FOLDER_LABELS[key]}</span>
+                  <span className="ml-auto flex items-center gap-1">
+                    {counts && counts.unread > 0 && key !== "sent" && key !== "drafts" ? (
+                      <Badge>{counts.unread}</Badge>
                     ) : null}
-                    <span className="min-w-0 flex-1 truncate">
-                      {folder === "sent" || folder === "drafts"
-                        ? `À : ${message.toAddresses.join(", ") || "(sans destinataire)"}`
-                        : (message.fromName ?? message.fromAddress)}
-                    </span>
-                    <span className="text-[11px] text-muted-foreground">
-                      {fmtDate(message.createdAt)}
-                    </span>
-                  </span>
-                  <span className="truncate text-xs text-muted-foreground">
-                    {message.subject || "(sans objet)"}
-                  </span>
-                  <span className="flex items-center gap-1">
-                    <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
-                      {message.snippet}
-                    </span>
-                    {message.starred ? <span className="text-attention">★</span> : null}
-                    {message.sendError ? (
-                      <span className="text-[10px] text-destructive" title={message.sendError}>
-                        ⚠
-                      </span>
-                    ) : null}
+                    <span className="text-xs text-muted-foreground">{counts?.total ?? ""}</span>
                   </span>
                 </button>
-              </li>
-            ))
-          )}
-        </ul>
-      </section>
+              );
+            })}
+          </nav>
+          <div className="mt-auto flex flex-col gap-1 text-xs">
+            <button
+              type="button"
+              onClick={() => setUnreadOnly((current) => !current)}
+              className={cn(
+                "rounded-lg px-2 py-1.5 text-left transition-colors",
+                unreadOnly ? "bg-accent text-accent-foreground" : "hover:bg-muted",
+              )}
+            >
+              Non lus uniquement
+            </button>
+            <button
+              type="button"
+              onClick={() => setStarredOnly((current) => !current)}
+              className={cn(
+                "rounded-lg px-2 py-1.5 text-left transition-colors",
+                starredOnly ? "bg-accent text-accent-foreground" : "hover:bg-muted",
+              )}
+            >
+              Suivis ★
+            </button>
+          </div>
+        </aside>
 
-      <section className="flex min-w-0 flex-1 flex-col rounded-xl border border-border bg-card">
-        {selected ? (
-          <>
-            <header className="flex flex-wrap items-start gap-2 border-b border-border p-4">
-              <div className="min-w-0 flex-1">
-                <h2 className="font-display text-lg font-semibold tracking-tight">
-                  {selected.subject || "(sans objet)"}
-                </h2>
-                <p className="text-xs text-muted-foreground">
-                  {selected.fromName ?? selected.fromAddress} &lt;{selected.fromAddress}&gt; ·{" "}
-                  {new Date(selected.sentAt ?? selected.createdAt).toLocaleString("fr-FR")}
-                </p>
-                <p className="text-xs text-muted-foreground">
-                  À : {selected.toAddresses.join(", ")}
-                  {selected.ccAddresses.length > 0
-                    ? ` · Cc : ${selected.ccAddresses.join(", ")}`
-                    : ""}
-                </p>
-                {selected.sendError ? (
-                  <p className="mt-1 rounded-md border border-destructive/40 bg-destructive/5 px-2 py-1 text-xs text-destructive">
-                    {selected.sendError}
+        <section className="flex w-80 shrink-0 flex-col rounded-xl border border-border bg-card">
+          <div className="border-b border-border p-2">
+            <Input
+              aria-label="Rechercher dans les messages"
+              placeholder="Rechercher…"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              className="h-8"
+            />
+          </div>
+          {loading ? (
+            <ul className="flex flex-1 flex-col divide-y divide-border overflow-y-auto">
+              <li className="p-3 text-xs text-muted-foreground">Chargement…</li>
+            </ul>
+          ) : messages.length === 0 ? (
+            <EmptyState
+              icon={<IconMail />}
+              title="Aucun message."
+              hint={EMPTY_HINTS[folder]}
+              className="flex-1 justify-center border-0 bg-transparent"
+            />
+          ) : (
+            <ul className="flex flex-1 flex-col divide-y divide-border overflow-y-auto">
+              {messages.map((message) => (
+                <li key={message.id}>
+                  <button
+                    type="button"
+                    onClick={() => void openMessage(message.id)}
+                    className={cn(
+                      "flex w-full flex-col gap-0.5 px-3 py-2 text-left text-sm transition-colors hover:bg-muted",
+                      message.id === selected?.id && "bg-accent/60",
+                      !message.read && "font-medium",
+                    )}
+                  >
+                    <span className="flex items-center gap-2">
+                      {!message.read ? (
+                        <span
+                          aria-label="Non lu"
+                          className="size-1.5 rounded-full bg-primary"
+                          role="img"
+                        />
+                      ) : null}
+                      <span className="min-w-0 flex-1 truncate">
+                        {folder === "sent" || folder === "drafts"
+                          ? `À : ${message.toAddresses.join(", ") || "(sans destinataire)"}`
+                          : (message.fromName ?? message.fromAddress)}
+                      </span>
+                      <span className="text-[11px] text-muted-foreground">
+                        {fmtDate(message.createdAt)}
+                      </span>
+                    </span>
+                    <span className="truncate text-xs text-muted-foreground">
+                      {message.subject || "(sans objet)"}
+                    </span>
+                    <span className="flex items-center gap-1">
+                      <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
+                        {message.snippet}
+                      </span>
+                      {message.starred ? <span className="text-attention">★</span> : null}
+                      {message.sendError ? (
+                        <span className="text-[10px] text-destructive" title={message.sendError}>
+                          ⚠
+                        </span>
+                      ) : null}
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+
+        <section className="flex min-w-0 flex-1 flex-col rounded-xl border border-border bg-card">
+          {selected ? (
+            <>
+              <header className="flex flex-wrap items-start gap-2 border-b border-border p-4">
+                <div className="min-w-0 flex-1">
+                  <h2 className="font-display text-lg font-semibold tracking-tight">
+                    {selected.subject || "(sans objet)"}
+                  </h2>
+                  <p className="text-xs text-muted-foreground">
+                    {selected.fromName ?? selected.fromAddress} &lt;{selected.fromAddress}&gt; ·{" "}
+                    {new Date(selected.sentAt ?? selected.createdAt).toLocaleString("fr-FR")}
                   </p>
-                ) : null}
-              </div>
-              <div className="flex flex-wrap items-center gap-1">
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  aria-label={selected.starred ? "Retirer le suivi" : "Suivre"}
-                  onClick={() => void onToggleStar(selected.id)}
-                >
-                  {selected.starred ? "★" : "☆"}
-                </Button>
-                {folder !== "sent" && folder !== "drafts" ? (
-                  <Button size="sm" variant="outline" onClick={reply}>
-                    Répondre
-                  </Button>
-                ) : null}
-                {folder === "drafts" ? (
+                  <p className="text-xs text-muted-foreground">
+                    À : {selected.toAddresses.join(", ")}
+                    {selected.ccAddresses.length > 0
+                      ? ` · Cc : ${selected.ccAddresses.join(", ")}`
+                      : ""}
+                  </p>
+                  {selected.sendError ? (
+                    <p className="mt-1 rounded-md border border-destructive/40 bg-destructive/5 px-2 py-1 text-xs text-destructive">
+                      {selected.sendError}
+                    </p>
+                  ) : null}
+                </div>
+                <div className="flex flex-wrap items-center gap-1">
                   <Button
                     size="sm"
-                    variant="outline"
-                    onClick={() =>
-                      openComposer({
-                        id: selected.id,
-                        to: selected.toAddresses.join(", "),
-                        cc: selected.ccAddresses.join(", "),
-                        subject: selected.subject,
-                        body: selected.body,
-                      })
-                    }
+                    variant="ghost"
+                    aria-label={selected.starred ? "Retirer le suivi" : "Suivre"}
+                    onClick={() => void onToggleStar(selected.id)}
                   >
-                    Modifier
+                    {selected.starred ? "★" : "☆"}
                   </Button>
-                ) : null}
-                {folder === "trash" ? (
-                  <>
+                  {folder !== "sent" && folder !== "drafts" ? (
+                    <Button size="sm" variant="outline" onClick={reply}>
+                      Répondre
+                    </Button>
+                  ) : null}
+                  {folder === "drafts" ? (
                     <Button
                       size="sm"
                       variant="outline"
-                      loading={busy}
-                      onClick={() => void onRestore()}
+                      onClick={() =>
+                        openComposer({
+                          id: selected.id,
+                          to: selected.toAddresses.join(", "),
+                          cc: selected.ccAddresses.join(", "),
+                          subject: selected.subject,
+                          body: selected.body,
+                        })
+                      }
                     >
-                      Restaurer
+                      Modifier
                     </Button>
+                  ) : null}
+                  {folder === "trash" ? (
+                    <>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        loading={busy}
+                        onClick={() => void onRestore()}
+                      >
+                        Restaurer
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="text-destructive"
+                        loading={busy}
+                        onClick={() => setConfirmDeleteForever(true)}
+                      >
+                        Supprimer définitivement
+                      </Button>
+                    </>
+                  ) : (
                     <Button
                       size="sm"
                       variant="ghost"
                       className="text-destructive"
                       loading={busy}
-                      onClick={() => void onDeleteForever()}
+                      onClick={() => void onTrash()}
                     >
-                      Supprimer définitivement
+                      Corbeille
                     </Button>
-                  </>
-                ) : (
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    className="text-destructive"
-                    loading={busy}
-                    onClick={() => void onTrash()}
-                  >
-                    Corbeille
-                  </Button>
-                )}
+                  )}
+                </div>
+              </header>
+              <div className="flex-1 overflow-y-auto whitespace-pre-wrap p-4 text-sm">
+                {selected.body || "(message vide)"}
               </div>
-            </header>
-            <div className="flex-1 overflow-y-auto whitespace-pre-wrap p-4 text-sm">
-              {selected.body || "(message vide)"}
+            </>
+          ) : (
+            <div className="grid flex-1 place-items-center p-6">
+              <p className="text-sm text-muted-foreground">Sélectionnez un message.</p>
             </div>
-          </>
-        ) : (
-          <div className="grid flex-1 place-items-center p-6">
-            <p className="text-sm text-muted-foreground">Sélectionnez un message.</p>
-          </div>
-        )}
-      </section>
+          )}
+        </section>
+      </div>
 
-      {error ? (
-        <p
-          role="alert"
-          className="fixed bottom-4 right-4 max-w-md rounded-md border border-destructive/40 bg-card px-3 py-2 text-sm text-destructive shadow-lift"
-        >
-          {error}
-        </p>
-      ) : null}
+      <Toasts toasts={toasts} dismiss={dismiss} />
 
       <Dialog
         open={composer !== null}
@@ -532,6 +562,17 @@ export function MailView() {
           </form>
         ) : null}
       </Dialog>
+
+      <ConfirmDialog
+        open={confirmDeleteForever}
+        onClose={() => setConfirmDeleteForever(false)}
+        onConfirm={() => void onDeleteForever()}
+        title="Supprimer le message ?"
+        message="Ce message sera définitivement supprimé."
+        confirmLabel="Supprimer définitivement"
+        busy={busy}
+        destructive
+      />
     </div>
   );
 }

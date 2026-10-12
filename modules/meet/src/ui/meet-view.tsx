@@ -1,5 +1,17 @@
 import { useNavigate } from "@tanstack/react-router";
-import { Button, Dialog, Input, Label } from "@workspace/ui";
+import {
+  Alert,
+  Button,
+  ConfirmDialog,
+  Dialog,
+  EmptyState,
+  IconVideo,
+  Input,
+  Label,
+  PageHeader,
+  Toasts,
+  useToasts,
+} from "@workspace/ui";
 import { type FormEvent, useCallback, useEffect, useState } from "react";
 import { createRoomFn, deleteRoomFn, listRoomsFn, type RoomView } from "../server.ts";
 
@@ -20,7 +32,8 @@ export function MeetView() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
-  const [copied, setCopied] = useState<string | null>(null);
+  const [roomToDelete, setRoomToDelete] = useState<RoomView | null>(null);
+  const { toasts, push, dismiss } = useToasts();
 
   const refresh = useCallback(async () => {
     try {
@@ -66,43 +79,44 @@ export function MeetView() {
     }
   }
 
+  async function confirmDelete() {
+    if (!roomToDelete) return;
+    await onDelete(roomToDelete.slug);
+    setRoomToDelete(null);
+  }
+
   async function copyLink(slug: string) {
     await navigator.clipboard?.writeText(`${window.location.origin}/room/${slug}`);
-    setCopied(slug);
-    setTimeout(() => setCopied(null), 2000);
+    push("success", "Copié !");
   }
 
   return (
     <div className="mx-auto flex max-w-4xl flex-col gap-4">
-      <header className="flex flex-wrap items-center gap-2">
-        <div>
-          <h1 className="font-display text-2xl font-semibold tracking-tight">Visioconférences</h1>
-          <p className="text-sm text-muted-foreground">
-            Salles persistantes avec lien — le média passe par votre serveur LiveKit (optionnel).
-          </p>
-        </div>
-        <Button className="ml-auto" size="sm" onClick={() => setDialogOpen(true)}>
-          Nouvelle salle
-        </Button>
-      </header>
+      <PageHeader
+        title="Visioconférences"
+        description="Salles persistantes avec lien — le média passe par votre serveur LiveKit (optionnel)."
+        actions={
+          <Button size="sm" onClick={() => setDialogOpen(true)}>
+            Nouvelle salle
+          </Button>
+        }
+      />
 
-      {error ? (
-        <p
-          role="alert"
-          className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive"
-        >
-          {error}
-        </p>
-      ) : null}
+      {error ? <Alert tone="danger">{error}</Alert> : null}
 
       {loading ? (
         <p className="text-sm text-muted-foreground">Chargement…</p>
       ) : rooms.length === 0 ? (
-        <div className="rounded-xl border border-border bg-card p-8 text-center">
-          <p className="text-sm text-muted-foreground">
-            Aucune salle pour le moment. Créez-en une et partagez son lien.
-          </p>
-        </div>
+        <EmptyState
+          icon={<IconVideo />}
+          title="Aucune salle pour le moment."
+          hint="Créez-en une et partagez son lien."
+          action={
+            <Button size="sm" onClick={() => setDialogOpen(true)}>
+              Nouvelle salle
+            </Button>
+          }
+        />
       ) : (
         <ul className="flex flex-col gap-2">
           {rooms.map((room) => (
@@ -117,7 +131,7 @@ export function MeetView() {
                 </p>
               </div>
               <Button size="sm" variant="outline" onClick={() => void copyLink(room.slug)}>
-                {copied === room.slug ? "Copié !" : "Copier le lien"}
+                Copier le lien
               </Button>
               <Button
                 size="sm"
@@ -131,7 +145,7 @@ export function MeetView() {
                   variant="ghost"
                   className="text-destructive"
                   loading={busy}
-                  onClick={() => void onDelete(room.slug)}
+                  onClick={() => setRoomToDelete(room)}
                 >
                   Supprimer
                 </Button>
@@ -140,6 +154,18 @@ export function MeetView() {
           ))}
         </ul>
       )}
+
+      <Toasts toasts={toasts} dismiss={dismiss} />
+
+      <ConfirmDialog
+        open={roomToDelete !== null}
+        onClose={() => setRoomToDelete(null)}
+        onConfirm={() => void confirmDelete()}
+        title={`Supprimer la salle « ${roomToDelete?.name ?? ""} » ?`}
+        message="Cette salle et son lien seront supprimés."
+        destructive
+        busy={busy}
+      />
 
       <Dialog open={dialogOpen} onClose={() => setDialogOpen(false)} title="Nouvelle salle">
         <form onSubmit={onCreate} method="post" className="flex flex-col gap-4">

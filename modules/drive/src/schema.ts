@@ -47,11 +47,14 @@ export const driveFiles = pgTable(
   },
   (table) => [
     index("drive_files_org_parent_idx").on(table.orgId, table.parentId, table.status),
+    index("drive_files_org_trashed_idx").on(table.orgId, table.trashedAt),
     index("drive_files_owner_idx").on(table.ownerId),
     // Unicité des noms actifs par (organisation, dossier) — la racine compte comme un dossier.
     uniqueIndex("drive_files_name_uidx")
       .on(table.orgId, sql`coalesce((${table.parentId})::text, 'root')`, table.name)
       .where(sql`${table.status} = 'active'`),
+    // NB : l'index trigram de recherche (`drive_files_name_trgm_idx`, gin_trgm_ops)
+    // ne peut pas être exprimé ici ; il est créé par la migration 0001 (manuel).
   ],
 );
 

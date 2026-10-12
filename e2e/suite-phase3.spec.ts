@@ -54,7 +54,7 @@ test("forms : création, publication, réponse publique et lecture des réponses
   await publicPage.close();
 
   // Réponses côté propriétaire.
-  await page.getByRole("button", { name: "Réponses" }).click();
+  await page.getByRole("tab", { name: "Réponses" }).click();
   await expect(page.getByText("Tout va bien")).toBeVisible({ timeout: 15_000 });
   await page.screenshot({ path: "e2e/screenshots/forms.png", fullPage: true });
 });

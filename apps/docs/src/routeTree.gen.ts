@@ -11,6 +11,7 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as AppRouteImport } from './routes/_app'
 import { Route as AppIndexRouteImport } from './routes/_app/index'
+import { Route as ApiHealthRouteImport } from './routes/api/health'
 import { Route as AppDocFileIdRouteImport } from './routes/_app/doc.$fileId'
 import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
 import { Route as ApiDocsExportFileIdRouteImport } from './routes/api/docs/export/$fileId'
@@ -23,6 +24,11 @@ const AppIndexRoute = AppIndexRouteImport.update({
   id: '/',
   path: '/',
   getParentRoute: () => AppRoute,
+} as any)
+const ApiHealthRoute = ApiHealthRouteImport.update({
+  id: '/api/health',
+  path: '/api/health',
+  getParentRoute: () => rootRouteImport,
 } as any)
 const AppDocFileIdRoute = AppDocFileIdRouteImport.update({
   id: '/doc/$fileId',
@@ -42,11 +48,13 @@ const ApiDocsExportFileIdRoute = ApiDocsExportFileIdRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof AppIndexRoute
+  '/api/health': typeof ApiHealthRoute
   '/doc/$fileId': typeof AppDocFileIdRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/docs/export/$fileId': typeof ApiDocsExportFileIdRoute
 }
 export interface FileRoutesByTo {
+  '/api/health': typeof ApiHealthRoute
   '/': typeof AppIndexRoute
   '/doc/$fileId': typeof AppDocFileIdRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
@@ -55,6 +63,7 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/_app': typeof AppRouteWithChildren
+  '/api/health': typeof ApiHealthRoute
   '/_app/': typeof AppIndexRoute
   '/_app/doc/$fileId': typeof AppDocFileIdRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
@@ -62,12 +71,23 @@ export interface FileRoutesById {
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/doc/$fileId' | '/api/auth/$' | '/api/docs/export/$fileId'
+  fullPaths:
+    | '/'
+    | '/api/health'
+    | '/doc/$fileId'
+    | '/api/auth/$'
+    | '/api/docs/export/$fileId'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/doc/$fileId' | '/api/auth/$' | '/api/docs/export/$fileId'
+  to:
+    | '/api/health'
+    | '/'
+    | '/doc/$fileId'
+    | '/api/auth/$'
+    | '/api/docs/export/$fileId'
   id:
     | '__root__'
     | '/_app'
+    | '/api/health'
     | '/_app/'
     | '/_app/doc/$fileId'
     | '/api/auth/$'
@@ -76,6 +96,7 @@ export interface FileRouteTypes {
 }
 export interface RootRouteChildren {
   AppRoute: typeof AppRouteWithChildren
+  ApiHealthRoute: typeof ApiHealthRoute
   ApiAuthSplatRoute: typeof ApiAuthSplatRoute
   ApiDocsExportFileIdRoute: typeof ApiDocsExportFileIdRoute
 }
@@ -95,6 +116,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/'
       preLoaderRoute: typeof AppIndexRouteImport
       parentRoute: typeof AppRoute
+    }
+    '/api/health': {
+      id: '/api/health'
+      path: '/api/health'
+      fullPath: '/api/health'
+      preLoaderRoute: typeof ApiHealthRouteImport
+      parentRoute: typeof rootRouteImport
     }
     '/_app/doc/$fileId': {
       id: '/_app/doc/$fileId'
@@ -134,6 +162,7 @@ const AppRouteWithChildren = AppRoute._addFileChildren(AppRouteChildren)
 
 const rootRouteChildren: RootRouteChildren = {
   AppRoute: AppRouteWithChildren,
+  ApiHealthRoute: ApiHealthRoute,
   ApiAuthSplatRoute: ApiAuthSplatRoute,
   ApiDocsExportFileIdRoute: ApiDocsExportFileIdRoute,
 }

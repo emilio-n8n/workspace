@@ -73,6 +73,8 @@ export const calendarAttendees = pgTable(
   (table) => [
     uniqueIndex("calendar_attendees_event_email_uidx").on(table.eventId, table.email),
     index("calendar_attendees_user_idx").on(table.userId),
+    // Recherche des invitations par adresse (avant rattachement au user_id).
+    index("calendar_attendees_email_idx").on(table.email),
   ],
 );
 

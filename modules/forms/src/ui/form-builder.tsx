@@ -1,5 +1,14 @@
-import { Badge, Button, cn, Input, Label } from "@workspace/ui";
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  Alert,
+  Badge,
+  Button,
+  Input,
+  Label,
+  SegmentedTabs,
+  Toasts,
+  useToasts,
+} from "@workspace/ui";
+import { useCallback, useEffect, useState } from "react";
 import {
   type FormDetail,
   getFormFn,
@@ -72,15 +81,7 @@ export function FormBuilder({ fileId }: { fileId: string }) {
   } | null>(null);
   const [responsesError, setResponsesError] = useState<string | null>(null);
   const [responsesBusy, setResponsesBusy] = useState(false);
-  const [copied, setCopied] = useState(false);
-  const copyTimeout = useRef<number | null>(null);
-
-  useEffect(
-    () => () => {
-      if (copyTimeout.current !== null) window.clearTimeout(copyTimeout.current);
-    },
-    [],
-  );
+  const { toasts, push, dismiss } = useToasts();
 
   const load = useCallback(async () => {
     try {
@@ -117,9 +118,7 @@ export function FormBuilder({ fileId }: { fileId: string }) {
 
   function copyLink() {
     void navigator.clipboard?.writeText(publicUrl);
-    setCopied(true);
-    if (copyTimeout.current !== null) window.clearTimeout(copyTimeout.current);
-    copyTimeout.current = window.setTimeout(() => setCopied(false), 2000);
+    push("success", "Lien copié.");
   }
 
   function update(change: () => void) {
@@ -204,14 +203,7 @@ export function FormBuilder({ fileId }: { fileId: string }) {
         </div>
       </header>
 
-      {error ? (
-        <p
-          role="alert"
-          className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive"
-        >
-          {error}
-        </p>
-      ) : null}
+      {error ? <Alert tone="danger">{error}</Alert> : null}
 
       {detail ? (
         <>
@@ -258,14 +250,8 @@ export function FormBuilder({ fileId }: { fileId: string }) {
                 className="h-8 max-w-md flex-1 text-xs"
                 onFocus={(event) => event.target.select()}
               />
-              <Button
-                size="sm"
-                variant="outline"
-                className="w-20"
-                aria-live="polite"
-                onClick={copyLink}
-              >
-                {copied ? "Copié !" : "Copier"}
+              <Button size="sm" variant="outline" onClick={copyLink}>
+                Copier
               </Button>
               <a href={`/f/${detail.slug}`} target="_blank" rel="noreferrer">
                 <Button size="sm" variant="outline">
@@ -275,26 +261,19 @@ export function FormBuilder({ fileId }: { fileId: string }) {
             </div>
           </div>
 
-          <div className="flex overflow-hidden rounded-lg border border-border self-start">
-            {(["questions", "responses"] as const).map((value) => (
-              <button
-                key={value}
-                type="button"
-                onClick={() => {
-                  setTab(value);
-                  if (value === "responses") void loadResponses();
-                }}
-                className={cn(
-                  "px-3 py-1.5 text-xs font-medium transition-colors",
-                  tab === value
-                    ? "bg-primary text-primary-foreground"
-                    : "bg-card text-muted-foreground hover:bg-muted",
-                )}
-              >
-                {value === "questions" ? "Questions" : "Réponses"}
-              </button>
-            ))}
-          </div>
+          <SegmentedTabs
+            ariaLabel="Sections du formulaire"
+            className="self-start"
+            items={[
+              { id: "questions", label: "Questions" },
+              { id: "responses", label: "Réponses" },
+            ]}
+            value={tab}
+            onChange={(next) => {
+              setTab(next);
+              if (next === "responses") void loadResponses();
+            }}
+          />
 
           {tab === "questions" ? (
             <>
@@ -461,16 +440,6 @@ export function FormBuilder({ fileId }: { fileId: string }) {
                       ? `${responses.responses.length} réponse(s)`
                       : "Chargement…"}
                 </p>
-                {responsesError ? (
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    loading={responsesBusy}
-                    onClick={() => void loadResponses()}
-                  >
-                    Réessayer
-                  </Button>
-                ) : null}
                 <a href={`/api/forms/export/${fileId}`} className="ml-auto">
                   <Button size="sm" variant="outline">
                     Exporter CSV
@@ -478,12 +447,18 @@ export function FormBuilder({ fileId }: { fileId: string }) {
                 </a>
               </div>
               {responsesError ? (
-                <p
-                  role="alert"
-                  className="rounded-xl border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive"
-                >
-                  {responsesError}
-                </p>
+                <>
+                  <Alert tone="danger">{responsesError}</Alert>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="self-start"
+                    loading={responsesBusy}
+                    onClick={() => void loadResponses()}
+                  >
+                    Réessayer
+                  </Button>
+                </>
               ) : null}
               {!responsesError && responses && responses.responses.length === 0 ? (
                 <p className="rounded-xl border border-border bg-card p-6 text-center text-sm text-muted-foreground">
@@ -529,6 +504,8 @@ export function FormBuilder({ fileId }: { fileId: string }) {
       ) : !error ? (
         <p className="text-sm text-muted-foreground">Chargement…</p>
       ) : null}
+
+      <Toasts toasts={toasts} dismiss={dismiss} />
     </div>
   );
 }

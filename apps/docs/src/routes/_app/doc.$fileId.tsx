@@ -13,6 +13,7 @@ type Loaded = {
   currentVersion: number;
   updatedAt: string;
   canEdit: boolean;
+  revision: string;
 };
 
 function DocumentPage() {
@@ -176,7 +177,12 @@ function DocumentPage() {
         </div>
       ) : null}
 
-      <DocumentEditor fileId={fileId} initialContent={doc.content} canEdit={doc.canEdit} />
+      <DocumentEditor
+        fileId={fileId}
+        initialRevision={doc.revision}
+        initialContent={doc.content}
+        canEdit={doc.canEdit}
+      />
 
       <p className="flex items-center gap-1 border-t border-border pt-2 text-xs text-muted-foreground">
         <IconFileText /> « {doc.title} » — fichier du Drive partagé avec les mêmes permissions.

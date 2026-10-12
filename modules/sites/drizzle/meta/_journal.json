@@ -8,6 +8,13 @@
       "when": 1791747807890,
       "tag": "0000_cold_maverick",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1791828593129,
+      "tag": "0001_abandoned_triathlon",
+      "breakpoints": true
     }
   ]
 }

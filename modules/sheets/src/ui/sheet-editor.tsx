@@ -1,5 +1,6 @@
 import { Button, cn, Dialog, Input, Label } from "@workspace/ui";
 import {
+  type ChangeEvent,
   type CSSProperties,
   type FormEvent,
   Fragment,
@@ -15,6 +16,7 @@ import {
   addTabFn,
   deleteTabFn,
   getSpreadsheetFn,
+  importCsvFn,
   renameSpreadsheetFn,
   renameTabFn,
   type SpreadsheetDetail,
@@ -142,6 +144,10 @@ export function SheetEditor({ fileId }: { fileId: string }) {
   const [error, setError] = useState<string | null>(null);
   const [tabDialog, setTabDialog] = useState<"add" | "rename" | null>(null);
   const [tabName, setTabName] = useState("");
+  const [importOpen, setImportOpen] = useState(false);
+  const [importText, setImportText] = useState("");
+  const [importBusy, setImportBusy] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
   const pendingRef = useRef(new Map<string, { row: number; col: number; value: string }>());
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -371,6 +377,38 @@ export function SheetEditor({ fileId }: { fileId: string }) {
     }
   }
 
+  function onImportFile(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === "string") setImportText(reader.result);
+    };
+    reader.onerror = () => setError("Lecture du fichier impossible.");
+    reader.readAsText(file);
+  }
+
+  async function onImportCsv() {
+    const tabId = activeTabIdRef.current;
+    if (!tabId) return;
+    setImportBusy(true);
+    try {
+      // Les modifications en attente d'autosave partiraient après l'import et
+      // écraseraient ses cellules : on les sauvegarde d'abord.
+      await flush(tabId);
+      await importCsvFn({ data: { fileId, tabId, text: importText } });
+      setImportOpen(false);
+      setImportText("");
+      if (fileInputRef.current) fileInputRef.current.value = "";
+      await load();
+      setStatus("saved");
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Import impossible.");
+    } finally {
+      setImportBusy(false);
+    }
+  }
+
   const activeTab = detail?.tabs.find((tab) => tab.id === activeTabId) ?? null;
   const canEdit = detail?.canEdit ?? false;
   const statusLabel =
@@ -420,6 +458,18 @@ export function SheetEditor({ fileId }: { fileId: string }) {
                 Exporter CSV
               </Button>
             </a>
+          ) : null}
+          {detail?.canEdit && activeTabId ? (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => {
+                setImportText("");
+                setImportOpen(true);
+              }}
+            >
+              Importer CSV
+            </Button>
           ) : null}
         </div>
       </header>
@@ -567,6 +617,50 @@ export function SheetEditor({ fileId }: { fileId: string }) {
       ) : !error ? (
         <p className="text-sm text-muted-foreground">Chargement…</p>
       ) : null}
+
+      <Dialog open={importOpen} onClose={() => setImportOpen(false)} title="Importer un CSV">
+        <div className="flex flex-col gap-4">
+          <div className="flex flex-col gap-2">
+            <Label htmlFor="csv-file">Fichier CSV</Label>
+            <input
+              ref={fileInputRef}
+              id="csv-file"
+              type="file"
+              aria-label="Fichier CSV"
+              accept=".csv,text/csv"
+              onChange={onImportFile}
+              className="text-sm text-muted-foreground file:mr-2 file:rounded-md file:border file:border-input file:bg-background file:px-3 file:py-1.5 file:text-sm file:text-foreground"
+            />
+          </div>
+          <div className="flex flex-col gap-2">
+            <Label htmlFor="csv-text">Contenu CSV</Label>
+            <textarea
+              id="csv-text"
+              aria-label="Contenu CSV"
+              value={importText}
+              onChange={(event) => setImportText(event.target.value)}
+              rows={8}
+              spellCheck={false}
+              placeholder={"Nom,Quantité\nPommes,3"}
+              className="w-full resize-y rounded-md border border-input bg-background px-3 py-2 font-mono text-xs text-foreground shadow-soft transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background"
+            />
+          </div>
+          <p className="text-xs text-muted-foreground">L'onglet actuel sera remplacé.</p>
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="ghost" onClick={() => setImportOpen(false)}>
+              Annuler
+            </Button>
+            <Button
+              type="button"
+              loading={importBusy}
+              disabled={importText.length === 0}
+              onClick={() => void onImportCsv()}
+            >
+              Importer
+            </Button>
+          </div>
+        </div>
+      </Dialog>
 
       <Dialog
         open={tabDialog !== null}

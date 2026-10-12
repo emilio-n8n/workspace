@@ -1,0 +1,1 @@
+CREATE INDEX "sites_pages_site_position_idx" ON "sites_pages" USING btree ("site_id","position");

@@ -1,4 +1,4 @@
-import { Button, cn } from "@workspace/ui";
+import { Alert, Button, cn } from "@workspace/ui";
 import { type FormEvent, useEffect, useState } from "react";
 import { getPublicFormFn, type PublicForm as PublicFormData, submitResponseFn } from "../server.ts";
 
@@ -89,9 +89,7 @@ export function PublicForm({ slug }: { slug: string }) {
       </header>
 
       {closed ? (
-        <p className="rounded-md border border-border bg-muted px-3 py-2 text-sm text-muted-foreground">
-          Ce formulaire est fermé — les réponses ne sont plus acceptées.
-        </p>
+        <Alert tone="warning">Ce formulaire est fermé — les réponses ne sont plus acceptées.</Alert>
       ) : null}
 
       <form onSubmit={onSubmit} method="post" className="flex flex-col gap-5">
@@ -212,11 +210,7 @@ export function PublicForm({ slug }: { slug: string }) {
           </fieldset>
         ))}
 
-        {error ? (
-          <p role="alert" className="text-sm text-destructive">
-            {error}
-          </p>
-        ) : null}
+        {error ? <Alert tone="danger">{error}</Alert> : null}
 
         <Button type="submit" loading={busy} disabled={closed} className="self-start">
           Envoyer

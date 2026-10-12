@@ -1,4 +1,14 @@
-import { Badge, Button, cn, Dialog, Input, Label } from "@workspace/ui";
+import {
+  Badge,
+  Button,
+  cn,
+  Dialog,
+  EmptyState,
+  Input,
+  Label,
+  Toasts,
+  useToasts,
+} from "@workspace/ui";
 import { type FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import {
   type ChannelView,
@@ -32,7 +42,6 @@ export function ChatView() {
   const [activeId, setActiveId] = useState<string | null>(null);
   const [messages, setMessages] = useState<MessageView[]>([]);
   const [input, setInput] = useState("");
-  const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [channelDialog, setChannelDialog] = useState(false);
@@ -41,6 +50,7 @@ export function ChatView() {
   const [orgMembers, setOrgMembers] = useState<OrgMemberView[]>([]);
   const [membersLoading, setMembersLoading] = useState(false);
   const [membersError, setMembersError] = useState<string | null>(null);
+  const { toasts, push, dismiss } = useToasts();
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const refreshChannels = useCallback(async () => {
@@ -50,26 +60,18 @@ export function ChatView() {
       setActiveId((current) =>
         current && list.some((channel) => channel.id === current) ? current : (list[0]?.id ?? null),
       );
-      setError(null);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Chargement impossible.");
+      push("danger", caught instanceof Error ? caught.message : "Chargement impossible.");
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [push]);
 
   useEffect(() => {
     void refreshChannels();
     const interval = setInterval(() => void refreshChannels(), 5000);
     return () => clearInterval(interval);
   }, [refreshChannels]);
-
-  // Les erreurs disparaissent d'elles-mêmes au bout de 6 s (ou sur ✕).
-  useEffect(() => {
-    if (!error) return;
-    const timeout = setTimeout(() => setError(null), 6000);
-    return () => clearTimeout(timeout);
-  }, [error]);
 
   const refreshMessages = useCallback(async (channelId: string) => {
     try {
@@ -109,7 +111,7 @@ export function ChatView() {
       setInput("");
       setMessages((current) => [...current, sent]);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Envoi impossible.");
+      push("danger", caught instanceof Error ? caught.message : "Envoi impossible.");
     } finally {
       setBusy(false);
     }
@@ -126,7 +128,7 @@ export function ChatView() {
       await refreshChannels();
       setActiveId(created.id);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Création impossible.");
+      push("danger", caught instanceof Error ? caught.message : "Création impossible.");
     } finally {
       setBusy(false);
     }
@@ -159,7 +161,7 @@ export function ChatView() {
       await refreshChannels();
       setActiveId(dm.id);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Discussion impossible.");
+      push("danger", caught instanceof Error ? caught.message : "Discussion impossible.");
     } finally {
       setBusy(false);
     }
@@ -168,6 +170,9 @@ export function ChatView() {
   const active = channels.find((channel) => channel.id === activeId) ?? null;
   const unreadTotal = channels.reduce((sum, channel) => sum + channel.unreadCount, 0);
 
+  // Pas de PageHeader : Chat est un shell à deux panneaux pleine hauteur, un
+  // en-tête de page volerait l'espace vertical de la conversation ; le h1
+  // compact de la barre latérale reste le titre de la page.
   return (
     <div className="mx-auto flex h-full min-h-0 max-w-6xl gap-4">
       <aside className="flex min-h-0 w-64 shrink-0 flex-col gap-2 rounded-xl border border-border bg-card p-3">
@@ -202,6 +207,7 @@ export function ChatView() {
         {loading ? (
           <p className="text-xs text-muted-foreground">Chargement…</p>
         ) : channels.length === 0 ? (
+          // Pas d'EmptyState ici : sa carte p-8 débordrait de la barre de 256 px.
           <p className="text-xs text-muted-foreground">
             Aucune conversation. Créez un canal ou démarrez une discussion.
           </p>
@@ -248,9 +254,7 @@ export function ChatView() {
 
             <div ref={scrollRef} className="flex flex-1 flex-col gap-3 overflow-y-auto p-4">
               {messages.length === 0 ? (
-                <p className="text-sm text-muted-foreground">
-                  Aucun message pour le moment — lancez la conversation.
-                </p>
+                <EmptyState title="Aucun message pour le moment — lancez la conversation." />
               ) : (
                 messages.map((message) => (
                   <div
@@ -310,22 +314,7 @@ export function ChatView() {
         )}
       </section>
 
-      {error ? (
-        <div
-          role="alert"
-          className="fixed bottom-4 right-4 flex max-w-sm items-start gap-2 rounded-md border border-destructive/40 bg-card px-3 py-2 text-sm text-destructive shadow-lift"
-        >
-          <span>{error}</span>
-          <button
-            type="button"
-            aria-label="Fermer"
-            onClick={() => setError(null)}
-            className="shrink-0 rounded-sm p-0.5 leading-none opacity-70 transition-opacity hover:opacity-100"
-          >
-            ✕
-          </button>
-        </div>
-      ) : null}
+      <Toasts toasts={toasts} dismiss={dismiss} />
 
       <Dialog open={channelDialog} onClose={() => setChannelDialog(false)} title="Nouveau canal">
         <form onSubmit={onCreateChannel} method="post" className="flex flex-col gap-4">

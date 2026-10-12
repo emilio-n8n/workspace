@@ -15,6 +15,13 @@
       "when": 1791750061221,
       "tag": "0001_superb_calypso",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1791828583081,
+      "tag": "0002_gray_wildside",
+      "breakpoints": true
     }
   ]
 }

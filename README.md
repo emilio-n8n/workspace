@@ -55,6 +55,8 @@ pnpm typecheck              # TypeScript strict, tous les packages
 pnpm test                   # unitaires + intégration (PostgreSQL requis)
 pnpm test:e2e               # Playwright multi-applications (SSO inclus)
 pnpm build                  # builds de production des applications
+pnpm check:design           # contraste WCAG des tokens (calculé, OKLCH→sRGB)
+pnpm seed:demo              # jeu de démonstration complet (compte demo@exemple.org)
 ```
 
 ## Serveur MCP
@@ -63,13 +65,13 @@ pnpm build                  # builds de production des applications
 WORKSPACE_TOKEN=wsk_… pnpm --filter @workspace/mcp-server start
 ```
 
-Les jetons se créent dans l'application (Accueil → Agents & jetons) avec des scopes minimaux (`drive:read`, `docs:read`, `tasks:write`…). Chaque appel est journalisé (succès, refus, erreurs). Détails : `docs/mcp/`.
+Les jetons se créent dans l'application (Accueil → Agents & jetons) avec des scopes minimaux (`drive:read`, `docs:read`, `tasks:write`…), expirent par défaut après 90 jours et sont réservés aux administrateurs pour le scope `audit:read`. **25 outils** couvrent la suite ; les outils destructifs exigent une confirmation littérale. Chaque appel est journalisé (succès, refus, erreurs), et **toutes les mutations web sont auditées** (`@workspace/audit`). Détails : `docs/mcp/`.
 
 ## Structure du dépôt
 
 ```
 apps/        home · drive · docs · tasks · calendar · forms · sheets · slides · mail · chat · meet · sites · classroom · admin · mcp-server
-packages/    design-tokens · ui · database · auth · permissions · storage · config
+packages/    design-tokens · ui · database · auth · permissions · storage · config · audit · search
 modules/     drive · docs · tasks · calendar · forms · sheets · slides · mail · chat · meet · sites · classroom · admin
              (services + server functions + interface)
 e2e/         tests de bout en bout multi-applications

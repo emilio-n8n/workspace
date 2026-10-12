@@ -16,7 +16,11 @@ export async function listMyOrganizations(headers: Headers) {
  * Contexte serveur obligatoire : session **et** organisation.
  * L'organisation active est une préférence, pas un prérequis : si elle est
  * absente (nouvelle session après reconnexion), la première organisation de
- * l'utilisateur est sélectionnée et mémorisée.
+ * l'utilisateur est sélectionnée **et persistée** sur la ligne `session`
+ * (`activeOrganizationId`) via `auth.api.setActiveOrganization`, afin que les
+ * requêtes suivantes suivent le chemin direct et restent déterministes.
+ * La persistance n'est jamais ignorée en silence : si elle échoue, l'erreur
+ * remonte à l'appelant plutôt que de retourner une organisation non mémorisée.
  */
 export async function requireActorContext(
   headers: Headers,
@@ -30,9 +34,11 @@ export async function requireActorContext(
     const first = organizations[0];
     if (!first) throw new NoOrganizationError();
     orgId = first.id;
-    await auth.api
-      .setActiveOrganization({ headers, body: { organizationId: orgId } })
-      .catch(() => undefined);
+    // setActiveOrganization écrit `session.activeOrganizationId` en base
+    // (internalAdapter.updateSession) et vérifie l'appartenance. Pas de
+    // `.catch(() => undefined)` : un contexte non persisté serait recalculé à
+    // chaque requête (et masquerait une panne de base).
+    await auth.api.setActiveOrganization({ headers, body: { organizationId: orgId } });
   }
 
   return { userId: session.user.id, orgId };

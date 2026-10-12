@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -13,7 +16,7 @@ jobs:
   checks:
     name: Typecheck, lint, tests, build
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
 
     services:
       postgres:
@@ -47,6 +50,7 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -72,7 +76,7 @@ jobs:
   e2e:
     name: E2E navigateur (Playwright) — suite multi-applications
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     needs: checks
 
     services:
@@ -108,6 +112,7 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -128,3 +133,4 @@ jobs:
           name: playwright-report
           path: test-results
           retention-days: 7
+          if-no-files-found: ignore

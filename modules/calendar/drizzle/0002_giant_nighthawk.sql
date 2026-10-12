@@ -1,0 +1,1 @@
+CREATE INDEX "calendar_attendees_email_idx" ON "calendar_attendees" USING btree ("email");

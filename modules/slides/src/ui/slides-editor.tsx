@@ -1,4 +1,4 @@
-import { Button, cn, Input, Label } from "@workspace/ui";
+import { Alert, Button, ConfirmDialog, cn, Input, Label } from "@workspace/ui";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   type ElementView,
@@ -85,6 +85,7 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
   const [loading, setLoading] = useState(true);
   const [presenting, setPresenting] = useState(false);
   const [presentIndex, setPresentIndex] = useState(0);
+  const [deleteOpen, setDeleteOpen] = useState(false);
   const canvasRef = useRef<HTMLDivElement>(null);
   const slidesRef = useRef<EditorSlide[]>([]);
   const canEditRef = useRef(false);
@@ -480,14 +481,7 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
         </div>
       </header>
 
-      {error ? (
-        <p
-          role="alert"
-          className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive"
-        >
-          {error}
-        </p>
-      ) : null}
+      {error ? <Alert tone="danger">{error}</Alert> : null}
 
       {loading ? (
         <p className="text-sm text-muted-foreground">Chargement…</p>
@@ -542,7 +536,7 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
                     variant="ghost"
                     className="text-destructive"
                     disabled={slides.length <= 1}
-                    onClick={deleteSlide}
+                    onClick={() => setDeleteOpen(true)}
                   >
                     Supprimer
                   </Button>
@@ -683,6 +677,18 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
           </aside>
         </div>
       ) : null}
+
+      <ConfirmDialog
+        open={deleteOpen}
+        onClose={() => setDeleteOpen(false)}
+        onConfirm={() => {
+          setDeleteOpen(false);
+          deleteSlide();
+        }}
+        title="Supprimer la diapositive ?"
+        message="Cette diapositive et ses éléments seront supprimés."
+        destructive
+      />
 
       {presenting ? (
         <div className="fixed inset-0 z-50 flex flex-col bg-rail text-rail-foreground">

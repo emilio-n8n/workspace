@@ -52,7 +52,7 @@ export const getDocumentFn = createServerFn({ method: "GET" })
   .validator((input: unknown) => fileInput.parse(input))
   .handler(async ({ data }) => {
     const { actor } = await requireActor(getRequest().headers);
-    const { entry, document, content } = await getDocumentByFileId(actor, data.fileId);
+    const { entry, document, content, revision } = await getDocumentByFileId(actor, data.fileId);
     const role = await effectiveRole(actor, data.fileId);
 
     return {
@@ -62,6 +62,8 @@ export const getDocumentFn = createServerFn({ method: "GET" })
       content: content as never,
       currentVersion: document.currentVersion,
       updatedAt: entry.updatedAt.toISOString(),
+      // Jeton de révision à renvoyer en `baseUpdatedAt` lors de la sauvegarde.
+      revision,
       canEdit: roleSatisfies(role, "write"),
     };
   });
@@ -73,12 +75,18 @@ export const saveDocumentFn = createServerFn({ method: "POST" })
         fileId: z.string().uuid(),
         content: z.unknown(),
         mode: z.enum(["replace-latest", "append"]).default("replace-latest"),
+        // Révision connue du client : vérifiée par le service pour l'autosave.
+        baseUpdatedAt: z.string().min(1).optional(),
       })
       .parse(input),
   )
   .handler(async ({ data }) => {
     const { actor } = await requireActor(getRequest().headers);
-    return saveDocument(actor, data.fileId, { content: data.content, mode: data.mode });
+    return saveDocument(actor, data.fileId, {
+      content: data.content,
+      mode: data.mode,
+      baseUpdatedAt: data.baseUpdatedAt,
+    });
   });
 
 export const renameDocumentFn = createServerFn({ method: "POST" })

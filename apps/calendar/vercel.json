@@ -1,0 +1,11 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": "vite",
+  "installCommand": "cd ../.. && pnpm install --frozen-lockfile",
+  "buildCommand": "cd ../.. && pnpm --filter @app/calendar build",
+  "outputDirectory": "dist",
+  "regions": ["cdg1"],
+  "headers": [
+    { "source": "/api/health", "headers": [{ "key": "Cache-Control", "value": "no-store" }] }
+  ]
+}

@@ -72,6 +72,14 @@ function toView(entry: DriveEntry, userId: string): DriveEntryView {
 
 const idInput = z.object({ entryId: z.string().uuid() });
 const parentInput = z.object({ parentId: z.string().uuid().nullable() });
+const trashInput = z.object({
+  limit: z.number().int().min(1).max(500).optional(),
+  offset: z.number().int().min(0).optional(),
+});
+const recentInput = z.object({
+  limit: z.number().int().min(1).max(500).optional(),
+  before: z.coerce.date().optional(),
+});
 
 // ---------------------------------------------------------------------------
 // Lecture
@@ -111,13 +119,13 @@ export const entryDetailsFn = createServerFn({ method: "GET" })
     };
   });
 
-export const listTrashFn = createServerFn({ method: "GET" }).handler(
-  async (): Promise<DriveEntryView[]> => {
+export const listTrashFn = createServerFn({ method: "GET" })
+  .validator((input: unknown) => trashInput.parse(input ?? {}))
+  .handler(async ({ data }): Promise<DriveEntryView[]> => {
     const { actor, userId } = await requireActor(getRequest().headers);
-    const rows = await listTrash(actor);
+    const rows = await listTrash(actor, { limit: data.limit, offset: data.offset });
     return rows.map((entry) => toView(entry, userId));
-  },
-);
+  });
 
 export const listVersionsFn = createServerFn({ method: "GET" })
   .validator((input: unknown) => idInput.parse(input))
@@ -332,13 +340,13 @@ export const resolveShareFn = createServerFn({ method: "GET" })
 // Vues agrégées (Récents, Partagés) et stockage
 // ---------------------------------------------------------------------------
 
-export const listRecentFn = createServerFn({ method: "GET" }).handler(
-  async (): Promise<DriveEntryView[]> => {
+export const listRecentFn = createServerFn({ method: "GET" })
+  .validator((input: unknown) => recentInput.parse(input ?? {}))
+  .handler(async ({ data }): Promise<DriveEntryView[]> => {
     const { actor, userId } = await requireActor(getRequest().headers);
-    const rows = await listRecent(actor, { limit: 50 });
+    const rows = await listRecent(actor, { limit: data.limit ?? 50, before: data.before });
     return rows.map((entry) => toView(entry, userId));
-  },
-);
+  });
 
 export const listSharedFn = createServerFn({ method: "GET" }).handler(
   async (): Promise<{ entry: DriveEntryView; role: string }[]> => {

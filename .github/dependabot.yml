@@ -1,0 +1,31 @@
+# Mises à jour automatisées des dépendances — hebdomadaire, groupées.
+# Un seul « directory » : Dependabot lit le pnpm-lock.yaml racine et couvre
+# tous les paquets du workspace.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "07:00"
+      timezone: Europe/Paris
+    open-pull-requests-limit: 10
+    groups:
+      production-dependencies:
+        dependency-type: production
+        update-types: [minor, patch]
+      development-dependencies:
+        dependency-type: development
+        update-types: [minor, patch]
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "07:00"
+      timezone: Europe/Paris
+    groups:
+      github-actions:
+        patterns: ["*"]

@@ -8,6 +8,7 @@ import {
   CardHeader,
   CardTitle,
   cn,
+  IconSearch,
   resolveSuiteApps,
 } from "@workspace/ui";
 import { useEffect, useState } from "react";
@@ -77,6 +78,14 @@ function DashboardPage() {
           {workspace?.activeOrganization ? ` — ${workspace.activeOrganization.name}` : ""}.
         </p>
       </header>
+
+      <Link
+        to="/app/recherche"
+        className="flex h-9 items-center gap-2 rounded-lg border border-input bg-background px-3 text-sm text-muted-foreground hover:bg-muted"
+      >
+        <IconSearch className="size-4" />
+        Rechercher dans toute la suite…
+      </Link>
 
       <section aria-label="Applications" className="flex flex-col gap-3">
         <h2 className="text-xs font-medium uppercase tracking-widest text-muted-foreground">
