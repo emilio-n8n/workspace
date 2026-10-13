@@ -11,7 +11,7 @@ export const Route = createFileRoute("/api/drive/shared/$token")({
     handlers: {
       GET: async ({ params }) => {
         const access = await accessShareLink(params.token);
-        if (!access || access.entry.kind !== "file" || !access.entry.storageKey) {
+        if (access?.entry.kind !== "file" || !access.entry.storageKey) {
           return new Response("Introuvable", { status: 404 });
         }
 

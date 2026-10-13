@@ -3,14 +3,8 @@
   "ui": "tui",
   "tasks": {
     "build": {
-      "dependsOn": [
-        "^build"
-      ],
-      "outputs": [
-        "dist/**",
-        ".output/**",
-        ".nitro/**"
-      ]
+      "dependsOn": ["^build"],
+      "outputs": ["dist/**", ".output/**", ".nitro/**"]
     },
     "dev": {
       "cache": false,
@@ -22,8 +16,7 @@
     "test": {}
   },
   "envMode": "loose",
-  "globalPassThroughEnv": [
-    "DEMO_SEED_ALLOW_REMOTE"
-  ],
-  "concurrency": "20"
+  "globalPassThroughEnv": ["DEMO_SEED_ALLOW_REMOTE"],
+  "concurrency": "20",
+  "globalEnv": ["DATABASE_URL", "TEST_DATABASE_URL", "SESSION_SECRET", "PUBLIC_URL"]
 }
