@@ -3,25 +3,43 @@ import { getRequest } from "@tanstack/react-start/server";
 import { requireActor } from "@workspace/auth";
 import { z } from "zod";
 import {
+  addChannelMember,
+  archiveChannel,
   createChannel,
+  getUnreadState,
+  joinChannel,
+  listChannelMembers,
   listChannels,
+  listJoinableChannels,
   listMessages,
   listOrgMembers,
+  listPins,
   MAX_ATTACHMENT_BYTES,
   MAX_ATTACHMENTS,
   markRead,
+  pinMessage,
+  restoreChannel,
   sendMessage,
   startDm,
+  unpinMessage,
   uploadChatAttachment,
 } from "./index.ts";
 
 export type {
   AttachmentMeta,
   AttachmentToken,
+  ChannelMemberView,
   ChannelView,
+  ChannelVisibility,
+  JoinableChannelView,
   MessageView,
   OrgMemberView,
+  PinView,
+  UnreadState,
 } from "./index.ts";
+
+const channelIdSchema = z.string().uuid();
+const visibilitySchema = z.enum(["public", "private"]);
 
 /** Jeton renvoyé par uploadChatAttachmentFn, rejoué tel quel à l'envoi. */
 const attachmentTokenSchema = z.object({
@@ -45,11 +63,62 @@ export const listOrgMembersFn = createServerFn({ method: "GET" }).handler(async 
 });
 
 export const createChannelFn = createServerFn({ method: "POST" })
-  .validator((input: unknown) => z.object({ name: z.string().trim().min(1).max(80) }).parse(input))
+  .validator((input: unknown) =>
+    z
+      .object({ name: z.string().trim().min(1).max(80), visibility: visibilitySchema.optional() })
+      .parse(input),
+  )
   .handler(async ({ data }) => {
     const { actor } = await requireActor(getRequest().headers);
-    return createChannel(actor, data.name);
+    return createChannel(actor, data.name, data.visibility ?? "public");
   });
+
+export const archiveChannelFn = createServerFn({ method: "POST" })
+  .validator((input: unknown) => z.object({ channelId: channelIdSchema }).parse(input))
+  .handler(async ({ data }) => {
+    const { actor } = await requireActor(getRequest().headers);
+    await archiveChannel(actor, data.channelId);
+    return { ok: true };
+  });
+
+export const restoreChannelFn = createServerFn({ method: "POST" })
+  .validator((input: unknown) => z.object({ channelId: channelIdSchema }).parse(input))
+  .handler(async ({ data }) => {
+    const { actor } = await requireActor(getRequest().headers);
+    await restoreChannel(actor, data.channelId);
+    return { ok: true };
+  });
+
+/** Membres d'un canal — visibles par les membres, canaux privés compris. */
+export const listChannelMembersFn = createServerFn({ method: "GET" })
+  .validator((input: unknown) => z.object({ channelId: channelIdSchema }).parse(input))
+  .handler(async ({ data }) => {
+    const { actor } = await requireActor(getRequest().headers);
+    return listChannelMembers(actor, data.channelId);
+  });
+
+/** Invitation directe à un canal — réservée à la personne qui l'a créé. */
+export const addChannelMemberFn = createServerFn({ method: "POST" })
+  .validator((input: unknown) =>
+    z.object({ channelId: channelIdSchema, userId: z.string().min(1).max(64) }).parse(input),
+  )
+  .handler(async ({ data }) => {
+    const { actor } = await requireActor(getRequest().headers);
+    return addChannelMember(actor, data.channelId, data.userId);
+  });
+
+export const joinChannelFn = createServerFn({ method: "POST" })
+  .validator((input: unknown) => z.object({ channelId: channelIdSchema }).parse(input))
+  .handler(async ({ data }) => {
+    const { actor } = await requireActor(getRequest().headers);
+    return joinChannel(actor, data.channelId);
+  });
+
+/** Canaux publics de l'organisation que l'acteur peut encore rejoindre. */
+export const listJoinableChannelsFn = createServerFn({ method: "GET" }).handler(async () => {
+  const { actor } = await requireActor(getRequest().headers);
+  return listJoinableChannels(actor);
+});
 
 export const startDmFn = createServerFn({ method: "POST" })
   .validator((input: unknown) => z.object({ userId: z.string().min(1) }).parse(input))
@@ -123,9 +192,47 @@ export const uploadChatAttachmentFn = createServerFn({ method: "POST" })
   });
 
 export const markReadFn = createServerFn({ method: "POST" })
-  .validator((input: unknown) => z.object({ channelId: z.string().uuid() }).parse(input))
+  .validator((input: unknown) => z.object({ channelId: channelIdSchema }).parse(input))
   .handler(async ({ data }) => {
     const { actor } = await requireActor(getRequest().headers);
     await markRead(actor, data.channelId);
+    return { ok: true };
+  });
+
+/**
+ * Frontière des non-lus : à appeler AVANT `markReadFn`, sinon le curseur a déjà
+ * avancé et le séparateur n'a plus rien à séparer.
+ */
+export const getUnreadStateFn = createServerFn({ method: "GET" })
+  .validator((input: unknown) => z.object({ channelId: channelIdSchema }).parse(input))
+  .handler(async ({ data }) => {
+    const { actor } = await requireActor(getRequest().headers);
+    return getUnreadState(actor, data.channelId);
+  });
+
+export const listPinsFn = createServerFn({ method: "GET" })
+  .validator((input: unknown) => z.object({ channelId: channelIdSchema }).parse(input))
+  .handler(async ({ data }) => {
+    const { actor } = await requireActor(getRequest().headers);
+    return listPins(actor, data.channelId);
+  });
+
+export const pinMessageFn = createServerFn({ method: "POST" })
+  .validator((input: unknown) =>
+    z.object({ channelId: channelIdSchema, messageId: channelIdSchema }).parse(input),
+  )
+  .handler(async ({ data }) => {
+    const { actor } = await requireActor(getRequest().headers);
+    await pinMessage(actor, data.channelId, data.messageId);
+    return { ok: true };
+  });
+
+export const unpinMessageFn = createServerFn({ method: "POST" })
+  .validator((input: unknown) =>
+    z.object({ channelId: channelIdSchema, messageId: channelIdSchema }).parse(input),
+  )
+  .handler(async ({ data }) => {
+    const { actor } = await requireActor(getRequest().headers);
+    await unpinMessage(actor, data.channelId, data.messageId);
     return { ok: true };
   });

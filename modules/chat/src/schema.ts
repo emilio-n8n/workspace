@@ -11,7 +11,16 @@ import { index, integer, pgTable, text, timestamp, uniqueIndex, uuid } from "dri
  * Les noms de canaux peuvent être dupliqués : aucune contrainte d'unicité sur
  * `name` (deux équipes peuvent créer « #général »). L'unicité des discussions
  * directes repose sur `dm_key` = identifiants triés des deux participants.
+ *
+ * Un canal est `public` (n'importe quel membre de l'organisation peut le
+ * rejoindre) ou `private` (sur invitation : l'ajout direct relève de la personne
+ * qui l'a créé). L'archive (`archived_at`) gèle le canal : l'historique reste
+ * lisible, plus rien ne peut y être envoyé ni épinglé.
  */
+
+/** Visibilité d'un canal — les discussions directes sont privées par nature. */
+export const CHANNEL_VISIBILITIES = ["public", "private"] as const;
+export type ChannelVisibility = (typeof CHANNEL_VISIBILITIES)[number];
 
 export const chatChannels = pgTable(
   "chat_channels",
@@ -24,6 +33,10 @@ export const chatChannels = pgTable(
     name: text("name"),
     /** Participants triés (`a:b`) pour les discussions directes ; nul sinon. */
     dmKey: text("dm_key"),
+    /** `public` (rejoignable librement) ou `private` (sur invitation). */
+    visibility: text("visibility").notNull().default("public"),
+    /** Archive : lecture conservée, écritures désactivées. Nul = canal actif. */
+    archivedAt: timestamp("archived_at", { withTimezone: true }),
     createdBy: text("created_by")
       .notNull()
       .references(() => core.user.id, { onDelete: "cascade" }),
@@ -95,3 +108,32 @@ export const chatAttachments = pgTable(
 export type ChatChannelRow = typeof chatChannels.$inferSelect;
 export type ChatMessageRow = typeof chatMessages.$inferSelect;
 export type ChatAttachmentRow = typeof chatAttachments.$inferSelect;
+
+/**
+ * Épingles de messages : un message épinglé reste signalé dans le canal et
+ * consultable dans la liste des épingles. Une seule épingle par message (index
+ * unique sur `channel_id` + `message_id`) : réépingler est sans effet.
+ */
+export const chatPins = pgTable(
+  "chat_pins",
+  {
+    id: uuid("id").primaryKey().default(sql`uuidv7()`),
+    channelId: uuid("channel_id")
+      .notNull()
+      .references(() => chatChannels.id, { onDelete: "cascade" }),
+    messageId: uuid("message_id")
+      .notNull()
+      .references(() => chatMessages.id, { onDelete: "cascade" }),
+    /** Personne qui a épinglé le message. */
+    pinnedBy: text("pinned_by")
+      .notNull()
+      .references(() => core.user.id, { onDelete: "cascade" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex("chat_pins_channel_message_uidx").on(table.channelId, table.messageId),
+    index("chat_pins_channel_created_idx").on(table.channelId, table.createdAt),
+  ],
+);
+
+export type ChatPinRow = typeof chatPins.$inferSelect;
