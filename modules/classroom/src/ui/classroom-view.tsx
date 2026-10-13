@@ -366,93 +366,103 @@ export function CoursePage({ courseId }: { courseId: string }) {
               />
             ) : (
               <ul className="flex flex-col gap-2">
-                {assignments.map((assignment) => (
-                  <li
-                    key={assignment.id}
-                    className="flex flex-col gap-2 rounded-xl border border-border bg-card p-4"
-                  >
-                    <div className="flex flex-wrap items-center gap-2">
-                      <h3 className="font-display text-sm font-semibold">{assignment.title}</h3>
-                      <Badge variant="outline">sur {assignment.points}</Badge>
-                      {/* Le statut ne concerne que l'élève : pour un enseignant,
+                {assignments.map((assignment) => {
+                  // Note déjà posée sur la copie de l'élève connecté, s'il y en a une.
+                  const myGrade = assignment.mySubmission?.grade ?? null;
+                  return (
+                    <li
+                      key={assignment.id}
+                      className="flex flex-col gap-2 rounded-xl border border-border bg-card p-4"
+                    >
+                      <div className="flex flex-wrap items-center gap-2">
+                        <h3 className="font-display text-sm font-semibold">{assignment.title}</h3>
+                        <Badge variant="outline">sur {assignment.points}</Badge>
+                        {/* Le statut ne concerne que l'élève : pour un enseignant,
                           « non rendu » n'aurait aucun sens. */}
-                      {teacher ? null : <StatusBadge code={assignment.status} />}
-                      <span className="text-xs text-muted-foreground">
-                        {formatDate(assignment.dueAt) ?? "sans échéance"}
-                      </span>
-                      <div className="ml-auto flex flex-wrap items-center gap-2">
-                        {teacher ? (
-                          <>
-                            <span className="text-xs text-muted-foreground">
-                              {assignment.submissionCount} copie
-                              {assignment.submissionCount > 1 ? "s" : ""}
-                              {assignment.counts && assignment.counts.graded > 0
-                                ? ` · ${assignment.counts.graded} notée${assignment.counts.graded > 1 ? "s" : ""}`
-                                : ""}
-                            </span>
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              onClick={() =>
-                                setSubmissionsFor({
-                                  id: assignment.id,
-                                  title: assignment.title,
-                                  points: assignment.points,
-                                  dueAt: assignment.dueAt,
-                                })
-                              }
-                            >
-                              Copies ({assignment.submissionCount})
-                            </Button>
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              onClick={() => setEditing({ id: assignment.id })}
-                            >
-                              Modifier
-                            </Button>
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              className="text-destructive"
-                              onClick={() =>
-                                setDeleteTarget({ id: assignment.id, title: assignment.title })
-                              }
-                            >
-                              Supprimer
-                            </Button>
-                          </>
-                        ) : (
-                          <Button
-                            size="sm"
-                            variant={assignment.mySubmission ? "outline" : "primary"}
-                            onClick={() => setSubmitting(assignment.id)}
-                          >
-                            {assignment.mySubmission ? "Modifier ma copie" : "Rendre ma copie"}
-                          </Button>
+                        {teacher ? null : <StatusBadge code={assignment.status} />}
+                        {/* La note n'a de sens que pour l'élève qui l'a reçue. */}
+                        {teacher || myGrade === null ? null : (
+                          <Badge variant="accent">
+                            Note : {myGrade}/{assignment.points}
+                          </Badge>
                         )}
+                        <span className="text-xs text-muted-foreground">
+                          {formatDate(assignment.dueAt) ?? "sans échéance"}
+                        </span>
+                        <div className="ml-auto flex flex-wrap items-center gap-2">
+                          {teacher ? (
+                            <>
+                              <span className="text-xs text-muted-foreground">
+                                {assignment.submissionCount} copie
+                                {assignment.submissionCount > 1 ? "s" : ""}
+                                {assignment.counts && assignment.counts.graded > 0
+                                  ? ` · ${assignment.counts.graded} notée${assignment.counts.graded > 1 ? "s" : ""}`
+                                  : ""}
+                              </span>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() =>
+                                  setSubmissionsFor({
+                                    id: assignment.id,
+                                    title: assignment.title,
+                                    points: assignment.points,
+                                    dueAt: assignment.dueAt,
+                                  })
+                                }
+                              >
+                                Copies ({assignment.submissionCount})
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                onClick={() => setEditing({ id: assignment.id })}
+                              >
+                                Modifier
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="text-destructive"
+                                onClick={() =>
+                                  setDeleteTarget({ id: assignment.id, title: assignment.title })
+                                }
+                              >
+                                Supprimer
+                              </Button>
+                            </>
+                          ) : (
+                            <Button
+                              size="sm"
+                              variant={assignment.mySubmission ? "outline" : "primary"}
+                              onClick={() => setSubmitting(assignment.id)}
+                            >
+                              {assignment.mySubmission ? "Modifier ma copie" : "Rendre ma copie"}
+                            </Button>
+                          )}
+                        </div>
                       </div>
-                    </div>
 
-                    {assignment.instructions ? (
-                      <p className="whitespace-pre-wrap text-sm text-muted-foreground">
-                        {assignment.instructions}
-                      </p>
-                    ) : null}
-
-                    {!teacher && assignment.mySubmission ? (
-                      <div className="flex flex-col gap-1">
-                        <p className="text-xs text-muted-foreground">
-                          Rendue le {formatDateTime(assignment.mySubmission.submittedAt)}
-                          {assignment.mySubmission.feedback
-                            ? ` · Commentaire : ${assignment.mySubmission.feedback}`
-                            : ""}
+                      {assignment.instructions ? (
+                        <p className="whitespace-pre-wrap text-sm text-muted-foreground">
+                          {assignment.instructions}
                         </p>
-                        <AttachmentLinks attachments={assignment.mySubmission.attachments} />
-                      </div>
-                    ) : null}
-                  </li>
-                ))}
+                      ) : null}
+
+                      {!teacher && assignment.mySubmission ? (
+                        <div className="flex flex-col gap-1">
+                          <p className="text-xs text-muted-foreground">
+                            Rendue le {formatDateTime(assignment.mySubmission.submittedAt)}
+                            {assignment.mySubmission.feedback
+                              ? ` · Commentaire : ${assignment.mySubmission.feedback}`
+                              : ""}
+                          </p>
+                          <AttachmentLinks attachments={assignment.mySubmission.attachments} />
+                        </div>
+                      ) : null}
+                    </li>
+                  );
+                })}
               </ul>
             )}
           </section>
