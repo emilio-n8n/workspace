@@ -1,6 +1,6 @@
 import { recordAudit } from "@workspace/audit";
 import { getAppUrls } from "@workspace/config";
-import { schema as core, getDb } from "@workspace/database";
+import { schema as core, getDb, withTransaction } from "@workspace/database";
 import { createNotification } from "@workspace/notifications";
 import {
   type Actor,
@@ -13,12 +13,16 @@ import {
   revokeGrant,
   roleSatisfies,
 } from "@workspace/permissions";
-import { and, asc, eq, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import {
   type Task,
+  type TaskLabel,
+  type TaskLabelColor,
   type TaskList,
   type TaskPriority,
   type TaskStatus,
+  taskLabelLinks,
+  taskLabels,
   taskLists,
   tasks,
 } from "./schema.ts";
@@ -36,8 +40,24 @@ export class TasksError extends Error {
 
 const TITLE_MAX = 500;
 const NOTES_MAX = 5000;
+const LABEL_NAME_MAX = 40;
+
+/** Palette offerte à la création d'une étiquette (mêmes valeurs que l'enum SQL). */
+export const TASK_LABEL_COLORS: readonly TaskLabelColor[] = [
+  "green",
+  "blue",
+  "amber",
+  "violet",
+  "red",
+  "slate",
+];
 
 const db = () => getDb();
+
+function isUniqueViolation(error: unknown): boolean {
+  const candidate = error as { code?: string; cause?: { code?: string } };
+  return candidate?.code === "23505" || candidate?.cause?.code === "23505";
+}
 
 function assertTitle(title: string): string {
   const trimmed = title.trim();
@@ -108,13 +128,17 @@ async function assertList(
 
 export type TaskListWithRole = { list: TaskList; role: GrantRole };
 
-/** Listes visibles de l'organisation (propriétaire ou grant hérité). */
+/**
+ * Listes visibles de l'organisation (propriétaire ou grant hérité), dans
+ * l'ordre du panneau : position croissante, puis `id` (uuidv7, ordonné dans le
+ * temps) pour départager deux positions identiques.
+ */
 export async function listLists(actor: Actor): Promise<TaskListWithRole[]> {
   const rows = await db()
     .select()
     .from(taskLists)
     .where(eq(taskLists.orgId, actor.orgId))
-    .orderBy(asc(taskLists.name));
+    .orderBy(asc(taskLists.position), asc(taskLists.id));
 
   const visible: TaskListWithRole[] = [];
   for (const row of rows) {
@@ -128,7 +152,14 @@ export async function createList(actor: Actor, input: { name: string }): Promise
   const name = assertTitle(input.name);
   const [row] = await db()
     .insert(taskLists)
-    .values({ orgId: actor.orgId, ownerId: actor.userId, name })
+    .values({
+      orgId: actor.orgId,
+      ownerId: actor.userId,
+      name,
+      // En fin de panneau : la position est calculée par la base, un `count(*)`
+      // côté application était faux dès qu'une liste était supprimée.
+      position: sql<number>`(select coalesce(max(${taskLists.position}), -1) + 1 from ${taskLists} where ${taskLists.orgId} = ${actor.orgId})`,
+    })
     .returning();
   if (!row) throw new TasksError("conflict", "Création impossible.");
   await recordAudit({
@@ -168,6 +199,53 @@ export async function deleteList(actor: Actor, listId: string): Promise<void> {
     resourceId: listId,
     result: "success",
   });
+}
+
+/**
+ * Réordonne le panneau des listes. `listIds` doit décrire EXACTEMENT les
+ * listes visibles de l'acteur, sans doublon : ni oubli (la liste perdrait sa
+ * place) ni identifiant étranger à l'organisation. L'écriture est exigée sur
+ * chaque liste — l'ordre est partagé par toute l'organisation.
+ */
+export async function reorderLists(
+  actor: Actor,
+  listIds: readonly string[],
+): Promise<TaskListWithRole[]> {
+  if (listIds.length === 0) {
+    throw new TasksError("validation", "L'ordre des listes est vide.");
+  }
+  if (new Set(listIds).size !== listIds.length) {
+    throw new TasksError("validation", "Une liste ne peut pas apparaître deux fois dans l'ordre.");
+  }
+
+  const visible = await listLists(actor);
+  const visibleIds = visible.map((entry) => entry.list.id);
+  const submitted = new Set(listIds);
+  if (submitted.size !== visibleIds.length || visibleIds.some((id) => !submitted.has(id))) {
+    throw new TasksError("validation", "L'ordre soumis ne correspond pas à vos listes.");
+  }
+  for (const entry of visible) {
+    if (!roleSatisfies(entry.role, "write")) {
+      throw new TasksError("forbidden", "Permission insuffisante sur cette liste.");
+    }
+  }
+
+  await withTransaction(async (tx) => {
+    for (const [position, listId] of listIds.entries()) {
+      await tx.update(taskLists).set({ position }).where(eq(taskLists.id, listId));
+    }
+  });
+
+  await recordAudit({
+    orgId: actor.orgId,
+    actorUserId: actor.userId,
+    action: "tasks.list.reorder",
+    resourceType: "task_list",
+    result: "success",
+    metadata: { lists: listIds.length },
+  });
+
+  return listLists(actor);
 }
 
 // ---------------------------------------------------------------------------
@@ -227,10 +305,48 @@ export async function listListGrants(actor: Actor, listId: string): Promise<Reso
 // Tâches
 // ---------------------------------------------------------------------------
 
+export type TaskWithLabels = Task & { labels: TaskLabel[] };
+
+/** Étiquettes d'un lot de tâches, en une requête (jamais une requête par tâche). */
+async function attachLabels(orgId: string, rows: readonly Task[]): Promise<TaskWithLabels[]> {
+  if (rows.length === 0) return [];
+  const links = await db()
+    .select({ taskId: taskLabelLinks.taskId, label: taskLabels })
+    .from(taskLabelLinks)
+    .innerJoin(taskLabels, eq(taskLabelLinks.labelId, taskLabels.id))
+    .where(
+      and(
+        eq(taskLabels.orgId, orgId),
+        inArray(
+          taskLabelLinks.taskId,
+          rows.map((row) => row.id),
+        ),
+      ),
+    );
+
+  const byTask = new Map<string, TaskLabel[]>();
+  for (const link of links) {
+    const bucket = byTask.get(link.taskId);
+    if (bucket) bucket.push(link.label);
+    else byTask.set(link.taskId, [link.label]);
+  }
+
+  return rows.map((row) => ({
+    ...row,
+    // Ordre stable lisible : nom d'étiquette, départagé par son identifiant.
+    labels: (byTask.get(row.id) ?? []).sort(
+      (a, b) => a.name.localeCompare(b.name, "fr") || a.id.localeCompare(b.id),
+    ),
+  }));
+}
+
 /** Tâches d'une liste : non terminées d'abord, puis échéance croissante. */
-export async function listTasks(actor: Actor, input: { listId: string }): Promise<Task[]> {
+export async function listTasks(
+  actor: Actor,
+  input: { listId: string },
+): Promise<TaskWithLabels[]> {
   await assertList(actor, "read", input.listId);
-  return db()
+  const rows = await db()
     .select()
     .from(tasks)
     .where(eq(tasks.listId, input.listId))
@@ -239,11 +355,12 @@ export async function listTasks(actor: Actor, input: { listId: string }): Promis
       sql`${tasks.dueAt} asc nulls last`,
       asc(tasks.createdAt),
     );
+  return attachLabels(actor.orgId, rows);
 }
 
 export type MyTasksWindow = "today" | "week" | "all";
 
-export type MyTaskEntry = { task: Task; listName: string };
+export type MyTaskEntry = { task: TaskWithLabels; listName: string };
 
 /** Bornes de l'agrégat « Mes tâches » : on ne parcourt jamais tout l'espace de travail. */
 const MY_TASKS_MAX_LISTS = 30;
@@ -339,6 +456,7 @@ export async function createTask(
     priority?: TaskPriority;
     dueAt?: string | null;
     assigneeId?: string | null;
+    labelIds?: readonly string[];
   },
 ): Promise<Task> {
   await assertList(actor, "write", input.listId);
@@ -357,6 +475,7 @@ export async function createTask(
     })
     .returning();
   if (!row) throw new TasksError("conflict", "Création impossible.");
+  if (input.labelIds) await replaceTaskLabels(actor, row.id, input.labelIds);
   await recordAudit({
     orgId: actor.orgId,
     actorUserId: actor.userId,
@@ -384,6 +503,7 @@ export async function updateTask(
     status?: TaskStatus;
     dueAt?: string | null;
     assigneeId?: string | null;
+    labelIds?: readonly string[];
   },
 ): Promise<Task> {
   const [task] = await db()
@@ -406,8 +526,18 @@ export async function updateTask(
     updates.completedAt = patch.status === "done" ? new Date() : null;
   }
 
-  const [row] = await db().update(tasks).set(updates).where(eq(tasks.id, taskId)).returning();
-  if (!row) throw new TasksError("not_found", "Tâche introuvable.");
+  // Les étiquettes vivent dans leur propre table : elles sont remplacées ici,
+  // avant (ou sans) la mise à jour de la tâche elle-même.
+  if (patch.labelIds !== undefined) await replaceTaskLabels(actor, taskId, patch.labelIds);
+
+  // Une mise à jour qui ne porte QUE sur les étiquettes n'a rien à écrire dans
+  // la table `tasks` : on saute l'UPDATE plutôt que d'envoyer un `set()` vide.
+  let updated = task;
+  if (Object.keys(updates).length > 0) {
+    const [row] = await db().update(tasks).set(updates).where(eq(tasks.id, taskId)).returning();
+    if (!row) throw new TasksError("not_found", "Tâche introuvable.");
+    updated = row;
+  }
 
   // Notification best-effort : la tâche change d'assigné et le nouveau
   // destinataire est membre de l'organisation.
@@ -423,13 +553,13 @@ export async function updateTask(
         orgId: actor.orgId,
         userId: nextAssignee,
         kind: "task_assigned",
-        title: `Tâche assignée : « ${row.title} »`,
+        title: `Tâche assignée : « ${updated.title} »`,
         href: getAppUrls().tasks,
       }).catch(() => undefined);
     }
   }
 
-  return row;
+  return updated;
 }
 
 export async function deleteTask(actor: Actor, taskId: string): Promise<void> {
@@ -450,5 +580,201 @@ export async function deleteTask(actor: Actor, taskId: string): Promise<void> {
     resourceType: "task",
     resourceId: taskId,
     result: "success",
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Étiquettes
+// ---------------------------------------------------------------------------
+
+function assertLabelName(name: string): string {
+  const trimmed = name.trim();
+  if (trimmed.length < 1 || trimmed.length > LABEL_NAME_MAX) {
+    throw new TasksError(
+      "validation",
+      `Le nom de l'étiquette doit contenir entre 1 et ${LABEL_NAME_MAX} caractères.`,
+    );
+  }
+  const hasForbiddenChar = [...trimmed].some((char) => (char.codePointAt(0) ?? 0) < 0x20);
+  if (hasForbiddenChar) {
+    throw new TasksError(
+      "validation",
+      "Le nom de l'étiquette contient des caractères de contrôle.",
+    );
+  }
+  return trimmed;
+}
+
+function assertLabelColor(color: string): TaskLabelColor {
+  if (!TASK_LABEL_COLORS.includes(color as TaskLabelColor)) {
+    throw new TasksError("validation", "Couleur d'étiquette inconnue.");
+  }
+  return color as TaskLabelColor;
+}
+
+/**
+ * Les étiquettes sont une ressource d'ORGANISATION, pas de liste : tout membre
+ * de l'organisation les gère (créer, renommer, recolorer, supprimer) et les
+ * voit, sans égard aux listes qu'il fréquente. Chaque requête est filtrée sur
+ * `org_id`, donc aucune fuite inter-organisations n'est possible.
+ */
+/** Étiquettes de l'organisation, par ordre alphabétique français. */
+export async function listLabels(actor: Actor): Promise<TaskLabel[]> {
+  return db()
+    .select()
+    .from(taskLabels)
+    .where(eq(taskLabels.orgId, actor.orgId))
+    .orderBy(asc(taskLabels.name));
+}
+
+export async function createLabel(
+  actor: Actor,
+  input: { name: string; color?: string },
+): Promise<TaskLabel> {
+  const name = assertLabelName(input.name);
+  const color = assertLabelColor(input.color ?? "blue");
+
+  try {
+    const [row] = await db()
+      .insert(taskLabels)
+      .values({ orgId: actor.orgId, createdBy: actor.userId, name, color })
+      .returning();
+    // Contrainte d'unicité (organisation + nom) : deux étiquettes homonymes
+    // rendraient la liste de choix ambiguë.
+    if (!row) throw new TasksError("conflict", "Cette étiquette existe déjà.");
+
+    await recordAudit({
+      orgId: actor.orgId,
+      actorUserId: actor.userId,
+      action: "tasks.label.create",
+      resourceType: "task_label",
+      resourceId: row.id,
+      result: "success",
+      metadata: { name: row.name, color: row.color },
+    });
+    return row;
+  } catch (error) {
+    if (isUniqueViolation(error)) {
+      throw new TasksError("conflict", "Cette étiquette existe déjà.");
+    }
+    throw error;
+  }
+}
+
+export async function updateLabel(
+  actor: Actor,
+  labelId: string,
+  patch: { name?: string; color?: string },
+): Promise<TaskLabel> {
+  const updates: Partial<typeof taskLabels.$inferInsert> = {};
+  if (patch.name !== undefined) updates.name = assertLabelName(patch.name);
+  if (patch.color !== undefined) updates.color = assertLabelColor(patch.color);
+  if (Object.keys(updates).length === 0) {
+    const [current] = await db()
+      .select()
+      .from(taskLabels)
+      .where(and(eq(taskLabels.id, labelId), eq(taskLabels.orgId, actor.orgId)))
+      .limit(1);
+    if (!current) throw new TasksError("not_found", "Étiquette introuvable.");
+    return current;
+  }
+
+  try {
+    const [row] = await db()
+      .update(taskLabels)
+      .set(updates)
+      .where(and(eq(taskLabels.id, labelId), eq(taskLabels.orgId, actor.orgId)))
+      .returning();
+    if (!row) throw new TasksError("not_found", "Étiquette introuvable.");
+    return row;
+  } catch (error) {
+    // Le renommage bute sur une étiquette homonyme : on le dit en français.
+    if (isUniqueViolation(error)) {
+      throw new TasksError("conflict", "Cette étiquette existe déjà.");
+    }
+    throw error;
+  }
+}
+
+/** Suppression : les liaisons avec les tâches suivent en cascade. */
+export async function deleteLabel(actor: Actor, labelId: string): Promise<void> {
+  const deleted = await db()
+    .delete(taskLabels)
+    .where(and(eq(taskLabels.id, labelId), eq(taskLabels.orgId, actor.orgId)))
+    .returning({ id: taskLabels.id });
+  if (deleted.length === 0) throw new TasksError("not_found", "Étiquette introuvable.");
+
+  await recordAudit({
+    orgId: actor.orgId,
+    actorUserId: actor.userId,
+    action: "tasks.label.delete",
+    resourceType: "task_label",
+    resourceId: labelId,
+    result: "success",
+  });
+}
+
+/** Étiquettes d'une tâche (lecture seule : droits de la liste porteuse). */
+export async function listTaskLabels(actor: Actor, taskId: string): Promise<TaskLabel[]> {
+  const [task] = await db()
+    .select()
+    .from(tasks)
+    .where(and(eq(tasks.id, taskId), eq(tasks.orgId, actor.orgId)))
+    .limit(1);
+  if (!task) throw new TasksError("not_found", "Tâche introuvable.");
+
+  await assertList(actor, "read", task.listId);
+  return db()
+    .select({ label: taskLabels })
+    .from(taskLabelLinks)
+    .innerJoin(taskLabels, eq(taskLabelLinks.labelId, taskLabels.id))
+    .where(and(eq(taskLabelLinks.taskId, taskId), eq(taskLabels.orgId, actor.orgId)))
+    .orderBy(asc(taskLabels.name))
+    .then((rows) => rows.map((row) => row.label));
+}
+
+/**
+ * Remplace les étiquettes d'une tâche par `labelIds`. L'écriture sur la liste
+ * porteuse est exigée, et chaque étiquette doit appartenir à la même
+ * organisation : aucune fuite inter-organisations par ce biais.
+ */
+export async function setTaskLabels(
+  actor: Actor,
+  taskId: string,
+  labelIds: readonly string[],
+): Promise<TaskLabel[]> {
+  const [task] = await db()
+    .select()
+    .from(tasks)
+    .where(and(eq(tasks.id, taskId), eq(tasks.orgId, actor.orgId)))
+    .limit(1);
+  if (!task) throw new TasksError("not_found", "Tâche introuvable.");
+
+  await assertList(actor, "write", task.listId);
+  await replaceTaskLabels(actor, taskId, labelIds);
+  return listTaskLabels(actor, taskId);
+}
+
+async function replaceTaskLabels(
+  actor: Actor,
+  taskId: string,
+  labelIds: readonly string[],
+): Promise<void> {
+  const wanted = [...new Set(labelIds)];
+  if (wanted.length > 0) {
+    const known = await db()
+      .select({ id: taskLabels.id })
+      .from(taskLabels)
+      .where(and(eq(taskLabels.orgId, actor.orgId), inArray(taskLabels.id, wanted)));
+    if (known.length !== wanted.length) {
+      throw new TasksError("validation", "Une étiquette est introuvable dans votre organisation.");
+    }
+  }
+
+  await withTransaction(async (tx) => {
+    await tx.delete(taskLabelLinks).where(eq(taskLabelLinks.taskId, taskId));
+    if (wanted.length > 0) {
+      await tx.insert(taskLabelLinks).values(wanted.map((labelId) => ({ taskId, labelId })));
+    }
   });
 }

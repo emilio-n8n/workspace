@@ -4,19 +4,26 @@ import { type Actor, createGrant, revokeGrant } from "@workspace/permissions";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  createLabel,
   createList,
   createTask,
+  deleteLabel,
   deleteList,
   deleteTask,
   effectiveListRole,
+  listLabels,
   listListGrants,
   listLists,
   listMyTasks,
+  listTaskLabels,
   listTasks,
   renameList,
+  reorderLists,
+  setTaskLabels,
   shareList,
   TasksError,
   unshareList,
+  updateLabel,
   updateTask,
 } from "../src/index.ts";
 
@@ -535,5 +542,210 @@ describe("tasks — audit", () => {
     await updateTask(f.actorAlice, task.id, { status: "done" });
     await updateTask(f.actorAlice, task.id, { status: "todo", title: "Rebasculée" });
     expect(await countAuditRows(f.orgId)).toBe(before);
+  });
+});
+
+describe("tasks — ordre du panneau des listes", () => {
+  it("crée en fin de panneau et réordonne à la demande", async () => {
+    const premiere = await createList(f.actorAlice, { name: "Première" });
+    const deuxieme = await createList(f.actorAlice, { name: "Deuxième" });
+    const troisieme = await createList(f.actorAlice, { name: "Troisième" });
+
+    expect((await listLists(f.actorAlice)).map((entry) => entry.list.name)).toEqual([
+      "Première",
+      "Deuxième",
+      "Troisième",
+    ]);
+
+    const ordered = await reorderLists(f.actorAlice, [troisieme.id, premiere.id, deuxieme.id]);
+    expect(ordered.map((entry) => entry.list.id)).toEqual([troisieme.id, premiere.id, deuxieme.id]);
+    // L'ordre est relu depuis la base : la position n'est pas qu'un affichage local.
+    expect((await listLists(f.actorAlice)).map((entry) => entry.list.name)).toEqual([
+      "Troisième",
+      "Première",
+      "Deuxième",
+    ]);
+  });
+
+  it("refuse un ordre vide, en doublon, incomplet ou étranger", async () => {
+    const list = await createList(f.actorAlice, { name: "Ordre" });
+    const other = await createList(f.actorAlice, { name: "Autre" });
+
+    await expect(reorderLists(f.actorAlice, [])).rejects.toMatchObject({ code: "validation" });
+    await expect(reorderLists(f.actorAlice, [list.id, list.id])).rejects.toMatchObject({
+      code: "validation",
+    });
+    await expect(reorderLists(f.actorAlice, [list.id])).rejects.toMatchObject({
+      code: "validation",
+    });
+    await expect(
+      reorderLists(f.actorAlice, [list.id, other.id, "00000000-0000-0000-0000-000000000000"]),
+    ).rejects.toMatchObject({ code: "validation" });
+
+    // Aucun des refus n'a bougé l'ordre existant.
+    expect((await listLists(f.actorAlice)).map((entry) => entry.list.id)).toEqual([
+      list.id,
+      other.id,
+    ]);
+  });
+
+  it("exige l'écriture sur chaque liste déplacée, isolation comprise", async () => {
+    const shared = await createList(f.actorAlice, { name: "Partagée" });
+    await shareList(f.actorAlice, shared.id, {
+      subject: { kind: "user", id: f.bruno },
+      role: "viewer",
+    });
+    const foreign = await createList(f.actorChloe, { name: "Chez Chloé" });
+
+    await expect(reorderLists(f.actorBruno, [shared.id])).rejects.toMatchObject({
+      code: "forbidden",
+    });
+    await expect(reorderLists(f.actorChloe, [foreign.id, shared.id])).rejects.toMatchObject({
+      code: "validation",
+    });
+
+    // Promu éditeur, Bruno réordonne la liste partagée.
+    for (const grant of await listListGrants(f.actorAlice, shared.id)) {
+      await unshareList(f.actorAlice, shared.id, grant.id);
+    }
+    await createGrant({
+      resource: { type: "task_list", id: shared.id, orgId: f.orgId },
+      subject: { kind: "user", id: f.bruno },
+      role: "editor",
+      actor: f.actorAlice,
+    });
+
+    const ordered = await reorderLists(f.actorBruno, [shared.id]);
+    expect(ordered.map((entry) => entry.list.id)).toEqual([shared.id]);
+  });
+
+  it("journalise la réorganisation sans bruit sur les autres actions", async () => {
+    const list = await createList(f.actorAlice, { name: "Audit ordre" });
+    const before = await countAuditRows(f.orgId);
+
+    await reorderLists(f.actorAlice, [list.id]);
+
+    const rows = await getDb().select().from(auditEvents).where(eq(auditEvents.orgId, f.orgId));
+    expect(rows.length - before).toBe(1);
+    expect(rows.at(-1)).toMatchObject({
+      action: "tasks.list.reorder",
+      resourceType: "task_list",
+      result: "success",
+    });
+  });
+});
+
+describe("tasks — étiquettes", () => {
+  it("crée, renomme, recolore puis supprime, dans l'ordre alphabétique", async () => {
+    const zebre = await createLabel(f.actorAlice, { name: "Zèbre", color: "red" });
+    const urgent = await createLabel(f.actorAlice, { name: "Urgent" });
+    expect(urgent.color).toBe("blue");
+
+    const rows = await listLabels(f.actorAlice);
+    expect(rows.map((label) => label.name)).toEqual(["Urgent", "Zèbre"]);
+
+    const renamed = await updateLabel(f.actorAlice, zebre.id, { name: "Zébu", color: "green" });
+    expect(renamed.name).toBe("Zébu");
+    expect(renamed.color).toBe("green");
+
+    await expect(createLabel(f.actorAlice, { name: "Urgent" })).rejects.toMatchObject({
+      code: "conflict",
+    });
+    await expect(updateLabel(f.actorAlice, zebre.id, { name: "Urgent" })).rejects.toMatchObject({
+      code: "conflict",
+    });
+    await expect(
+      createLabel(f.actorAlice, { name: "Turquoise", color: "turquoise" }),
+    ).rejects.toMatchObject({
+      code: "validation",
+    });
+    await expect(createLabel(f.actorAlice, { name: "  " })).rejects.toMatchObject({
+      code: "validation",
+    });
+
+    await deleteLabel(f.actorAlice, zebre.id);
+    expect((await listLabels(f.actorAlice)).map((label) => label.id)).toEqual([urgent.id]);
+    await expect(deleteLabel(f.actorAlice, zebre.id)).rejects.toMatchObject({ code: "not_found" });
+  });
+
+  it("isole les étiquettes par organisation", async () => {
+    await createLabel(f.actorAlice, { name: "Client" });
+    const chezChloe = await createList(f.actorChloe, { name: "Chez Chloé" });
+    expect(chezChloe.orgId).toBe(f.otherOrgId);
+
+    expect(await listLabels(f.actorChloe)).toHaveLength(0);
+    // Chloé a le droit d'écrire chez elle : le service refuse quand même, avant
+    // toute recherche, parce que l'étiquette appartient à une autre organisation.
+    await expect(
+      updateLabel(f.actorChloe, "00000000-0000-0000-0000-000000000000", { name: "Vol" }),
+    ).rejects.toMatchObject({ code: "not_found" });
+  });
+
+  it("attache, remplace et vide les étiquettes d'une tâche", async () => {
+    const list = await createList(f.actorAlice, { name: "Étiquettes" });
+    const urgent = await createLabel(f.actorAlice, { name: "Urgent", color: "red" });
+    const client = await createLabel(f.actorAlice, { name: "Client", color: "blue" });
+    const perso = await createLabel(f.actorAlice, { name: "Perso", color: "green" });
+
+    const task = await createTask(f.actorAlice, {
+      listId: list.id,
+      title: "Relire le dossier",
+      labelIds: [urgent.id, client.id],
+    });
+    const rows = await listTasks(f.actorAlice, { listId: list.id });
+    expect(rows[0]?.labels.map((label) => label.name)).toEqual(["Client", "Urgent"]);
+
+    // Remplacement : « perso » remplace les deux précédentes.
+    const attached = await setTaskLabels(f.actorAlice, task.id, [perso.id]);
+    expect(attached.map((label) => label.id)).toEqual([perso.id]);
+
+    // Mise à jour ordinaire : les étiquettes se vident aussi.
+    await updateTask(f.actorAlice, task.id, { labelIds: [] });
+    expect(await listTaskLabels(f.actorAlice, task.id)).toHaveLength(0);
+
+    // Une étiquette étrangère à l'organisation est refusée.
+    const foreign = await createLabel(f.actorChloe, { name: "Externe" });
+    await expect(setTaskLabels(f.actorAlice, task.id, [foreign.id])).rejects.toMatchObject({
+      code: "validation",
+    });
+    expect(await listTaskLabels(f.actorAlice, task.id)).toHaveLength(0);
+  });
+
+  it("supprime les liaisons en cascade sans toucher aux tâches", async () => {
+    const list = await createList(f.actorAlice, { name: "Cascade" });
+    const label = await createLabel(f.actorAlice, { name: "Perso" });
+    const task = await createTask(f.actorAlice, {
+      listId: list.id,
+      title: "Arroser les plantes",
+      labelIds: [label.id],
+    });
+
+    await deleteLabel(f.actorAlice, label.id);
+
+    const rows = await listTasks(f.actorAlice, { listId: list.id });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.id).toBe(task.id);
+    expect(rows[0]?.labels).toHaveLength(0);
+  });
+
+  it("réserve les étiquettes à l'organisation, partages de listes compris", async () => {
+    const shared = await createList(f.actorAlice, { name: "Lecture seule" });
+    await shareList(f.actorAlice, shared.id, {
+      subject: { kind: "user", id: f.bruno },
+      role: "viewer",
+    });
+    const label = await createLabel(f.actorAlice, { name: "Partagé" });
+
+    // Un simple lecteur de liste voit la nomenclature : il en a besoin pour
+    // lire une tâche étiquetée, et l'étiquette appartient à l'organisation.
+    expect((await listLabels(f.actorBruno)).map((row) => row.id)).toEqual([label.id]);
+    expect((await updateLabel(f.actorBruno, label.id, { name: "Commun" })).name).toBe("Commun");
+
+    // Attacher une étiquette à une tâche reste soumis aux droits de la liste.
+    const task = await createTask(f.actorAlice, { listId: shared.id, title: "Visible" });
+    await expect(setTaskLabels(f.actorBruno, task.id, [label.id])).rejects.toMatchObject({
+      code: "forbidden",
+    });
+    await expect(listTaskLabels(f.actorAlice, task.id)).resolves.toHaveLength(0);
   });
 });

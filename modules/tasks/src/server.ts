@@ -5,24 +5,38 @@ import { schema as coreSchema, getDb } from "@workspace/database";
 import { asc, eq } from "drizzle-orm";
 import { z } from "zod";
 import {
+  createLabel,
   createList,
   createTask,
+  deleteLabel,
   deleteList,
   deleteTask,
+  listLabels,
   listListGrants,
   listLists,
   listMyTasks,
+  listTaskLabels,
   listTasks,
   renameList,
+  reorderLists,
   shareList,
   type Task,
+  type TaskLabel,
   unshareList,
+  updateLabel,
   updateTask,
 } from "./index.ts";
 
 export type { MyTasksWindow } from "./index.ts";
 
-export type TaskListView = { id: string; name: string; role: string; isOwner: boolean };
+export type TaskListView = {
+  id: string;
+  name: string;
+  role: string;
+  isOwner: boolean;
+  canEdit: boolean;
+  position: number;
+};
 export type TaskView = {
   id: string;
   listId: string;
@@ -34,12 +48,19 @@ export type TaskView = {
   completedAt: string | null;
   assigneeId: string | null;
   updatedAt: string;
+  createdAt: string;
+  labels: TaskLabelView[];
 };
+export type TaskLabelView = { id: string; name: string; color: string };
 export type MemberView = { userId: string; name: string; email: string };
 export type ListGrantView = { id: string; subjectLabel: string; role: string };
 export type MyTaskView = TaskView & { listName: string };
 
-function toTaskView(task: Task): TaskView {
+function toLabelView(label: TaskLabel): TaskLabelView {
+  return { id: label.id, name: label.name, color: label.color };
+}
+
+function toTaskView(task: Task & { labels?: readonly TaskLabel[] }): TaskView {
   return {
     id: task.id,
     listId: task.listId,
@@ -51,6 +72,8 @@ function toTaskView(task: Task): TaskView {
     completedAt: task.completedAt?.toISOString() ?? null,
     assigneeId: task.assigneeId,
     updatedAt: task.updatedAt.toISOString(),
+    createdAt: task.createdAt.toISOString(),
+    labels: (task.labels ?? []).map(toLabelView),
   };
 }
 
@@ -70,9 +93,29 @@ export const listTaskListsFn = createServerFn({ method: "GET" }).handler(
       name: row.list.name,
       role: row.role,
       isOwner: row.role === "owner",
+      canEdit: row.role === "owner" || row.role === "editor",
+      position: row.list.position,
     }));
   },
 );
+
+const reorderInput = z.object({ listIds: z.array(z.string().uuid()).min(1) });
+
+/** Réordonne le panneau des listes : l'ordre complet, dans sa nouvelle suite. */
+export const reorderTaskListsFn = createServerFn({ method: "POST" })
+  .validator((input: unknown) => reorderInput.parse(input))
+  .handler(async ({ data }): Promise<TaskListView[]> => {
+    const { actor } = await requireActor(getRequest().headers);
+    const rows = await reorderLists(actor, data.listIds);
+    return rows.map((row) => ({
+      id: row.list.id,
+      name: row.list.name,
+      role: row.role,
+      isOwner: row.role === "owner",
+      canEdit: row.role === "owner" || row.role === "editor",
+      position: row.list.position,
+    }));
+  });
 
 export const createTaskListFn = createServerFn({ method: "POST" })
   .validator((input: unknown) => z.object({ name: z.string().trim().min(1).max(500) }).parse(input))
@@ -135,6 +178,7 @@ export const createTaskFn = createServerFn({ method: "POST" })
         priority: z.enum(["low", "medium", "high"]).optional(),
         dueAt: z.string().nullable().optional(),
         assigneeId: z.string().nullable().optional(),
+        labelIds: z.array(z.string().uuid()).max(20).optional(),
       })
       .parse(input),
   )
@@ -146,8 +190,12 @@ export const createTaskFn = createServerFn({ method: "POST" })
       priority: data.priority,
       dueAt: data.dueAt,
       assigneeId: data.assigneeId,
+      labelIds: data.labelIds,
     });
-    return toTaskView(task);
+    // Les étiquettes sont relues par le chemin public : la vue renvoyée dit la
+    // vérité de ce qui a bien été attaché.
+    const labels = await listTaskLabels(actor, task.id);
+    return toTaskView({ ...task, labels });
   });
 
 export const updateTaskFn = createServerFn({ method: "POST" })
@@ -161,6 +209,7 @@ export const updateTaskFn = createServerFn({ method: "POST" })
         status: z.enum(["todo", "in_progress", "done"]).optional(),
         dueAt: z.string().nullable().optional(),
         assigneeId: z.string().nullable().optional(),
+        labelIds: z.array(z.string().uuid()).max(20).optional(),
       })
       .parse(input),
   )
@@ -168,7 +217,7 @@ export const updateTaskFn = createServerFn({ method: "POST" })
     const { actor } = await requireActor(getRequest().headers);
     const { taskId, ...patch } = data;
     const task = await updateTask(actor, taskId, patch);
-    return toTaskView(task);
+    return toTaskView({ ...task, labels: await listTaskLabels(actor, task.id) });
   });
 
 export const deleteTaskFn = createServerFn({ method: "POST" })
@@ -254,4 +303,61 @@ export const listTaskListGrantsFn = createServerFn({ method: "GET" })
       views.push({ id: grant.id, subjectLabel: label, role: grant.role });
     }
     return views;
+  });
+
+// ---------------------------------------------------------------------------
+// Étiquettes
+// ---------------------------------------------------------------------------
+
+const labelColors = ["green", "blue", "amber", "violet", "red", "slate"] as const;
+
+/** Étiquettes de l'organisation (toutes listes confondues). */
+export const listTaskLabelsFn = createServerFn({ method: "GET" }).handler(
+  async (): Promise<TaskLabelView[]> => {
+    const { actor } = await requireActor(getRequest().headers);
+    const rows = await listLabels(actor);
+    return rows.map(toLabelView);
+  },
+);
+
+export const createTaskLabelFn = createServerFn({ method: "POST" })
+  .validator((input: unknown) =>
+    z
+      .object({
+        name: z.string().trim().min(1).max(40),
+        color: z.enum(labelColors).optional(),
+      })
+      .parse(input),
+  )
+  .handler(async ({ data }): Promise<TaskLabelView> => {
+    const { actor } = await requireActor(getRequest().headers);
+    const label = await createLabel(actor, { name: data.name, color: data.color });
+    return toLabelView(label);
+  });
+
+export const updateTaskLabelFn = createServerFn({ method: "POST" })
+  .validator((input: unknown) =>
+    z
+      .object({
+        labelId: z.string().uuid(),
+        name: z.string().trim().min(1).max(40).optional(),
+        color: z.enum(labelColors).optional(),
+      })
+      .parse(input),
+  )
+  .handler(async ({ data }): Promise<TaskLabelView> => {
+    const { actor } = await requireActor(getRequest().headers);
+    const label = await updateLabel(actor, data.labelId, {
+      name: data.name,
+      color: data.color,
+    });
+    return toLabelView(label);
+  });
+
+export const deleteTaskLabelFn = createServerFn({ method: "POST" })
+  .validator((input: unknown) => z.object({ labelId: z.string().uuid() }).parse(input))
+  .handler(async ({ data }) => {
+    const { actor } = await requireActor(getRequest().headers);
+    await deleteLabel(actor, data.labelId);
+    return { ok: true };
   });

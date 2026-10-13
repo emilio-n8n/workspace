@@ -15,6 +15,13 @@
       "when": 1791828583150,
       "tag": "0001_bored_toxin",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1791923391000,
+      "tag": "0002_serene_order",
+      "breakpoints": true
     }
   ]
 }
