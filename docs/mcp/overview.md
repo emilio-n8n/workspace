@@ -37,7 +37,7 @@ Agent (stdio ou HTTP) ──► apps/mcp-server ──► modules/*/service.ts �
 | `errors` | typées — jamais de détail interne au-delà du message métier |
 | `audit` | acteur, org, outil, résultat (succès **et** refus) dans `audit_events` |
 
-## Outils livrés (v3 — 27)
+## Outils livrés (v3 — 29)
 
 | Outil | Scopes | Description |
 |---|---|---|
@@ -48,6 +48,8 @@ Agent (stdio ou HTTP) ──► apps/mcp-server ──► modules/*/service.ts �
 | `files.write` | `drive:write` | Création d'un fichier texte (mime allowlist, ≤ 2 Mo, quota appliqué) |
 | `files.delete` | `drive:write` | Suppression (corbeille par défaut ; définitive = propriétaire + déjà en corbeille) — **confirmation « SUPPRIMER » exigée** |
 | `docs.read` | `docs:read` | Lecture du texte d'un document (extraction plain text) |
+| `docs.list_versions` | `docs:read` | Historique des versions d'un document |
+| `docs.restore_version` | `docs:write` | Restaure une version (crée une nouvelle version, auditée) |
 | `tasks.lists` / `tasks.list` | `tasks:read` | Listes accessibles avec rôle ; tâches (statut, priorité, échéance) |
 | `tasks.create` / `tasks.update` / `tasks.complete` | `tasks:write` | Création, mise à jour, terminaison |
 | `calendar.list` / `calendar.create` | `calendar:read` / `calendar:write` | Événements par plage ; création dans l'agenda personnel |
