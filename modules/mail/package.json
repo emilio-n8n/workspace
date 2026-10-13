@@ -28,7 +28,7 @@
     "react": "^19.2.0",
     "zod": "^4.1.12",
     "@workspace/config": "workspace:*",
-    "nodemailer": "^7.0.5"
+    "nodemailer": "^10.1.0"
   },
   "devDependencies": {
     "@types/node": "^22.20.5",
