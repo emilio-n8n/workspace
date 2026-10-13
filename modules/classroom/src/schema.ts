@@ -110,7 +110,55 @@ export const classroomSubmissionAttachments = pgTable(
   (table) => [index("classroom_submission_attachments_submission_idx").on(table.submissionId)],
 );
 
+/**
+ * Publications du fil d'actualité d'un cours. Seuls les enseignants publient ;
+ * les membres commentent (table classroom_announcement_comments).
+ */
+export const classroomAnnouncements = pgTable(
+  "classroom_announcements",
+  {
+    id: uuid("id").primaryKey().default(sql`uuidv7()`),
+    courseId: uuid("course_id")
+      .notNull()
+      .references(() => classroomCourses.id, { onDelete: "cascade" }),
+    authorId: text("author_id")
+      .notNull()
+      .references(() => core.user.id, { onDelete: "cascade" }),
+    body: text("body").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [index("classroom_announcements_course_idx").on(table.courseId, table.createdAt)],
+);
+
+/**
+ * Commentaires d'une publication. N'importe quel membre du cours peut
+ * commenter ; seuls l'auteur du commentaire et les enseignants du cours
+ * peuvent le supprimer.
+ */
+export const classroomAnnouncementComments = pgTable(
+  "classroom_announcement_comments",
+  {
+    id: uuid("id").primaryKey().default(sql`uuidv7()`),
+    announcementId: uuid("announcement_id")
+      .notNull()
+      .references(() => classroomAnnouncements.id, { onDelete: "cascade" }),
+    authorId: text("author_id")
+      .notNull()
+      .references(() => core.user.id, { onDelete: "cascade" }),
+    body: text("body").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    index("classroom_announcement_comments_announcement_idx").on(
+      table.announcementId,
+      table.createdAt,
+    ),
+  ],
+);
+
 export type ClassroomCourseRow = typeof classroomCourses.$inferSelect;
 export type ClassroomAssignmentRow = typeof classroomAssignments.$inferSelect;
 export type ClassroomSubmissionRow = typeof classroomSubmissions.$inferSelect;
 export type ClassroomSubmissionAttachmentRow = typeof classroomSubmissionAttachments.$inferSelect;
+export type ClassroomAnnouncementRow = typeof classroomAnnouncements.$inferSelect;
+export type ClassroomAnnouncementCommentRow = typeof classroomAnnouncementComments.$inferSelect;

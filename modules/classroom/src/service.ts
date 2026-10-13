@@ -1,3 +1,16 @@
+/**
+ * Classroom — cours, devoirs, copies, fil d'actualité.
+ *
+ * **Modèle d'accès : l'adhésion, pas l'organisation.** Chaque inscription crée
+ * son propre espace personnel (`ensurePersonalOrganization`) : un enseignant et
+ * ses élèves vivent donc dans des organisations différentes. Un cours se
+ * rejoint avec son code d'accès (8 caractères, 31 symboles, jamais de
+ * caractère ambigu) et cette adhésion — et elle seule — ouvre le cours. C'est
+ * pourquoi `requireCourse` ne compare jamais `classroom_courses.orgId` à
+ * l'organisation de l'acteur : un filtre d'organisation rendrait tout devoir
+ * invisible à l'élève qui vient de le rejoindre. La frontière de sécurité,
+ * c'est `classroom_members` (un cours, un utilisateur, un rôle).
+ */
 import { randomBytes, randomUUID } from "node:crypto";
 import { recordAudit } from "@workspace/audit";
 import { getAppUrls } from "@workspace/config";
@@ -7,14 +20,23 @@ import type { Actor } from "@workspace/permissions";
 import { getStorage } from "@workspace/storage";
 import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import {
+  type ClassroomAnnouncementRow,
   type ClassroomCourseRow,
   type ClassroomSubmissionRow,
+  classroomAnnouncementComments,
+  classroomAnnouncements,
   classroomAssignments,
   classroomCourses,
   classroomMembers,
   classroomSubmissionAttachments,
   classroomSubmissions,
 } from "./schema.ts";
+import {
+  type AssignmentStatusCode,
+  assignmentStatus,
+  type SubmissionStatusCode,
+  submissionStatus,
+} from "./status.ts";
 
 export type ClassroomErrorCode = "not_found" | "forbidden" | "validation" | "conflict";
 
@@ -72,6 +94,20 @@ export type SubmissionAttachmentDownload = {
   body: Buffer;
 };
 
+/** Suivi des copies d'un devoir, réservé aux enseignants. */
+export type AssignmentCounts = {
+  /** Copies rendues, tous statuts confondus. */
+  submitted: number;
+  /** Copies rendues dans les temps, en attente de correction. */
+  onTime: number;
+  /** Copies rendues en retard, en attente de correction. */
+  late: number;
+  /** Copies notées. */
+  graded: number;
+  /** Élèves qui n'ont encore rien rendu. */
+  pending: number;
+};
+
 export type AssignmentView = {
   id: string;
   title: string;
@@ -80,6 +116,10 @@ export type AssignmentView = {
   points: number;
   submissionCount: number;
   mySubmission: SubmissionView | null;
+  /** Statut du devoir pour l'élève connecté (toujours renseigné). */
+  status: AssignmentStatusCode;
+  /** Suivi des copies pour un enseignant, `null` pour un élève. */
+  counts: AssignmentCounts | null;
 };
 
 export type CourseDetail = {
@@ -108,18 +148,55 @@ export const MAX_ATTACHMENTS = 5;
 export const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 const MAX_ATTACHMENT_FILENAME_LENGTH = 255;
 const MAX_CONTENT_TYPE_LENGTH = 200;
+/** Consignes d'un devoir, un devoir pouvant être un énoncé long. */
+export const MAX_INSTRUCTIONS_LENGTH = 20_000;
+/** Barème d'un devoir, en points. */
+export const MAX_POINTS = 1000;
 
 function isUniqueViolation(error: unknown): boolean {
   const candidate = error as { code?: string; cause?: { code?: string } };
   return candidate?.code === "23505" || candidate?.cause?.code === "23505";
 }
 
-function assertName(name: string, label = "Le nom"): string {
-  const trimmed = name.trim();
-  if (trimmed.length < 1 || trimmed.length > 150) {
-    throw new ClassroomError("validation", `${label} doit contenir entre 1 et 150 caractères.`);
+/** Limite de longueur partagée par les champs textuels courts (nom, titre). */
+const MAX_NAME_LENGTH = 150;
+
+/** Coupe, borne et refuse le vide — message en français, jamais d'écrêtage. */
+function assertText(value: string, label: string, max: number): string {
+  const trimmed = value.trim();
+  if (trimmed.length < 1 || trimmed.length > max) {
+    throw new ClassroomError("validation", `${label} doit contenir entre 1 et ${max} caractères.`);
   }
   return trimmed;
+}
+
+function assertName(name: string, label = "Le nom"): string {
+  return assertText(name, label, MAX_NAME_LENGTH);
+}
+
+/**
+ * Barème d'un devoir : entier entre 0 et 1000, sans écrêtage silencieux —
+ * une valeur hors bornes est refusée, comme pour une note.
+ */
+function assertPoints(value: number | undefined): number {
+  if (value === undefined) return 100;
+  if (!Number.isInteger(value) || value < 0 || value > MAX_POINTS) {
+    throw new ClassroomError(
+      "validation",
+      `Le barème doit être un nombre entier entre 0 et ${MAX_POINTS}.`,
+    );
+  }
+  return value;
+}
+
+/** Échéance d'un devoir : ISO 8601, ou `null` pour un devoir sans échéance. */
+function parseDueAt(value: string | null): Date | null {
+  if (value === null) return null;
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    throw new ClassroomError("validation", "Échéance invalide.");
+  }
+  return parsed;
 }
 
 /**
@@ -162,9 +239,11 @@ async function requireCourse(
     .from(classroomCourses)
     .where(eq(classroomCourses.id, courseId))
     .limit(1);
-  if (!course || course.orgId !== actor.orgId) {
+  if (!course) {
     throw new ClassroomError("not_found", "Cours introuvable.");
   }
+  // L'organisation du cours n'est PAS comparée à celle de l'acteur : un élève
+  // rejoint un cours depuis son propre espace personnel, l'adhésion décide.
   const [membership] = await db()
     .select({ role: classroomMembers.role })
     .from(classroomMembers)
@@ -254,12 +333,15 @@ export async function joinByCode(actor: Actor, code: string): Promise<{ courseId
     throw new ClassroomError("validation", "Code d'accès invalide.");
   }
 
+  // Recherche par code seul : le code est l'invitation, il fait franchir la
+  // frontière d'organisation (l'élève vient de son espace personnel). Un code
+  // inconnu ne dit rien de plus — même message qu'avant.
   const [course] = await db()
     .select()
     .from(classroomCourses)
     .where(eq(classroomCourses.joinCode, clean))
     .limit(1);
-  if (!course || course.orgId !== actor.orgId) {
+  if (!course) {
     throw new ClassroomError("not_found", "Aucun cours ne correspond à ce code.");
   }
 
@@ -273,10 +355,11 @@ export async function joinByCode(actor: Actor, code: string): Promise<{ courseId
     .returning({ id: classroomMembers.id });
 
   // Seule une adhésion réelle est journalisée : un second appel idempotent ne
-  // produit aucune ligne d'audit.
+  // produit aucune ligne d'audit. L'évènement appartient à l'organisation du
+  // cours (la ressource vit là), l'acteur, lui, vient d'ailleurs.
   if (inserted.length > 0) {
     await recordAudit({
-      orgId: actor.orgId,
+      orgId: course.orgId,
       actorUserId: actor.userId,
       action: "classroom.course.join",
       resourceType: "course",
@@ -288,11 +371,13 @@ export async function joinByCode(actor: Actor, code: string): Promise<{ courseId
 }
 
 export async function listCourses(actor: Actor): Promise<CourseSummary[]> {
+  // Tous les cours dont l'utilisateur est membre, quelle que soit
+  // l'organisation : l'élève retrouve le cours qu'il a rejoint par code.
   const rows = await db()
     .select({ course: classroomCourses, role: classroomMembers.role })
     .from(classroomMembers)
     .innerJoin(classroomCourses, eq(classroomCourses.id, classroomMembers.courseId))
-    .where(and(eq(classroomMembers.userId, actor.userId), eq(classroomCourses.orgId, actor.orgId)));
+    .where(eq(classroomMembers.userId, actor.userId));
   if (rows.length === 0) return [];
 
   const courseIds = rows.map((row) => row.course.id);
@@ -357,7 +442,10 @@ export async function getCourse(actor: Actor, courseId: string): Promise<CourseD
   const assignmentIds = assignmentRows.map((assignment) => assignment.id);
   const submissionCounts = new Map<string, number>();
   const mySubmissions = new Map<string, ClassroomSubmissionRow>();
+  /** Suivi des copies, agrégé pour les enseignants seulement. */
+  const tracked = new Map<string, { onTime: number; late: number; graded: number }>();
   let myAttachments = new Map<string, SubmissionAttachmentMeta[]>();
+  const studentCount = memberRows.filter((member) => member.role !== "teacher").length;
 
   if (assignmentIds.length > 0) {
     const [counts, mine] = await Promise.all([
@@ -383,17 +471,49 @@ export async function getCourse(actor: Actor, courseId: string): Promise<CourseD
     for (const row of mine) mySubmissions.set(row.assignmentId, row);
     // Les pièces jointes de mes copies, en une seule requête (pas de N+1).
     myAttachments = await attachmentsBySubmission(mine.map((row) => row.id));
+
+    // Une troisième requête, réservée aux enseignants, suffit à départager les
+    // copies rendues dans les temps, en retard et notées (mêmes priorités que
+    // `submissionStatus`, jamais une table de vérité séparée).
+    if (role === "teacher") {
+      const rows = await db()
+        .select({
+          assignmentId: classroomSubmissions.assignmentId,
+          grade: classroomSubmissions.grade,
+          submittedAt: classroomSubmissions.submittedAt,
+          dueAt: classroomAssignments.dueAt,
+        })
+        .from(classroomSubmissions)
+        .innerJoin(
+          classroomAssignments,
+          eq(classroomAssignments.id, classroomSubmissions.assignmentId),
+        )
+        .where(inArray(classroomSubmissions.assignmentId, assignmentIds));
+      for (const row of rows) {
+        const bucket = tracked.get(row.assignmentId) ?? { onTime: 0, late: 0, graded: 0 };
+        const code = submissionStatus({
+          submittedAt: row.submittedAt.toISOString(),
+          dueAt: row.dueAt?.toISOString() ?? null,
+          grade: row.grade,
+        });
+        if (code === "graded") bucket.graded += 1;
+        else if (code === "late") bucket.late += 1;
+        else bucket.onTime += 1;
+        tracked.set(row.assignmentId, bucket);
+      }
+    }
   }
 
   const assignments: AssignmentView[] = assignmentRows.map((assignment) => {
     const mine = mySubmissions.get(assignment.id);
+    const submitted = submissionCounts.get(assignment.id) ?? 0;
     return {
       id: assignment.id,
       title: assignment.title,
       instructions: assignment.instructions,
       dueAt: assignment.dueAt?.toISOString() ?? null,
       points: assignment.points,
-      submissionCount: submissionCounts.get(assignment.id) ?? 0,
+      submissionCount: submitted,
       mySubmission: mine
         ? {
             content: mine.content,
@@ -403,6 +523,22 @@ export async function getCourse(actor: Actor, courseId: string): Promise<CourseD
             attachments: myAttachments.get(mine.id) ?? [],
           }
         : null,
+      status: assignmentStatus({
+        submission: mine
+          ? { submittedAt: mine.submittedAt.toISOString(), grade: mine.grade }
+          : null,
+        dueAt: assignment.dueAt?.toISOString() ?? null,
+      }),
+      counts:
+        role === "teacher"
+          ? {
+              submitted,
+              onTime: tracked.get(assignment.id)?.onTime ?? 0,
+              late: tracked.get(assignment.id)?.late ?? 0,
+              graded: tracked.get(assignment.id)?.graded ?? 0,
+              pending: Math.max(0, studentCount - submitted),
+            }
+          : null,
     };
   });
 
@@ -423,6 +559,238 @@ export async function getCourse(actor: Actor, courseId: string): Promise<CourseD
 }
 
 // ---------------------------------------------------------------------------
+// Fil d'actualité : publications et commentaires
+// ---------------------------------------------------------------------------
+
+/** Bornes éditoriales du fil : publication longue, commentaire court. */
+export const MAX_ANNOUNCEMENT_BODY = 5000;
+export const MAX_COMMENT_BODY = 2000;
+
+export type AnnouncementAuthor = { id: string; name: string };
+
+export type AnnouncementCommentView = {
+  id: string;
+  body: string;
+  createdAt: string;
+  author: AnnouncementAuthor;
+  /** L'auteur du commentaire et les enseignants du cours peuvent le supprimer. */
+  canDelete: boolean;
+};
+
+export type AnnouncementView = {
+  id: string;
+  body: string;
+  createdAt: string;
+  author: AnnouncementAuthor;
+  comments: AnnouncementCommentView[];
+  /** Seuls les enseignants du cours peuvent supprimer une publication. */
+  canDelete: boolean;
+};
+
+/**
+ * Publication + cours d'origine. La garde est l'adhésion au cours
+ * (`requireCourse`) : un enseignant d'une autre organisation n'est pas membre,
+ * il ne voit rien.
+ */
+async function requireAnnouncement(
+  actor: Actor,
+  announcementId: string,
+): Promise<{ announcement: ClassroomAnnouncementRow; role: CourseRole }> {
+  const [row] = await db()
+    .select({
+      announcement: classroomAnnouncements,
+      courseId: classroomAnnouncements.courseId,
+    })
+    .from(classroomAnnouncements)
+    .where(eq(classroomAnnouncements.id, announcementId))
+    .limit(1);
+  if (!row) {
+    throw new ClassroomError("not_found", "Publication introuvable.");
+  }
+  const { role } = await requireCourse(actor, row.announcement.courseId);
+  return { announcement: row.announcement, role };
+}
+
+/** Publie une annonce dans le fil du cours — réservé aux enseignants. */
+export async function createAnnouncement(
+  actor: Actor,
+  courseId: string,
+  input: { body: string },
+): Promise<{ id: string }> {
+  await requireTeacher(actor, courseId);
+
+  const body = assertText(input.body, "La publication", MAX_ANNOUNCEMENT_BODY);
+  const [created] = await db()
+    .insert(classroomAnnouncements)
+    .values({ courseId, authorId: actor.userId, body })
+    .returning({ id: classroomAnnouncements.id });
+  if (!created) throw new ClassroomError("conflict", "Publication impossible.");
+
+  await recordAudit({
+    orgId: actor.orgId,
+    actorUserId: actor.userId,
+    action: "classroom.announcement.create",
+    resourceType: "announcement",
+    resourceId: created.id,
+    result: "success",
+  });
+
+  return created;
+}
+
+/**
+ * Fil du cours, de la publication la plus récente à la plus ancienne, chaque
+ * publication portant ses commentaires du plus ancien au plus récent (ordre de
+ * lecture d'une conversation).
+ */
+export async function listAnnouncements(
+  actor: Actor,
+  courseId: string,
+): Promise<AnnouncementView[]> {
+  const { role } = await requireCourse(actor, courseId);
+
+  const announcementRows = await db()
+    .select()
+    .from(classroomAnnouncements)
+    .where(eq(classroomAnnouncements.courseId, courseId))
+    .orderBy(desc(classroomAnnouncements.createdAt));
+  if (announcementRows.length === 0) return [];
+
+  // Auteurs (enseignants) puis commentaires : deux requêtes pour tout le fil,
+  // jamais une par publication.
+  const authorIds = new Set<string>(announcementRows.map((row) => row.authorId));
+  const commentRows = await db()
+    .select()
+    .from(classroomAnnouncementComments)
+    .where(
+      inArray(
+        classroomAnnouncementComments.announcementId,
+        announcementRows.map((r) => r.id),
+      ),
+    )
+    .orderBy(asc(classroomAnnouncementComments.createdAt), asc(classroomAnnouncementComments.id));
+  for (const row of commentRows) authorIds.add(row.authorId);
+
+  const names = new Map<string, string>();
+  if (authorIds.size > 0) {
+    const users = await db()
+      .select({ id: core.user.id, name: core.user.name })
+      .from(core.user)
+      .where(inArray(core.user.id, [...authorIds]));
+    for (const user of users) names.set(user.id, user.name);
+  }
+
+  const commentsByAnnouncement = new Map<string, AnnouncementCommentView[]>();
+  for (const row of commentRows) {
+    const list = commentsByAnnouncement.get(row.announcementId) ?? [];
+    list.push({
+      id: row.id,
+      body: row.body,
+      createdAt: row.createdAt.toISOString(),
+      author: { id: row.authorId, name: names.get(row.authorId) ?? "Utilisateur supprimé" },
+      canDelete: role === "teacher" || row.authorId === actor.userId,
+    });
+    commentsByAnnouncement.set(row.announcementId, list);
+  }
+
+  return announcementRows.map((row) => ({
+    id: row.id,
+    body: row.body,
+    createdAt: row.createdAt.toISOString(),
+    author: { id: row.authorId, name: names.get(row.authorId) ?? "Utilisateur supprimé" },
+    comments: commentsByAnnouncement.get(row.id) ?? [],
+    canDelete: role === "teacher",
+  }));
+}
+
+/** Commente une publication du cours — ouvert à tous les membres. */
+export async function addComment(
+  actor: Actor,
+  announcementId: string,
+  input: { body: string },
+): Promise<{ id: string }> {
+  const { announcement } = await requireAnnouncement(actor, announcementId);
+  const body = assertText(input.body, "Le commentaire", MAX_COMMENT_BODY);
+
+  const [created] = await db()
+    .insert(classroomAnnouncementComments)
+    .values({ announcementId: announcement.id, authorId: actor.userId, body })
+    .returning({ id: classroomAnnouncementComments.id });
+  if (!created) throw new ClassroomError("conflict", "Commentaire impossible.");
+
+  await recordAudit({
+    orgId: actor.orgId,
+    actorUserId: actor.userId,
+    action: "classroom.announcement.comment",
+    resourceType: "comment",
+    resourceId: created.id,
+    result: "success",
+    metadata: { announcementId: announcement.id },
+  });
+
+  return created;
+}
+
+/** Supprime une publication et ses commentaires (cascade) — enseignants seuls. */
+export async function deleteAnnouncement(actor: Actor, announcementId: string): Promise<void> {
+  const { announcement, role } = await requireAnnouncement(actor, announcementId);
+  if (role !== "teacher") {
+    throw new ClassroomError("forbidden", "Suppression réservée aux enseignants du cours.");
+  }
+
+  await db().delete(classroomAnnouncements).where(eq(classroomAnnouncements.id, announcement.id));
+
+  await recordAudit({
+    orgId: actor.orgId,
+    actorUserId: actor.userId,
+    action: "classroom.announcement.delete",
+    resourceType: "announcement",
+    resourceId: announcement.id,
+    result: "success",
+  });
+}
+
+/** Supprime un commentaire — son auteur, ou un enseignant du cours. */
+export async function deleteComment(actor: Actor, commentId: string): Promise<void> {
+  const [row] = await db()
+    .select({
+      comment: classroomAnnouncementComments,
+      courseId: classroomAnnouncements.courseId,
+    })
+    .from(classroomAnnouncementComments)
+    .innerJoin(
+      classroomAnnouncements,
+      eq(classroomAnnouncements.id, classroomAnnouncementComments.announcementId),
+    )
+    .where(eq(classroomAnnouncementComments.id, commentId))
+    .limit(1);
+  if (!row) {
+    throw new ClassroomError("not_found", "Commentaire introuvable.");
+  }
+
+  // L'adhésion au cours remplace le filtre d'organisation : l'élève qui a
+  // commenté depuis son espace personnel doit pouvoir retirer son commentaire.
+  const { role } = await requireCourse(actor, row.courseId);
+  if (role !== "teacher" && row.comment.authorId !== actor.userId) {
+    throw new ClassroomError("forbidden", "Ce commentaire ne vous appartient pas.");
+  }
+
+  await db()
+    .delete(classroomAnnouncementComments)
+    .where(eq(classroomAnnouncementComments.id, row.comment.id));
+
+  await recordAudit({
+    orgId: actor.orgId,
+    actorUserId: actor.userId,
+    action: "classroom.comment.delete",
+    resourceType: "comment",
+    resourceId: row.comment.id,
+    result: "success",
+    metadata: { announcementId: row.comment.announcementId },
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Devoirs et copies
 // ---------------------------------------------------------------------------
 
@@ -434,17 +802,9 @@ export async function createAssignment(
   await requireTeacher(actor, courseId);
 
   const title = assertName(input.title, "Le titre");
-  const instructions = (input.instructions ?? "").slice(0, 20_000);
-  const points = Math.round(Math.min(1000, Math.max(0, input.points ?? 100)));
-
-  let dueAt: Date | null = null;
-  if (input.dueAt) {
-    const parsed = new Date(input.dueAt);
-    if (Number.isNaN(parsed.getTime())) {
-      throw new ClassroomError("validation", "Échéance invalide.");
-    }
-    dueAt = parsed;
-  }
+  const instructions = (input.instructions ?? "").slice(0, MAX_INSTRUCTIONS_LENGTH);
+  const points = assertPoints(input.points);
+  const dueAt = parseDueAt(input.dueAt ?? null);
 
   const [created] = await db()
     .insert(classroomAssignments)
@@ -462,6 +822,54 @@ export async function createAssignment(
   });
 
   return created;
+}
+
+/**
+ * Modifie un devoir existant. Chaque champ est facultatif : seules les clés
+ * fournies sont écrites, et une chaîne vide efface le champ (consignes
+ * vidées, échéance retirée) — un enseignant peut donc tout corriger.
+ */
+export async function updateAssignment(
+  actor: Actor,
+  assignmentId: string,
+  input: { title?: string; instructions?: string; dueAt?: string | null; points?: number },
+): Promise<{ ok: true }> {
+  await requireTeacherByAssignment(actor, assignmentId);
+
+  const values: {
+    title?: string;
+    instructions?: string;
+    dueAt?: Date | null;
+    points?: number;
+  } = {};
+  if (input.title !== undefined) values.title = assertName(input.title, "Le titre");
+  if (input.instructions !== undefined) {
+    values.instructions = input.instructions.slice(0, MAX_INSTRUCTIONS_LENGTH);
+  }
+  if (input.dueAt !== undefined) values.dueAt = parseDueAt(input.dueAt);
+  if (input.points !== undefined) values.points = assertPoints(input.points);
+
+  const fields = Object.keys(values);
+  if (fields.length === 0) {
+    throw new ClassroomError("validation", "Aucune modification à enregistrer.");
+  }
+
+  await db()
+    .update(classroomAssignments)
+    .set(values)
+    .where(eq(classroomAssignments.id, assignmentId));
+
+  await recordAudit({
+    orgId: actor.orgId,
+    actorUserId: actor.userId,
+    action: "classroom.assignment.update",
+    resourceType: "assignment",
+    resourceId: assignmentId,
+    result: "success",
+    metadata: { fields: fields.join(", ") },
+  });
+
+  return { ok: true };
 }
 
 export async function deleteAssignment(actor: Actor, assignmentId: string): Promise<void> {
@@ -609,15 +1017,12 @@ async function requireReadableSubmissionAttachment(actor: Actor, attachmentId: s
       eq(classroomSubmissions.id, classroomSubmissionAttachments.submissionId),
     )
     .innerJoin(classroomAssignments, eq(classroomAssignments.id, classroomSubmissions.assignmentId))
-    .innerJoin(classroomCourses, eq(classroomCourses.id, classroomAssignments.courseId))
-    .where(
-      and(
-        eq(classroomSubmissionAttachments.id, attachmentId),
-        eq(classroomCourses.orgId, actor.orgId),
-      ),
-    )
+    .where(eq(classroomSubmissionAttachments.id, attachmentId))
     .limit(1);
   if (!row) throw new ClassroomError("not_found", "Pièce jointe introuvable.");
+  // Le propriétaire passe toujours ; sinon il faut être enseignant du cours.
+  // Le rang est donné par `classroom_members` (pas par l'organisation) : la
+  // copie d'un élève d'un autre espace reste lisible par son professeur.
   if (row.studentId === actor.userId) return row.attachment;
 
   const [membership] = await db()
@@ -645,6 +1050,48 @@ export async function getSubmissionAttachment(
   const body = await getStorage().get(attachment.storageKey);
   if (!body) throw new ClassroomError("not_found", "Pièce jointe introuvable.");
   return { filename: attachment.filename, contentType: attachment.contentType, body };
+}
+
+/**
+ * Retire une pièce jointe d'une copie — seul l'élève qui l'a déposée peut la
+ * retirer (l'enseignant consulte et note, il ne modifie pas la copie). Les
+ * métadonnées disparaissent immédiatement ; le blob est nettoyé hors ligne.
+ */
+export async function removeSubmissionAttachment(
+  actor: Actor,
+  attachmentId: string,
+): Promise<void> {
+  const [row] = await db()
+    .select({
+      attachment: classroomSubmissionAttachments,
+      studentId: classroomSubmissions.studentId,
+    })
+    .from(classroomSubmissionAttachments)
+    .innerJoin(
+      classroomSubmissions,
+      eq(classroomSubmissions.id, classroomSubmissionAttachments.submissionId),
+    )
+    .innerJoin(classroomAssignments, eq(classroomAssignments.id, classroomSubmissions.assignmentId))
+    .where(eq(classroomSubmissionAttachments.id, attachmentId))
+    .limit(1);
+  if (!row) throw new ClassroomError("not_found", "Pièce jointe introuvable.");
+  if (row.studentId !== actor.userId) {
+    throw new ClassroomError("forbidden", "Seul l'élève qui a déposé ce fichier peut le retirer.");
+  }
+
+  await db()
+    .delete(classroomSubmissionAttachments)
+    .where(eq(classroomSubmissionAttachments.id, row.attachment.id));
+
+  await recordAudit({
+    orgId: actor.orgId,
+    actorUserId: actor.userId,
+    action: "classroom.submission.detach",
+    resourceType: "submission",
+    resourceId: row.attachment.submissionId,
+    result: "success",
+    metadata: { attachmentId: row.attachment.id },
+  });
 }
 
 export async function submitAssignment(
@@ -743,6 +1190,10 @@ export type TeacherSubmissionView = {
   grade: number | null;
   feedback: string | null;
   points: number;
+  /** Échéance du devoir, pour situer un retard dans le temps. */
+  dueAt: string | null;
+  /** Statut de la copie : noté, en retard ou rendue (mêmes priorités). */
+  status: SubmissionStatusCode;
   /** Métadonnées des pièces jointes (téléchargement via la route dédiée). */
   attachments: SubmissionAttachmentMeta[];
 };
@@ -770,11 +1221,18 @@ export async function listSubmissions(
 
   // Pièces jointes en une seule requête pour toute la liste (pas de N+1).
   const attachments = await attachmentsBySubmission(rows.map((row) => row.id));
+  const dueAt = assignment.dueAt?.toISOString() ?? null;
 
   return rows.map((row) => ({
     ...row,
     submittedAt: row.submittedAt.toISOString(),
     points: assignment.points,
+    dueAt,
+    status: submissionStatus({
+      submittedAt: row.submittedAt.toISOString(),
+      dueAt,
+      grade: row.grade,
+    }),
     attachments: attachments.get(row.id) ?? [],
   }));
 }
@@ -818,9 +1276,11 @@ export async function gradeSubmission(
     metadata: { grade: input.grade },
   });
 
-  // Notification best-effort à l'élève noté.
+  // Notification best-effort à l'élève noté, déposée dans SA organisation : un
+  // élève qui a rejoint le cours depuis son espace personnel doit la voir dans
+  // sa cloche, pas dans celle de son professeur.
   await createNotification({
-    orgId: actor.orgId,
+    orgId: await notificationOrgId(submission.studentId, actor.orgId),
     userId: submission.studentId,
     kind: "graded",
     title: `Copie notée : ${assignment.title}`,
@@ -829,4 +1289,23 @@ export async function gradeSubmission(
   }).catch(() => undefined);
 
   return { ok: true };
+}
+
+/**
+ * Organisation où notifier un destinataire : celle du cours quand il en est
+ * membre (cas courant, l'élève inscrit dans l'établissement), sinon sa propre
+ * organisation — la plus ancienne, celle de son espace personnel. Repli sur
+ * l'organisation de l'acteur si l'utilisateur n'appartient à aucune.
+ */
+async function notificationOrgId(userId: string, preferredOrgId: string): Promise<string> {
+  const rows = await db()
+    .select({ organizationId: core.member.organizationId })
+    .from(core.member)
+    .where(eq(core.member.userId, userId))
+    .orderBy(asc(core.member.createdAt));
+  if (rows.length === 0) return preferredOrgId;
+  // L'organisation du cours d'abord quand l'élève en est membre : la
+  // notification atterrit là où il suit le cours.
+  if (rows.some((row) => row.organizationId === preferredOrgId)) return preferredOrgId;
+  return rows[0]?.organizationId ?? preferredOrgId;
 }

@@ -147,9 +147,18 @@ describe("classroom — cours", () => {
     expect(teacherView.members.filter((member) => member.role === "student")).toHaveLength(1);
 
     await expect(joinByCode(f.actorBruno, "XXXX99")).rejects.toThrow(ClassroomError);
-    // Le cours d'une autre organisation est invisible.
-    await expect(joinByCode(f.actorChloe, code)).rejects.toThrow(ClassroomError);
-    await expect(getCourse(f.actorChloe, course.id)).rejects.toThrow(ClassroomError);
+
+    // Le code fait franchir la frontière d'organisation : chaque inscription
+    // ouvre son propre espace personnel, un élève rejoint donc le cours d'un
+    // enseignant d'une autre organisation. Sans ça, aucun devoir ne lui serait
+    // jamais visible une fois la jointure faite (régression E2E « Exercice 1 »).
+    const crossOrg = await joinByCode(f.actorChloe, code);
+    expect(crossOrg.courseId).toBe(course.id);
+    const crossOrgView = await getCourse(f.actorChloe, course.id);
+    expect(crossOrgView.role).toBe("student");
+    expect(crossOrgView.assignments).toHaveLength(0);
+    // Le cours rejoint apparaît dans SA liste, pas seulement dans celle du prof.
+    expect((await listCourses(f.actorChloe)).map((row) => row.id)).toContain(course.id);
   });
 });
 

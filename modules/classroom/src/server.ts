@@ -3,23 +3,36 @@ import { getRequest } from "@tanstack/react-start/server";
 import { requireActor } from "@workspace/auth";
 import { z } from "zod";
 import {
+  addComment,
+  createAnnouncement,
   createAssignment,
   createCourse,
+  deleteAnnouncement,
   deleteAssignment,
+  deleteComment,
   getCourse,
   gradeSubmission,
   joinByCode,
+  listAnnouncements,
   listCourses,
   listSubmissions,
+  MAX_ANNOUNCEMENT_BODY,
   MAX_ATTACHMENT_BYTES,
   MAX_ATTACHMENTS,
+  MAX_COMMENT_BODY,
+  removeSubmissionAttachment,
   submitAssignment,
+  updateAssignment,
   uploadSubmissionAttachment,
 } from "./index.ts";
 
 export type {
+  AnnouncementCommentView,
+  AnnouncementView,
+  AssignmentCounts,
   AssignmentView,
   CourseDetail,
+  CourseRole,
   CourseSummary,
   MemberView,
   SubmissionAttachmentMeta,
@@ -93,6 +106,32 @@ export const createAssignmentFn = createServerFn({ method: "POST" })
     });
   });
 
+/**
+ * Édition d'un devoir : chaque champ est facultatif, seules les clés fournies
+ * sont modifiées. `instructions` vide ou `dueAt` nul effacent le champ.
+ */
+export const updateAssignmentFn = createServerFn({ method: "POST" })
+  .validator((input: unknown) =>
+    z
+      .object({
+        assignmentId: z.string().uuid(),
+        title: z.string().trim().min(1).max(150).optional(),
+        instructions: z.string().max(20_000).optional(),
+        dueAt: z.string().nullable().optional(),
+        points: z.number().int().min(0).max(1000).optional(),
+      })
+      .parse(input),
+  )
+  .handler(async ({ data }) => {
+    const { actor } = await requireActor(getRequest().headers);
+    return updateAssignment(actor, data.assignmentId, {
+      title: data.title,
+      instructions: data.instructions,
+      dueAt: data.dueAt,
+      points: data.points,
+    });
+  });
+
 export const deleteAssignmentFn = createServerFn({ method: "POST" })
   .validator((input: unknown) => z.object({ assignmentId: z.string().uuid() }).parse(input))
   .handler(async ({ data }) => {
@@ -150,6 +189,65 @@ export const listSubmissionsFn = createServerFn({ method: "GET" })
   .handler(async ({ data }) => {
     const { actor } = await requireActor(getRequest().headers);
     return listSubmissions(actor, data.assignmentId);
+  });
+
+export const removeSubmissionAttachmentFn = createServerFn({ method: "POST" })
+  .validator((input: unknown) => z.object({ attachmentId: z.string().uuid() }).parse(input))
+  .handler(async ({ data }) => {
+    const { actor } = await requireActor(getRequest().headers);
+    await removeSubmissionAttachment(actor, data.attachmentId);
+    return { ok: true };
+  });
+
+export const listAnnouncementsFn = createServerFn({ method: "GET" })
+  .validator((input: unknown) => z.object({ courseId: z.string().uuid() }).parse(input))
+  .handler(async ({ data }) => {
+    const { actor } = await requireActor(getRequest().headers);
+    return listAnnouncements(actor, data.courseId);
+  });
+
+export const createAnnouncementFn = createServerFn({ method: "POST" })
+  .validator((input: unknown) =>
+    z
+      .object({
+        courseId: z.string().uuid(),
+        body: z.string().trim().min(1).max(MAX_ANNOUNCEMENT_BODY),
+      })
+      .parse(input),
+  )
+  .handler(async ({ data }) => {
+    const { actor } = await requireActor(getRequest().headers);
+    return createAnnouncement(actor, data.courseId, { body: data.body });
+  });
+
+export const deleteAnnouncementFn = createServerFn({ method: "POST" })
+  .validator((input: unknown) => z.object({ announcementId: z.string().uuid() }).parse(input))
+  .handler(async ({ data }) => {
+    const { actor } = await requireActor(getRequest().headers);
+    await deleteAnnouncement(actor, data.announcementId);
+    return { ok: true };
+  });
+
+export const addCommentFn = createServerFn({ method: "POST" })
+  .validator((input: unknown) =>
+    z
+      .object({
+        announcementId: z.string().uuid(),
+        body: z.string().trim().min(1).max(MAX_COMMENT_BODY),
+      })
+      .parse(input),
+  )
+  .handler(async ({ data }) => {
+    const { actor } = await requireActor(getRequest().headers);
+    return addComment(actor, data.announcementId, { body: data.body });
+  });
+
+export const deleteCommentFn = createServerFn({ method: "POST" })
+  .validator((input: unknown) => z.object({ commentId: z.string().uuid() }).parse(input))
+  .handler(async ({ data }) => {
+    const { actor } = await requireActor(getRequest().headers);
+    await deleteComment(actor, data.commentId);
+    return { ok: true };
   });
 
 export const gradeSubmissionFn = createServerFn({ method: "POST" })
