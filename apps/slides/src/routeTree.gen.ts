@@ -14,6 +14,7 @@ import { Route as AppIndexRouteImport } from './routes/_app/index'
 import { Route as ApiHealthRouteImport } from './routes/api/health'
 import { Route as AppSlideFileIdRouteImport } from './routes/_app/slide.$fileId'
 import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
+import { Route as ApiNotificationsStreamRouteImport } from './routes/api/notifications/stream'
 import { Route as ApiSlidesMediaRouteImport } from './routes/api/slides/media'
 import { Route as ApiSlidesUploadRouteImport } from './routes/api/slides/upload'
 
@@ -41,6 +42,11 @@ const ApiAuthSplatRoute = ApiAuthSplatRouteImport.update({
   path: '/api/auth/$',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiNotificationsStreamRoute = ApiNotificationsStreamRouteImport.update({
+  id: '/api/notifications/stream',
+  path: '/api/notifications/stream',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiSlidesMediaRoute = ApiSlidesMediaRouteImport.update({
   id: '/api/slides/media',
   path: '/api/slides/media',
@@ -57,6 +63,7 @@ export interface FileRoutesByFullPath {
   '/api/health': typeof ApiHealthRoute
   '/slide/$fileId': typeof AppSlideFileIdRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
+  '/api/notifications/stream': typeof ApiNotificationsStreamRoute
   '/api/slides/media': typeof ApiSlidesMediaRoute
   '/api/slides/upload': typeof ApiSlidesUploadRoute
 }
@@ -65,6 +72,7 @@ export interface FileRoutesByTo {
   '/': typeof AppIndexRoute
   '/slide/$fileId': typeof AppSlideFileIdRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
+  '/api/notifications/stream': typeof ApiNotificationsStreamRoute
   '/api/slides/media': typeof ApiSlidesMediaRoute
   '/api/slides/upload': typeof ApiSlidesUploadRoute
 }
@@ -75,6 +83,7 @@ export interface FileRoutesById {
   '/_app/': typeof AppIndexRoute
   '/_app/slide/$fileId': typeof AppSlideFileIdRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
+  '/api/notifications/stream': typeof ApiNotificationsStreamRoute
   '/api/slides/media': typeof ApiSlidesMediaRoute
   '/api/slides/upload': typeof ApiSlidesUploadRoute
 }
@@ -85,6 +94,7 @@ export interface FileRouteTypes {
     | '/api/health'
     | '/slide/$fileId'
     | '/api/auth/$'
+    | '/api/notifications/stream'
     | '/api/slides/media'
     | '/api/slides/upload'
   fileRoutesByTo: FileRoutesByTo
@@ -93,6 +103,7 @@ export interface FileRouteTypes {
     | '/'
     | '/slide/$fileId'
     | '/api/auth/$'
+    | '/api/notifications/stream'
     | '/api/slides/media'
     | '/api/slides/upload'
   id:
@@ -102,6 +113,7 @@ export interface FileRouteTypes {
     | '/_app/'
     | '/_app/slide/$fileId'
     | '/api/auth/$'
+    | '/api/notifications/stream'
     | '/api/slides/media'
     | '/api/slides/upload'
   fileRoutesById: FileRoutesById
@@ -110,6 +122,7 @@ export interface RootRouteChildren {
   AppRoute: typeof AppRouteWithChildren
   ApiHealthRoute: typeof ApiHealthRoute
   ApiAuthSplatRoute: typeof ApiAuthSplatRoute
+  ApiNotificationsStreamRoute: typeof ApiNotificationsStreamRoute
   ApiSlidesMediaRoute: typeof ApiSlidesMediaRoute
   ApiSlidesUploadRoute: typeof ApiSlidesUploadRoute
 }
@@ -151,6 +164,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiAuthSplatRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/notifications/stream': {
+      id: '/api/notifications/stream'
+      path: '/api/notifications/stream'
+      fullPath: '/api/notifications/stream'
+      preLoaderRoute: typeof ApiNotificationsStreamRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/slides/media': {
       id: '/api/slides/media'
       path: '/api/slides/media'
@@ -184,6 +204,7 @@ const rootRouteChildren: RootRouteChildren = {
   AppRoute: AppRouteWithChildren,
   ApiHealthRoute: ApiHealthRoute,
   ApiAuthSplatRoute: ApiAuthSplatRoute,
+  ApiNotificationsStreamRoute: ApiNotificationsStreamRoute,
   ApiSlidesMediaRoute: ApiSlidesMediaRoute,
   ApiSlidesUploadRoute: ApiSlidesUploadRoute,
 }

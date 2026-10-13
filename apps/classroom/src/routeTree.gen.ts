@@ -14,6 +14,8 @@ import { Route as AppIndexRouteImport } from './routes/_app/index'
 import { Route as ApiHealthRouteImport } from './routes/api/health'
 import { Route as AppCourseCourseIdRouteImport } from './routes/_app/course.$courseId'
 import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
+import { Route as ApiNotificationsStreamRouteImport } from './routes/api/notifications/stream'
+import { Route as ApiClassroomAttachmentsIdRouteImport } from './routes/api/classroom/attachments/$id'
 
 const AppRoute = AppRouteImport.update({
   id: '/_app',
@@ -39,18 +41,33 @@ const ApiAuthSplatRoute = ApiAuthSplatRouteImport.update({
   path: '/api/auth/$',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiNotificationsStreamRoute = ApiNotificationsStreamRouteImport.update({
+  id: '/api/notifications/stream',
+  path: '/api/notifications/stream',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiClassroomAttachmentsIdRoute =
+  ApiClassroomAttachmentsIdRouteImport.update({
+    id: '/api/classroom/attachments/$id',
+    path: '/api/classroom/attachments/$id',
+    getParentRoute: () => rootRouteImport,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof AppIndexRoute
   '/api/health': typeof ApiHealthRoute
   '/course/$courseId': typeof AppCourseCourseIdRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
+  '/api/notifications/stream': typeof ApiNotificationsStreamRoute
+  '/api/classroom/attachments/$id': typeof ApiClassroomAttachmentsIdRoute
 }
 export interface FileRoutesByTo {
   '/api/health': typeof ApiHealthRoute
   '/': typeof AppIndexRoute
   '/course/$courseId': typeof AppCourseCourseIdRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
+  '/api/notifications/stream': typeof ApiNotificationsStreamRoute
+  '/api/classroom/attachments/$id': typeof ApiClassroomAttachmentsIdRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -59,12 +76,26 @@ export interface FileRoutesById {
   '/_app/': typeof AppIndexRoute
   '/_app/course/$courseId': typeof AppCourseCourseIdRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
+  '/api/notifications/stream': typeof ApiNotificationsStreamRoute
+  '/api/classroom/attachments/$id': typeof ApiClassroomAttachmentsIdRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/api/health' | '/course/$courseId' | '/api/auth/$'
+  fullPaths:
+    | '/'
+    | '/api/health'
+    | '/course/$courseId'
+    | '/api/auth/$'
+    | '/api/notifications/stream'
+    | '/api/classroom/attachments/$id'
   fileRoutesByTo: FileRoutesByTo
-  to: '/api/health' | '/' | '/course/$courseId' | '/api/auth/$'
+  to:
+    | '/api/health'
+    | '/'
+    | '/course/$courseId'
+    | '/api/auth/$'
+    | '/api/notifications/stream'
+    | '/api/classroom/attachments/$id'
   id:
     | '__root__'
     | '/_app'
@@ -72,12 +103,16 @@ export interface FileRouteTypes {
     | '/_app/'
     | '/_app/course/$courseId'
     | '/api/auth/$'
+    | '/api/notifications/stream'
+    | '/api/classroom/attachments/$id'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   AppRoute: typeof AppRouteWithChildren
   ApiHealthRoute: typeof ApiHealthRoute
   ApiAuthSplatRoute: typeof ApiAuthSplatRoute
+  ApiNotificationsStreamRoute: typeof ApiNotificationsStreamRoute
+  ApiClassroomAttachmentsIdRoute: typeof ApiClassroomAttachmentsIdRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -117,6 +152,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiAuthSplatRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/notifications/stream': {
+      id: '/api/notifications/stream'
+      path: '/api/notifications/stream'
+      fullPath: '/api/notifications/stream'
+      preLoaderRoute: typeof ApiNotificationsStreamRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/classroom/attachments/$id': {
+      id: '/api/classroom/attachments/$id'
+      path: '/api/classroom/attachments/$id'
+      fullPath: '/api/classroom/attachments/$id'
+      preLoaderRoute: typeof ApiClassroomAttachmentsIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
@@ -136,6 +185,8 @@ const rootRouteChildren: RootRouteChildren = {
   AppRoute: AppRouteWithChildren,
   ApiHealthRoute: ApiHealthRoute,
   ApiAuthSplatRoute: ApiAuthSplatRoute,
+  ApiNotificationsStreamRoute: ApiNotificationsStreamRoute,
+  ApiClassroomAttachmentsIdRoute: ApiClassroomAttachmentsIdRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

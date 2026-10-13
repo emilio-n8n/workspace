@@ -14,6 +14,7 @@ import { Route as AppIndexRouteImport } from './routes/_app/index'
 import { Route as ApiHealthRouteImport } from './routes/api/health'
 import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
 import { Route as ApiMailInboundRouteImport } from './routes/api/mail/inbound'
+import { Route as ApiNotificationsStreamRouteImport } from './routes/api/notifications/stream'
 import { Route as ApiMailAttachmentsIdRouteImport } from './routes/api/mail/attachments/$id'
 
 const AppRoute = AppRouteImport.update({
@@ -40,6 +41,11 @@ const ApiMailInboundRoute = ApiMailInboundRouteImport.update({
   path: '/api/mail/inbound',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiNotificationsStreamRoute = ApiNotificationsStreamRouteImport.update({
+  id: '/api/notifications/stream',
+  path: '/api/notifications/stream',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiMailAttachmentsIdRoute = ApiMailAttachmentsIdRouteImport.update({
   id: '/api/mail/attachments/$id',
   path: '/api/mail/attachments/$id',
@@ -51,6 +57,7 @@ export interface FileRoutesByFullPath {
   '/api/health': typeof ApiHealthRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/mail/inbound': typeof ApiMailInboundRoute
+  '/api/notifications/stream': typeof ApiNotificationsStreamRoute
   '/api/mail/attachments/$id': typeof ApiMailAttachmentsIdRoute
 }
 export interface FileRoutesByTo {
@@ -58,6 +65,7 @@ export interface FileRoutesByTo {
   '/': typeof AppIndexRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/mail/inbound': typeof ApiMailInboundRoute
+  '/api/notifications/stream': typeof ApiNotificationsStreamRoute
   '/api/mail/attachments/$id': typeof ApiMailAttachmentsIdRoute
 }
 export interface FileRoutesById {
@@ -67,6 +75,7 @@ export interface FileRoutesById {
   '/_app/': typeof AppIndexRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/mail/inbound': typeof ApiMailInboundRoute
+  '/api/notifications/stream': typeof ApiNotificationsStreamRoute
   '/api/mail/attachments/$id': typeof ApiMailAttachmentsIdRoute
 }
 export interface FileRouteTypes {
@@ -76,6 +85,7 @@ export interface FileRouteTypes {
     | '/api/health'
     | '/api/auth/$'
     | '/api/mail/inbound'
+    | '/api/notifications/stream'
     | '/api/mail/attachments/$id'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -83,6 +93,7 @@ export interface FileRouteTypes {
     | '/'
     | '/api/auth/$'
     | '/api/mail/inbound'
+    | '/api/notifications/stream'
     | '/api/mail/attachments/$id'
   id:
     | '__root__'
@@ -91,6 +102,7 @@ export interface FileRouteTypes {
     | '/_app/'
     | '/api/auth/$'
     | '/api/mail/inbound'
+    | '/api/notifications/stream'
     | '/api/mail/attachments/$id'
   fileRoutesById: FileRoutesById
 }
@@ -99,6 +111,7 @@ export interface RootRouteChildren {
   ApiHealthRoute: typeof ApiHealthRoute
   ApiAuthSplatRoute: typeof ApiAuthSplatRoute
   ApiMailInboundRoute: typeof ApiMailInboundRoute
+  ApiNotificationsStreamRoute: typeof ApiNotificationsStreamRoute
   ApiMailAttachmentsIdRoute: typeof ApiMailAttachmentsIdRoute
 }
 
@@ -139,6 +152,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiMailInboundRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/notifications/stream': {
+      id: '/api/notifications/stream'
+      path: '/api/notifications/stream'
+      fullPath: '/api/notifications/stream'
+      preLoaderRoute: typeof ApiNotificationsStreamRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/mail/attachments/$id': {
       id: '/api/mail/attachments/$id'
       path: '/api/mail/attachments/$id'
@@ -164,6 +184,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiHealthRoute: ApiHealthRoute,
   ApiAuthSplatRoute: ApiAuthSplatRoute,
   ApiMailInboundRoute: ApiMailInboundRoute,
+  ApiNotificationsStreamRoute: ApiNotificationsStreamRoute,
   ApiMailAttachmentsIdRoute: ApiMailAttachmentsIdRoute,
 }
 export const routeTree = rootRouteImport

@@ -18,6 +18,7 @@ import { Route as AppIndexRouteImport } from './routes/app/index'
 import { Route as AppNotificationsRouteImport } from './routes/app/notifications'
 import { Route as AppRechercheRouteImport } from './routes/app/recherche'
 import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
+import { Route as ApiNotificationsStreamRouteImport } from './routes/api/notifications/stream'
 import { Route as AppSettingsTokensRouteImport } from './routes/app/settings.tokens'
 
 const IndexRoute = IndexRouteImport.update({
@@ -65,6 +66,11 @@ const ApiAuthSplatRoute = ApiAuthSplatRouteImport.update({
   path: '/api/auth/$',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiNotificationsStreamRoute = ApiNotificationsStreamRouteImport.update({
+  id: '/api/notifications/stream',
+  path: '/api/notifications/stream',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const AppSettingsTokensRoute = AppSettingsTokensRouteImport.update({
   id: '/settings/tokens',
   path: '/settings/tokens',
@@ -81,6 +87,7 @@ export interface FileRoutesByFullPath {
   '/app/recherche': typeof AppRechercheRoute
   '/app/': typeof AppIndexRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
+  '/api/notifications/stream': typeof ApiNotificationsStreamRoute
   '/app/settings/tokens': typeof AppSettingsTokensRoute
 }
 export interface FileRoutesByTo {
@@ -92,6 +99,7 @@ export interface FileRoutesByTo {
   '/app/recherche': typeof AppRechercheRoute
   '/app': typeof AppIndexRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
+  '/api/notifications/stream': typeof ApiNotificationsStreamRoute
   '/app/settings/tokens': typeof AppSettingsTokensRoute
 }
 export interface FileRoutesById {
@@ -105,6 +113,7 @@ export interface FileRoutesById {
   '/app/recherche': typeof AppRechercheRoute
   '/app/': typeof AppIndexRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
+  '/api/notifications/stream': typeof ApiNotificationsStreamRoute
   '/app/settings/tokens': typeof AppSettingsTokensRoute
 }
 export interface FileRouteTypes {
@@ -119,6 +128,7 @@ export interface FileRouteTypes {
     | '/app/recherche'
     | '/app/'
     | '/api/auth/$'
+    | '/api/notifications/stream'
     | '/app/settings/tokens'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -130,6 +140,7 @@ export interface FileRouteTypes {
     | '/app/recherche'
     | '/app'
     | '/api/auth/$'
+    | '/api/notifications/stream'
     | '/app/settings/tokens'
   id:
     | '__root__'
@@ -142,6 +153,7 @@ export interface FileRouteTypes {
     | '/app/recherche'
     | '/app/'
     | '/api/auth/$'
+    | '/api/notifications/stream'
     | '/app/settings/tokens'
   fileRoutesById: FileRoutesById
 }
@@ -152,6 +164,7 @@ export interface RootRouteChildren {
   SignupRoute: typeof SignupRoute
   ApiHealthRoute: typeof ApiHealthRoute
   ApiAuthSplatRoute: typeof ApiAuthSplatRoute
+  ApiNotificationsStreamRoute: typeof ApiNotificationsStreamRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -219,6 +232,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiAuthSplatRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/notifications/stream': {
+      id: '/api/notifications/stream'
+      path: '/api/notifications/stream'
+      fullPath: '/api/notifications/stream'
+      preLoaderRoute: typeof ApiNotificationsStreamRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/app/settings/tokens': {
       id: '/app/settings/tokens'
       path: '/settings/tokens'
@@ -252,6 +272,7 @@ const rootRouteChildren: RootRouteChildren = {
   SignupRoute: SignupRoute,
   ApiHealthRoute: ApiHealthRoute,
   ApiAuthSplatRoute: ApiAuthSplatRoute,
+  ApiNotificationsStreamRoute: ApiNotificationsStreamRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

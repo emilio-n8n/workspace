@@ -15,6 +15,7 @@ import { Route as ApiHealthRouteImport } from './routes/api/health'
 import { Route as FSlugRouteImport } from './routes/f.$slug'
 import { Route as AppFormFileIdRouteImport } from './routes/_app/form.$fileId'
 import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
+import { Route as ApiNotificationsStreamRouteImport } from './routes/api/notifications/stream'
 import { Route as ApiFormsExportFileIdRouteImport } from './routes/api/forms/export/$fileId'
 
 const AppRoute = AppRouteImport.update({
@@ -46,6 +47,11 @@ const ApiAuthSplatRoute = ApiAuthSplatRouteImport.update({
   path: '/api/auth/$',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiNotificationsStreamRoute = ApiNotificationsStreamRouteImport.update({
+  id: '/api/notifications/stream',
+  path: '/api/notifications/stream',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiFormsExportFileIdRoute = ApiFormsExportFileIdRouteImport.update({
   id: '/api/forms/export/$fileId',
   path: '/api/forms/export/$fileId',
@@ -58,6 +64,7 @@ export interface FileRoutesByFullPath {
   '/f/$slug': typeof FSlugRoute
   '/form/$fileId': typeof AppFormFileIdRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
+  '/api/notifications/stream': typeof ApiNotificationsStreamRoute
   '/api/forms/export/$fileId': typeof ApiFormsExportFileIdRoute
 }
 export interface FileRoutesByTo {
@@ -66,6 +73,7 @@ export interface FileRoutesByTo {
   '/': typeof AppIndexRoute
   '/form/$fileId': typeof AppFormFileIdRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
+  '/api/notifications/stream': typeof ApiNotificationsStreamRoute
   '/api/forms/export/$fileId': typeof ApiFormsExportFileIdRoute
 }
 export interface FileRoutesById {
@@ -76,6 +84,7 @@ export interface FileRoutesById {
   '/_app/': typeof AppIndexRoute
   '/_app/form/$fileId': typeof AppFormFileIdRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
+  '/api/notifications/stream': typeof ApiNotificationsStreamRoute
   '/api/forms/export/$fileId': typeof ApiFormsExportFileIdRoute
 }
 export interface FileRouteTypes {
@@ -86,6 +95,7 @@ export interface FileRouteTypes {
     | '/f/$slug'
     | '/form/$fileId'
     | '/api/auth/$'
+    | '/api/notifications/stream'
     | '/api/forms/export/$fileId'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -94,6 +104,7 @@ export interface FileRouteTypes {
     | '/'
     | '/form/$fileId'
     | '/api/auth/$'
+    | '/api/notifications/stream'
     | '/api/forms/export/$fileId'
   id:
     | '__root__'
@@ -103,6 +114,7 @@ export interface FileRouteTypes {
     | '/_app/'
     | '/_app/form/$fileId'
     | '/api/auth/$'
+    | '/api/notifications/stream'
     | '/api/forms/export/$fileId'
   fileRoutesById: FileRoutesById
 }
@@ -111,6 +123,7 @@ export interface RootRouteChildren {
   ApiHealthRoute: typeof ApiHealthRoute
   FSlugRoute: typeof FSlugRoute
   ApiAuthSplatRoute: typeof ApiAuthSplatRoute
+  ApiNotificationsStreamRoute: typeof ApiNotificationsStreamRoute
   ApiFormsExportFileIdRoute: typeof ApiFormsExportFileIdRoute
 }
 
@@ -158,6 +171,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiAuthSplatRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/notifications/stream': {
+      id: '/api/notifications/stream'
+      path: '/api/notifications/stream'
+      fullPath: '/api/notifications/stream'
+      preLoaderRoute: typeof ApiNotificationsStreamRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/forms/export/$fileId': {
       id: '/api/forms/export/$fileId'
       path: '/api/forms/export/$fileId'
@@ -185,6 +205,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiHealthRoute: ApiHealthRoute,
   FSlugRoute: FSlugRoute,
   ApiAuthSplatRoute: ApiAuthSplatRoute,
+  ApiNotificationsStreamRoute: ApiNotificationsStreamRoute,
   ApiFormsExportFileIdRoute: ApiFormsExportFileIdRoute,
 }
 export const routeTree = rootRouteImport

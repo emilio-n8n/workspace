@@ -14,6 +14,7 @@ import { Route as AppIndexRouteImport } from './routes/_app/index'
 import { Route as ApiHealthRouteImport } from './routes/api/health'
 import { Route as AppRoomSlugRouteImport } from './routes/_app/room.$slug'
 import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
+import { Route as ApiNotificationsStreamRouteImport } from './routes/api/notifications/stream'
 
 const AppRoute = AppRouteImport.update({
   id: '/_app',
@@ -39,18 +40,25 @@ const ApiAuthSplatRoute = ApiAuthSplatRouteImport.update({
   path: '/api/auth/$',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiNotificationsStreamRoute = ApiNotificationsStreamRouteImport.update({
+  id: '/api/notifications/stream',
+  path: '/api/notifications/stream',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof AppIndexRoute
   '/api/health': typeof ApiHealthRoute
   '/room/$slug': typeof AppRoomSlugRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
+  '/api/notifications/stream': typeof ApiNotificationsStreamRoute
 }
 export interface FileRoutesByTo {
   '/api/health': typeof ApiHealthRoute
   '/': typeof AppIndexRoute
   '/room/$slug': typeof AppRoomSlugRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
+  '/api/notifications/stream': typeof ApiNotificationsStreamRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -59,12 +67,23 @@ export interface FileRoutesById {
   '/_app/': typeof AppIndexRoute
   '/_app/room/$slug': typeof AppRoomSlugRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
+  '/api/notifications/stream': typeof ApiNotificationsStreamRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/api/health' | '/room/$slug' | '/api/auth/$'
+  fullPaths:
+    | '/'
+    | '/api/health'
+    | '/room/$slug'
+    | '/api/auth/$'
+    | '/api/notifications/stream'
   fileRoutesByTo: FileRoutesByTo
-  to: '/api/health' | '/' | '/room/$slug' | '/api/auth/$'
+  to:
+    | '/api/health'
+    | '/'
+    | '/room/$slug'
+    | '/api/auth/$'
+    | '/api/notifications/stream'
   id:
     | '__root__'
     | '/_app'
@@ -72,12 +91,14 @@ export interface FileRouteTypes {
     | '/_app/'
     | '/_app/room/$slug'
     | '/api/auth/$'
+    | '/api/notifications/stream'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   AppRoute: typeof AppRouteWithChildren
   ApiHealthRoute: typeof ApiHealthRoute
   ApiAuthSplatRoute: typeof ApiAuthSplatRoute
+  ApiNotificationsStreamRoute: typeof ApiNotificationsStreamRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -117,6 +138,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiAuthSplatRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/notifications/stream': {
+      id: '/api/notifications/stream'
+      path: '/api/notifications/stream'
+      fullPath: '/api/notifications/stream'
+      preLoaderRoute: typeof ApiNotificationsStreamRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
@@ -136,6 +164,7 @@ const rootRouteChildren: RootRouteChildren = {
   AppRoute: AppRouteWithChildren,
   ApiHealthRoute: ApiHealthRoute,
   ApiAuthSplatRoute: ApiAuthSplatRoute,
+  ApiNotificationsStreamRoute: ApiNotificationsStreamRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

@@ -19,6 +19,7 @@ import { Route as ApiHealthRouteImport } from './routes/api/health'
 import { Route as STokenRouteImport } from './routes/s/$token'
 import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
 import { Route as ApiDriveUploadRouteImport } from './routes/api/drive/upload'
+import { Route as ApiNotificationsStreamRouteImport } from './routes/api/notifications/stream'
 import { Route as ApiDriveDownloadFileIdRouteImport } from './routes/api/drive/download/$fileId'
 import { Route as ApiDriveSharedTokenRouteImport } from './routes/api/drive/shared/$token'
 
@@ -71,6 +72,11 @@ const ApiDriveUploadRoute = ApiDriveUploadRouteImport.update({
   path: '/api/drive/upload',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiNotificationsStreamRoute = ApiNotificationsStreamRouteImport.update({
+  id: '/api/notifications/stream',
+  path: '/api/notifications/stream',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiDriveDownloadFileIdRoute = ApiDriveDownloadFileIdRouteImport.update({
   id: '/api/drive/download/$fileId',
   path: '/api/drive/download/$fileId',
@@ -92,6 +98,7 @@ export interface FileRoutesByFullPath {
   '/s/$token': typeof STokenRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/drive/upload': typeof ApiDriveUploadRoute
+  '/api/notifications/stream': typeof ApiNotificationsStreamRoute
   '/api/drive/download/$fileId': typeof ApiDriveDownloadFileIdRoute
   '/api/drive/shared/$token': typeof ApiDriveSharedTokenRoute
 }
@@ -105,6 +112,7 @@ export interface FileRoutesByTo {
   '/': typeof AppIndexRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/drive/upload': typeof ApiDriveUploadRoute
+  '/api/notifications/stream': typeof ApiNotificationsStreamRoute
   '/api/drive/download/$fileId': typeof ApiDriveDownloadFileIdRoute
   '/api/drive/shared/$token': typeof ApiDriveSharedTokenRoute
 }
@@ -120,6 +128,7 @@ export interface FileRoutesById {
   '/_app/': typeof AppIndexRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/drive/upload': typeof ApiDriveUploadRoute
+  '/api/notifications/stream': typeof ApiNotificationsStreamRoute
   '/api/drive/download/$fileId': typeof ApiDriveDownloadFileIdRoute
   '/api/drive/shared/$token': typeof ApiDriveSharedTokenRoute
 }
@@ -135,6 +144,7 @@ export interface FileRouteTypes {
     | '/s/$token'
     | '/api/auth/$'
     | '/api/drive/upload'
+    | '/api/notifications/stream'
     | '/api/drive/download/$fileId'
     | '/api/drive/shared/$token'
   fileRoutesByTo: FileRoutesByTo
@@ -148,6 +158,7 @@ export interface FileRouteTypes {
     | '/'
     | '/api/auth/$'
     | '/api/drive/upload'
+    | '/api/notifications/stream'
     | '/api/drive/download/$fileId'
     | '/api/drive/shared/$token'
   id:
@@ -162,6 +173,7 @@ export interface FileRouteTypes {
     | '/_app/'
     | '/api/auth/$'
     | '/api/drive/upload'
+    | '/api/notifications/stream'
     | '/api/drive/download/$fileId'
     | '/api/drive/shared/$token'
   fileRoutesById: FileRoutesById
@@ -172,6 +184,7 @@ export interface RootRouteChildren {
   STokenRoute: typeof STokenRoute
   ApiAuthSplatRoute: typeof ApiAuthSplatRoute
   ApiDriveUploadRoute: typeof ApiDriveUploadRoute
+  ApiNotificationsStreamRoute: typeof ApiNotificationsStreamRoute
   ApiDriveDownloadFileIdRoute: typeof ApiDriveDownloadFileIdRoute
   ApiDriveSharedTokenRoute: typeof ApiDriveSharedTokenRoute
 }
@@ -248,6 +261,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiDriveUploadRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/notifications/stream': {
+      id: '/api/notifications/stream'
+      path: '/api/notifications/stream'
+      fullPath: '/api/notifications/stream'
+      preLoaderRoute: typeof ApiNotificationsStreamRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/drive/download/$fileId': {
       id: '/api/drive/download/$fileId'
       path: '/api/drive/download/$fileId'
@@ -289,6 +309,7 @@ const rootRouteChildren: RootRouteChildren = {
   STokenRoute: STokenRoute,
   ApiAuthSplatRoute: ApiAuthSplatRoute,
   ApiDriveUploadRoute: ApiDriveUploadRoute,
+  ApiNotificationsStreamRoute: ApiNotificationsStreamRoute,
   ApiDriveDownloadFileIdRoute: ApiDriveDownloadFileIdRoute,
   ApiDriveSharedTokenRoute: ApiDriveSharedTokenRoute,
 }

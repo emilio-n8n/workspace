@@ -1,6 +1,10 @@
 import { getDb, schema } from "@workspace/database";
 import type { Actor } from "@workspace/permissions";
 import { and, desc, eq, isNull, sql } from "drizzle-orm";
+import { publishNotification } from "./stream.ts";
+
+export type { NotificationListener, NotificationStreamEvent } from "./stream.ts";
+export { publishNotification, subscribeToNotifications } from "./stream.ts";
 
 /**
  * Notifications utilisateur — partages reçus, tâches assignées, copies notées.
@@ -64,7 +68,9 @@ function toView(row: NotificationRow): NotificationView {
 
 /**
  * Émet une notification pour un utilisateur d'une organisation. Ne lève
- * jamais : l'échec est signalé sur stderr et avalé.
+ * jamais : l'échec est signalé sur stderr et avalé. Après une insertion
+ * réussie, l'évènement est diffusé au mieux sur le bus temps réel (best-effort,
+ * jamais bloquant) pour la cloche ouverte dans l'organisation.
  */
 export async function createNotification(input: {
   orgId: string;
@@ -87,6 +93,19 @@ export async function createNotification(input: {
       });
   } catch (error) {
     console.error(`[notifications] écriture impossible : ${errorText(error)}`);
+    return;
+  }
+
+  try {
+    publishNotification({
+      orgId: input.orgId,
+      userId: input.userId,
+      kind: input.kind,
+      title: input.title,
+      href: input.href ?? null,
+    });
+  } catch {
+    // Silencieux : la diffusion temps réel ne doit jamais casser l'émission.
   }
 }
 

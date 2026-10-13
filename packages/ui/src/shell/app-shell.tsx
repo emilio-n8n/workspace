@@ -8,6 +8,11 @@ import {
 import type { ResolvedSuiteApp, SuiteAppId } from "./suite-apps.ts";
 import { type NotificationBellItem, TopBar } from "./top-bar.tsx";
 
+/** Flux SSE des notifications (même origine dans chaque application). */
+const NOTIFICATIONS_STREAM_URL = "/api/notifications/stream";
+/** Cadence du repli : mêmes ~60 s que le polling historique des applications. */
+const NOTIFICATIONS_POLL_MS = 60_000;
+
 /**
  * Données de la cloche de notifications gérées par l'application :
  * état affiché, navigation et actions (rechargement compris).
@@ -98,6 +103,59 @@ export function AppShell({
     }, 250);
     return () => window.clearTimeout(timer);
   }, [paletteQuery, search]);
+
+  // Cloche en temps réel : quand c'est possible un flux SSE rafraîchit les
+  // notifications ; s'il échoue (ou que le navigateur ne le propose pas), on
+  // retombe sur le polling périodique — jamais les deux à la fois. L'onglet
+  // redevenu visible retente l'ouverture du flux.
+  const notificationsRefresh = notifications?.onRefresh;
+  useEffect(() => {
+    if (!notificationsRefresh) return;
+    const canStream = typeof window !== "undefined" && "EventSource" in window;
+    let source: EventSource | null = null;
+    let pollTimer: number | null = null;
+
+    const stopPolling = () => {
+      if (pollTimer === null) return;
+      window.clearInterval(pollTimer);
+      pollTimer = null;
+    };
+    const startPolling = () => {
+      if (pollTimer !== null) return;
+      pollTimer = window.setInterval(() => void notificationsRefresh(), NOTIFICATIONS_POLL_MS);
+    };
+    const closeStream = () => {
+      source?.close();
+      source = null;
+    };
+    const openStream = () => {
+      if (!canStream || source) return;
+      stopPolling();
+      const next = new EventSource(NOTIFICATIONS_STREAM_URL);
+      source = next;
+      // L'évènement ne porte qu'un signal : la liste est rechargée via la
+      // server fn existante.
+      next.onmessage = () => void notificationsRefresh();
+      next.onerror = () => {
+        if (source !== next) return;
+        closeStream();
+        startPolling();
+      };
+    };
+
+    if (canStream) openStream();
+    else startPolling();
+
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") openStream();
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      closeStream();
+      stopPolling();
+    };
+  }, [notificationsRefresh]);
 
   const paletteActions: PaletteAction[] = [
     {
