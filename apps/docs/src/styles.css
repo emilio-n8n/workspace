@@ -165,8 +165,11 @@ body {
     display: none !important;
   }
 
-  /* Cadre de page de l'éditeur : plus de largeur max ni de padding écran. */
-  .print-surface > div > :last-child > :first-child {
+  /* Cadre de page de l'éditeur : plus de largeur max ni de padding écran.
+     Le second sélecteur couvre la colonne encadrée par le panneau « Plan » :
+     le cadre de page y est un niveau plus bas sans que le document rétrécisse. */
+  .print-surface > div > :last-child > :first-child,
+  .print-surface > div > :last-child > :last-child > :first-child {
     max-width: none !important;
     margin: 0 !important;
     padding: 0 !important;

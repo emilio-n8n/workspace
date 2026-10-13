@@ -1,11 +1,15 @@
 import { Collaboration } from "@tiptap/extension-collaboration";
 import { CollaborationCaret } from "@tiptap/extension-collaboration-caret";
-import { EditorContent, type JSONContent, useEditor } from "@tiptap/react";
+import { type Editor, EditorContent, type JSONContent, useEditor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import { Alert, Button, cn } from "@workspace/ui";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { type CollabSession, createCollabSession } from "../collab-client.ts";
 import { saveDocumentFn } from "../server.ts";
+import { FORMAT_ACTIONS, type FormatActionId, matchFormatAction } from "./format-actions.ts";
+import { OutlineIcon } from "./icons.tsx";
+import { OutlinePanel } from "./outline-panel.tsx";
+import { onToolbarArrowKeys, ToolbarButton, ToolbarSeparator } from "./toolbar.tsx";
 
 type Props = {
   fileId: string;
@@ -31,6 +35,36 @@ const AUTOSAVE_DELAY_MS = 1200;
 const COLLAB_FIELD = "content";
 /** Couleur du curseur distant (hexadécimal à 6 chiffres : seule forme acceptée). */
 const COLLAB_CURSOR_COLOR = "#2f5d54";
+
+/**
+ * Applique une action de mise en forme — exactement la commande utilisée par la
+ * barre d'outils : clavier et boutons ne peuvent pas diverger.
+ */
+function runFormatAction(editor: WorkspaceEditor, id: FormatActionId) {
+  if (id === "bold") return editor.chain().focus().toggleBold().run();
+  if (id === "italic") return editor.chain().focus().toggleItalic().run();
+  return editor.chain().focus().toggleUnderline().run();
+}
+
+/** État actif d'une action de mise en forme sur la sélection courante. */
+function isFormatActive(editor: WorkspaceEditor, id: FormatActionId): boolean {
+  if (id === "bold") return editor.isActive("bold");
+  if (id === "italic") return editor.isActive("italic");
+  return editor.isActive("underline");
+}
+
+/**
+ * Vrai si la cible d'un raccourci est l'éditeur ou un champ de saisie : dans les
+ * deux cas le raccourci est déjà appliqué par ProseMirror ou par le navigateur,
+ * et le réappliquer annulerait la mise en forme au lieu de la poser.
+ */
+function isEditableArea(target: EventTarget | null, editor: WorkspaceEditor): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  if (target.isContentEditable) return true;
+  if (editor.view.dom.contains(target)) return true;
+  const tag = target.tagName;
+  return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
+}
 
 /** Extrait le message d'une erreur, y compris sérialisée par le serveur. */
 function errorMessage(error: unknown): string {
@@ -97,6 +131,9 @@ type SurfaceProps = Props & {
   session?: CollabSession | null;
 };
 
+/** Instance Tiptap telle que la consomment les commandes de mise en forme. */
+type WorkspaceEditor = Editor;
+
 /** Cœur de l'éditeur : autosave, conflits, et collaboration quand fournie. */
 function EditorSurface({
   fileId,
@@ -115,6 +152,10 @@ function EditorSurface({
   const queuedRef = useRef<{ content: unknown; mode: SaveMode } | null>(null);
   const dirtyRef = useRef(false);
   const latestRef = useRef<unknown>(null);
+  /** Panneau « Plan » (titres du document) : ouvert ou fermé. */
+  const [outlineOpen, setOutlineOpen] = useState(false);
+  /** Zone de défilement du document : repère de la position courante dans le plan. */
+  const scrollRef = useRef<HTMLDivElement>(null);
   /** Dernière révision connue (chargement ou réponse de sauvegarde). */
   const revisionRef = useRef<string | undefined>(initialRevision);
   /** Après un conflit, on n'écrase plus rien : rechargez la page. */
@@ -250,6 +291,26 @@ function EditorSurface({
     return () => session.provider.off("sync", seedIfEmpty);
   }, [session, editor, canEdit, initialContent]);
 
+  // Raccourcis de mise en forme (Ctrl/⌘ + B, I, U) en dehors de la zone
+  // d'édition — panneau « Plan », boutons de la barre d'outils.
+  useEffect(() => {
+    if (!editor || !canEdit) return;
+    const active = editor;
+
+    function onKeyDown(event: KeyboardEvent) {
+      const action = matchFormatAction(event);
+      if (!action) return;
+      // Déjà consommé : ne jamais basculer deux fois la même marque.
+      if (event.defaultPrevented) return;
+      if (isEditableArea(event.target, active)) return;
+      event.preventDefault();
+      void runFormatAction(active, action.id);
+    }
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [editor, canEdit]);
+
   // Fermeture de l'onglet : avertissement tant que des modifications ne sont pas enregistrées.
   useEffect(() => {
     function onBeforeUnload(event: BeforeUnloadEvent) {
@@ -296,220 +357,213 @@ function EditorSurface({
               : "Lecture seule";
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex flex-wrap items-center gap-1 border-b border-border px-3 py-2">
-        <ToolbarButton
-          label="Annuler"
-          disabled={!canEdit || !editor.can().undo()}
-          onClick={() => editor.chain().focus().undo().run()}
-        >
-          ↺
-        </ToolbarButton>
-        <ToolbarButton
-          label="Rétablir"
-          disabled={!canEdit || !editor.can().redo()}
-          onClick={() => editor.chain().focus().redo().run()}
-        >
-          ↻
-        </ToolbarButton>
-
-        <Separator />
-
-        {[1, 2, 3].map((level) => (
-          <ToolbarButton
-            key={level}
-            label={`Titre ${level}`}
-            active={editor.isActive("heading", { level })}
-            disabled={!canEdit}
-            onClick={() =>
-              editor
-                .chain()
-                .focus()
-                .toggleHeading({ level: level as 1 | 2 | 3 })
-                .run()
-            }
-          >
-            H{level}
-          </ToolbarButton>
-        ))}
-
-        <Separator />
-
-        <ToolbarButton
-          label="Gras"
-          active={editor.isActive("bold")}
-          disabled={!canEdit}
-          onClick={() => editor.chain().focus().toggleBold().run()}
-        >
-          <span className="font-bold">B</span>
-        </ToolbarButton>
-        <ToolbarButton
-          label="Italique"
-          active={editor.isActive("italic")}
-          disabled={!canEdit}
-          onClick={() => editor.chain().focus().toggleItalic().run()}
-        >
-          <span className="italic">I</span>
-        </ToolbarButton>
-        <ToolbarButton
-          label="Barré"
-          active={editor.isActive("strike")}
-          disabled={!canEdit}
-          onClick={() => editor.chain().focus().toggleStrike().run()}
-        >
-          <span className="line-through">S</span>
-        </ToolbarButton>
-        <ToolbarButton
-          label="Code en ligne"
-          active={editor.isActive("code")}
-          disabled={!canEdit}
-          onClick={() => editor.chain().focus().toggleCode().run()}
-        >
-          {"</>"}
-        </ToolbarButton>
-
-        <Separator />
-
-        <ToolbarButton
-          label="Liste à puces"
-          active={editor.isActive("bulletList")}
-          disabled={!canEdit}
-          onClick={() => editor.chain().focus().toggleBulletList().run()}
-        >
-          •
-        </ToolbarButton>
-        <ToolbarButton
-          label="Liste numérotée"
-          active={editor.isActive("orderedList")}
-          disabled={!canEdit}
-          onClick={() => editor.chain().focus().toggleOrderedList().run()}
-        >
-          1.
-        </ToolbarButton>
-        <ToolbarButton
-          label="Citation"
-          active={editor.isActive("blockquote")}
-          disabled={!canEdit}
-          onClick={() => editor.chain().focus().toggleBlockquote().run()}
-        >
-          ❝
-        </ToolbarButton>
-        <ToolbarButton
-          label="Bloc de code"
-          active={editor.isActive("codeBlock")}
-          disabled={!canEdit}
-          onClick={() => editor.chain().focus().toggleCodeBlock().run()}
-        >
-          {"{ }"}
-        </ToolbarButton>
-        <ToolbarButton
-          label="Séparateur"
-          disabled={!canEdit}
-          onClick={() => editor.chain().focus().setHorizontalRule().run()}
-        >
-          ―
-        </ToolbarButton>
-
-        <div className="ml-auto flex items-center gap-2">
-          {session ? (
-            <span role="status" className="text-xs text-muted-foreground">
-              Collaboration active
-            </span>
-          ) : null}
-          <span
-            className={cn(
-              "text-xs text-muted-foreground",
-              (status === "error" || status === "conflict") && "text-destructive",
-            )}
-            role="status"
-          >
-            {statusLabel}
-          </span>
-          {status === "error" && canEdit ? (
-            <Button
-              size="sm"
-              variant="ghost"
-              className="h-6 px-2 text-xs"
-              onClick={() => void persist(editor.getJSON(), "replace-latest")}
-            >
-              Réessayer
-            </Button>
-          ) : null}
-          {canEdit ? (
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={status === "conflict"}
-              onClick={() => void persist(editor.getJSON(), "append")}
-            >
-              Enregistrer une version
-            </Button>
-          ) : null}
-        </div>
-      </div>
-
-      {status === "conflict" ? (
-        <div className="border-b border-border px-3 py-2">
-          <Alert
-            tone="warning"
-            className="flex flex-wrap items-center gap-x-3 gap-y-2 py-1.5 text-xs"
-          >
-            <span className="flex-1">
-              Le document a été modifié ailleurs ; votre contenu reste affiché. Rechargez la page
-              pour repartir de la version la plus récente.
-            </span>
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              className="h-6 px-2 text-xs"
-              onClick={() => (onReload ? onReload() : window.location.reload())}
-            >
-              Recharger la page
-            </Button>
-          </Alert>
-        </div>
+    <div className="flex min-h-0 flex-1 flex-row">
+      {outlineOpen ? (
+        <OutlinePanel
+          editor={editor}
+          scrollElement={scrollRef.current}
+          canEdit={canEdit}
+          onClose={() => setOutlineOpen(false)}
+        />
       ) : null}
 
-      <div className="min-h-0 flex-1 overflow-y-auto">
-        <div className="mx-auto w-full max-w-3xl px-6 py-8">
-          <EditorContent editor={editor} />
+      <div className="flex min-h-0 flex-1 flex-col">
+        <div
+          role="toolbar"
+          aria-label="Mise en forme du document"
+          onKeyDown={onToolbarArrowKeys}
+          className="flex flex-wrap items-center gap-1 border-b border-border px-3 py-2"
+        >
+          <ToolbarButton
+            label="Plan"
+            pressed={outlineOpen}
+            onClick={() => setOutlineOpen((current) => !current)}
+          >
+            <OutlineIcon />
+          </ToolbarButton>
+
+          <ToolbarSeparator />
+
+          <ToolbarButton
+            label="Annuler"
+            disabled={!canEdit || !editor.can().undo()}
+            onClick={() => editor.chain().focus().undo().run()}
+          >
+            ↺
+          </ToolbarButton>
+          <ToolbarButton
+            label="Rétablir"
+            disabled={!canEdit || !editor.can().redo()}
+            onClick={() => editor.chain().focus().redo().run()}
+          >
+            ↻
+          </ToolbarButton>
+
+          <ToolbarSeparator />
+
+          {[1, 2, 3].map((level) => (
+            <ToolbarButton
+              key={level}
+              label={`Titre ${level}`}
+              pressed={editor.isActive("heading", { level })}
+              disabled={!canEdit}
+              onClick={() =>
+                editor
+                  .chain()
+                  .focus()
+                  .toggleHeading({ level: level as 1 | 2 | 3 })
+                  .run()
+              }
+            >
+              H{level}
+            </ToolbarButton>
+          ))}
+
+          <ToolbarSeparator />
+
+          {/* Mise en forme : libellés, glyphes et raccourcis viennent du
+              catalogue — les mêmes commandes tournent au clavier. */}
+          {FORMAT_ACTIONS.map((action) => (
+            <ToolbarButton
+              key={action.id}
+              label={action.label}
+              shortcutKey={action.shortcutKey}
+              pressed={isFormatActive(editor, action.id)}
+              disabled={!canEdit}
+              onClick={() => runFormatAction(editor, action.id)}
+            >
+              <span className={action.glyphClassName}>{action.glyph}</span>
+            </ToolbarButton>
+          ))}
+
+          <ToolbarSeparator />
+
+          <ToolbarButton
+            label="Barré"
+            pressed={editor.isActive("strike")}
+            disabled={!canEdit}
+            onClick={() => editor.chain().focus().toggleStrike().run()}
+          >
+            <span className="line-through">S</span>
+          </ToolbarButton>
+          <ToolbarButton
+            label="Code en ligne"
+            pressed={editor.isActive("code")}
+            disabled={!canEdit}
+            onClick={() => editor.chain().focus().toggleCode().run()}
+          >
+            {"</>"}
+          </ToolbarButton>
+
+          <ToolbarSeparator />
+
+          <ToolbarButton
+            label="Liste à puces"
+            pressed={editor.isActive("bulletList")}
+            disabled={!canEdit}
+            onClick={() => editor.chain().focus().toggleBulletList().run()}
+          >
+            •
+          </ToolbarButton>
+          <ToolbarButton
+            label="Liste numérotée"
+            pressed={editor.isActive("orderedList")}
+            disabled={!canEdit}
+            onClick={() => editor.chain().focus().toggleOrderedList().run()}
+          >
+            1.
+          </ToolbarButton>
+          <ToolbarButton
+            label="Citation"
+            pressed={editor.isActive("blockquote")}
+            disabled={!canEdit}
+            onClick={() => editor.chain().focus().toggleBlockquote().run()}
+          >
+            ❝
+          </ToolbarButton>
+          <ToolbarButton
+            label="Bloc de code"
+            pressed={editor.isActive("codeBlock")}
+            disabled={!canEdit}
+            onClick={() => editor.chain().focus().toggleCodeBlock().run()}
+          >
+            {"{ }"}
+          </ToolbarButton>
+          <ToolbarButton
+            label="Séparateur"
+            disabled={!canEdit}
+            onClick={() => editor.chain().focus().setHorizontalRule().run()}
+          >
+            ―
+          </ToolbarButton>
+
+          <div className="ml-auto flex items-center gap-2">
+            {session ? (
+              <span role="status" className="text-xs text-muted-foreground">
+                Collaboration active
+              </span>
+            ) : null}
+            <span
+              className={cn(
+                "text-xs text-muted-foreground",
+                (status === "error" || status === "conflict") && "text-destructive",
+              )}
+              role="status"
+            >
+              {statusLabel}
+            </span>
+            {status === "error" && canEdit ? (
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-6 px-2 text-xs"
+                onClick={() => void persist(editor.getJSON(), "replace-latest")}
+              >
+                Réessayer
+              </Button>
+            ) : null}
+            {canEdit ? (
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={status === "conflict"}
+                onClick={() => void persist(editor.getJSON(), "append")}
+              >
+                Enregistrer une version
+              </Button>
+            ) : null}
+          </div>
+        </div>
+
+        {status === "conflict" ? (
+          <div className="border-b border-border px-3 py-2">
+            <Alert
+              tone="warning"
+              className="flex flex-wrap items-center gap-x-3 gap-y-2 py-1.5 text-xs"
+            >
+              <span className="flex-1">
+                Le document a été modifié ailleurs ; votre contenu reste affiché. Rechargez la page
+                pour repartir de la version la plus récente.
+              </span>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                className="h-6 px-2 text-xs"
+                onClick={() => (onReload ? onReload() : window.location.reload())}
+              >
+                Recharger la page
+              </Button>
+            </Alert>
+          </div>
+        ) : null}
+
+        <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto">
+          <div className="mx-auto w-full max-w-3xl px-6 py-8">
+            <EditorContent editor={editor} />
+          </div>
         </div>
       </div>
     </div>
-  );
-}
-
-function Separator() {
-  return <span aria-hidden className="mx-1 h-5 w-px bg-border" />;
-}
-
-function ToolbarButton({
-  label,
-  active = false,
-  disabled = false,
-  onClick,
-  children,
-}: {
-  label: string;
-  active?: boolean;
-  disabled?: boolean;
-  onClick: () => void;
-  children: React.ReactNode;
-}) {
-  return (
-    <Button
-      type="button"
-      variant="ghost"
-      size="sm"
-      className={cn("min-w-8 px-2", active && "bg-accent text-accent-foreground")}
-      aria-label={label}
-      aria-pressed={active}
-      title={label}
-      disabled={disabled}
-      onClick={onClick}
-    >
-      {children}
-    </Button>
   );
 }
