@@ -7,7 +7,7 @@
     "node": ">=22"
   },
   "scripts": {
-    "dev": "turbo run dev",
+    "dev": "turbo run dev --filter=!@workspace/collab --filter=!@workspace/mcp-server",
     "build": "turbo run build",
     "lint": "biome lint .",
     "typecheck": "turbo run typecheck",
@@ -19,7 +19,8 @@
     "db:migrate": "node scripts/db-migrate-all.mjs",
     "check:design": "node scripts/contrast-check.mjs",
     "seed:demo": "tsx scripts/seed-demo.mts",
-    "backup": "node scripts/backup.mjs"
+    "backup": "node scripts/backup.mjs",
+    "dev:collab": "pnpm --filter @workspace/collab dev"
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.13.0",
