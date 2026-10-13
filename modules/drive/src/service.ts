@@ -1039,6 +1039,233 @@ export async function deleteEntry(
   await purge(actor, entryId);
 }
 
+// ---------------------------------------------------------------------------
+// Actions groupées (barre d'actions de la sélection multiple)
+// ---------------------------------------------------------------------------
+
+/** Nombre maximal d'éléments traités par une action groupée. */
+const MAX_BULK_ENTRIES = 200;
+/** Nombre maximal de dossiers proposés comme cible de déplacement. */
+const MAX_MOVE_TARGETS = 500;
+
+/** Échec d'un élément dans une action groupée — les autres continuent. */
+export type BulkFailure = { id: string; message: string };
+
+export type BulkMoveResult = {
+  targetParentId: string | null;
+  moved: string[];
+  failures: BulkFailure[];
+};
+
+export type BulkTrashResult = {
+  trashed: string[];
+  failures: BulkFailure[];
+};
+
+/** Identifiants dédoublonnés et bornés : une sélection ne peut pas exploser la requête. */
+function normalizeBulkIds(entryIds: readonly string[]): string[] {
+  return [...new Set(entryIds)].slice(0, MAX_BULK_ENTRIES);
+}
+
+/**
+ * Dossiers proposés comme cible de déplacement : actifs, dans l'organisation,
+ * et accessibles en écriture. Les éléments déplacés et leurs descendants sont
+ * écartés — un dossier ne peut pas être déplacé dans sa propre descendance.
+ */
+export async function listMoveTargets(
+  actor: Actor,
+  options: { excludeIds?: readonly string[] } = {},
+): Promise<DriveEntry[]> {
+  const rows = await db()
+    .select()
+    .from(driveFiles)
+    .where(
+      and(
+        eq(driveFiles.orgId, actor.orgId),
+        eq(driveFiles.status, "active"),
+        eq(driveFiles.kind, "folder"),
+      ),
+    )
+    .orderBy(asc(driveFiles.name))
+    .limit(MAX_MOVE_TARGETS);
+
+  const roles = await resolveRolesForEntries(
+    actor,
+    rows.map((row) => ({ id: row.id, ownerId: row.ownerId })),
+  );
+  const writable = rows.filter((row) => roleSatisfies(roles.get(row.id), "write"));
+
+  const excluded = new Set(options.excludeIds ?? []);
+  if (excluded.size === 0) return writable;
+
+  const childrenOf = new Map<string, string[]>();
+  for (const row of writable) {
+    if (row.parentId === null) continue;
+    childrenOf.set(row.parentId, [...(childrenOf.get(row.parentId) ?? []), row.id]);
+  }
+
+  const dropped = new Set(excluded);
+  const queue = [...excluded];
+  while (queue.length > 0) {
+    const current = queue.shift();
+    if (current === undefined) break;
+    for (const child of childrenOf.get(current) ?? []) {
+      if (dropped.has(child)) continue;
+      dropped.add(child);
+      queue.push(child);
+    }
+  }
+
+  return writable.filter((row) => !dropped.has(row.id));
+}
+
+/**
+ * Déplace un lot d'éléments vers un dossier (ou la racine). Échecs isolés par
+ * élément : un conflit de nom ou une permission manquante n'annule pas les
+ * autres déplacements. La cible est validée une fois pour toutes (dossier
+ * accessible en écriture, et hors du sous-arbre déplacé).
+ *
+ * Chaque déplacement réel est journalisé (`drive.entry.move`, avec la cible) ;
+ * un élément déjà au bon endroit ne l'est pas — rien n'a changé.
+ */
+export async function moveEntries(
+  actor: Actor,
+  input: { entryIds: readonly string[]; targetParentId: string | null },
+): Promise<BulkMoveResult> {
+  const targetParentId = input.targetParentId ?? null;
+  const ids = normalizeBulkIds(input.entryIds);
+  const result: BulkMoveResult = { targetParentId, moved: [], failures: [] };
+  if (ids.length === 0) return result;
+
+  await assertWritableParent(actor, targetParentId);
+
+  const moving = new Set(ids);
+  if (targetParentId !== null) {
+    const ascendance = await collectAscendance(actor.orgId, targetParentId);
+    if (ascendance.some((id) => moving.has(id))) {
+      throw new DriveError(
+        "validation",
+        "Impossible de déplacer un dossier dans l'un de ses sous-dossiers.",
+      );
+    }
+  }
+
+  const rows = await db()
+    .select()
+    .from(driveFiles)
+    .where(and(eq(driveFiles.orgId, actor.orgId), inArray(driveFiles.id, ids)));
+  const byId = new Map(rows.map((row) => [row.id, row]));
+  const roles = await resolveRolesForEntries(
+    actor,
+    rows.map((row) => ({ id: row.id, ownerId: row.ownerId })),
+  );
+
+  const changed: string[] = [];
+  for (const id of ids) {
+    const row = byId.get(id);
+    if (!row) {
+      result.failures.push({ id, message: "Élément introuvable." });
+      continue;
+    }
+    if (row.status !== "active") {
+      result.failures.push({ id, message: "Cet élément est dans la corbeille." });
+      continue;
+    }
+    if (!roleSatisfies(roles.get(id), "write")) {
+      result.failures.push({ id, message: "Permission insuffisante sur cet élément." });
+      continue;
+    }
+    if (row.parentId === targetParentId) {
+      // Déjà au bon endroit : succès silencieux, sans écriture ni audit.
+      result.moved.push(id);
+      continue;
+    }
+
+    try {
+      await db().update(driveFiles).set({ parentId: targetParentId }).where(eq(driveFiles.id, id));
+      changed.push(id);
+      result.moved.push(id);
+    } catch (error) {
+      if (isUniqueViolation(error)) {
+        result.failures.push({
+          id,
+          message: `« ${row.name} » porte déjà ce nom dans le dossier de destination.`,
+        });
+        continue;
+      }
+      result.failures.push({
+        id,
+        message:
+          error instanceof Error ? error.message : `Déplacement de « ${row.name} » impossible.`,
+      });
+    }
+  }
+
+  for (const id of changed) {
+    await recordAudit({
+      orgId: actor.orgId,
+      actorUserId: actor.userId,
+      action: "drive.entry.move",
+      resourceType: "file",
+      resourceId: id,
+      result: "success",
+      metadata: { targetParentId },
+    });
+  }
+
+  return result;
+}
+
+/**
+ * Met un lot d'éléments à la corbeille (sous-arbre compris, comme `trash`).
+ * Échecs isolés par élément : les droits sont vérifiés un par un, un refus ne
+ * bloque pas le reste de la sélection.
+ */
+export async function trashEntries(
+  actor: Actor,
+  input: { entryIds: readonly string[] },
+): Promise<BulkTrashResult> {
+  const result: BulkTrashResult = { trashed: [], failures: [] };
+  for (const id of normalizeBulkIds(input.entryIds)) {
+    try {
+      await trash(actor, id);
+      result.trashed.push(id);
+    } catch (error) {
+      result.failures.push({
+        id,
+        // DriveError porte déjà un message français ; le repli reste utilisable.
+        message:
+          error instanceof Error && error.message
+            ? error.message
+            : "Mise à la corbeille impossible.",
+      });
+    }
+  }
+  return result;
+}
+
+/** Ascendance d'un élément, lui-même inclus (du plus proche au plus haut). */
+async function collectAscendance(orgId: string, entryId: string): Promise<string[]> {
+  const chain: string[] = [entryId];
+  let current: string | null = entryId;
+  let depth = 0;
+
+  while (current !== null && depth < MAX_DEPTH) {
+    const [row] = await db()
+      .select({ parentId: driveFiles.parentId })
+      .from(driveFiles)
+      .where(and(eq(driveFiles.id, current), eq(driveFiles.orgId, orgId)))
+      .limit(1);
+    if (!row || row.parentId === null) break;
+
+    chain.push(row.parentId);
+    current = row.parentId;
+    depth += 1;
+  }
+
+  return chain;
+}
+
 export async function listVersions(actor: Actor, fileId: string): Promise<DriveVersion[]> {
   await assertDrive(actor, "read", fileId);
   return db()

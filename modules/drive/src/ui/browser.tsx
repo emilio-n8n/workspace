@@ -4,23 +4,25 @@ import {
   Badge,
   Button,
   Card,
+  ConfirmDialog,
   cn,
   Dialog,
   DOCS_MIME,
   FileIcon,
   FORMS_MIME,
-  IconChevronDown,
   IconFolder,
-  IconTrash,
   Input,
   Label,
   SHEETS_MIME,
   SITES_MIME,
   SLIDES_MIME,
+  Toasts,
+  useToasts,
 } from "@workspace/ui";
 import {
   type DragEvent,
   type FormEvent,
+  type MouseEvent as ReactMouseEvent,
   useCallback,
   useEffect,
   useMemo,
@@ -36,10 +38,36 @@ import {
   listDriveFn,
   listRecentFn,
   listSharedFn,
+  moveEntriesFn,
   renameEntryFn,
+  trashEntriesFn,
   trashEntryFn,
 } from "../server.ts";
+import { Breadcrumbs } from "./breadcrumbs.tsx";
+import { NewMenu, RowMenu } from "./entry-menus.tsx";
+import { isLinkedMime, MAX_BULK_DOWNLOAD } from "./linked-files.ts";
+import {
+  deselectId,
+  downloadableEntries,
+  EMPTY_SELECTION,
+  pruneSelection,
+  type Selection,
+  selectAllIds,
+  selectRange,
+  toggleSelection,
+} from "./selection.ts";
+import { MoveDialog, SelectionActionBar } from "./selection-bar.tsx";
 import { ShareDialog } from "./share-dialog.tsx";
+import { SortableColumn, ViewControls, ViewControlsHint } from "./view-controls.tsx";
+import {
+  DEFAULT_VIEW_PREFS,
+  parseViewPrefs,
+  rowPadding,
+  serializeViewPrefs,
+  sortEntries,
+  VIEW_PREFS_STORAGE_KEY,
+  type ViewPrefs,
+} from "./view-prefs.ts";
 
 type View = "drive" | "recent" | "shared";
 
@@ -107,12 +135,16 @@ function formatDateShort(iso: string): string {
   return new Date(iso).toLocaleDateString("fr-FR", { dateStyle: "medium" });
 }
 
-/** Types de fichiers liés, ouverts par une application dédiée. */
-const LINKED_MIMES = new Set([DOCS_MIME, SHEETS_MIME, SLIDES_MIME, FORMS_MIME]);
+/** Libellé du badge des fichiers liés (ouverts par l'application dédiée). */
+const LINKED_LABELS: Record<string, string> = {
+  [DOCS_MIME]: "Document",
+  [SHEETS_MIME]: "Feuille",
+  [SLIDES_MIME]: "Présentation",
+  [FORMS_MIME]: "Formulaire",
+};
 
-function isLinkedMime(mimeType: string | null): boolean {
-  return mimeType !== null && LINKED_MIMES.has(mimeType);
-}
+/** Types connus → libellés français (badges et dialogue de détails). */
+const MIME_LABELS: Record<string, string> = { ...LINKED_LABELS, [SITES_MIME]: "Site" };
 
 /** Plafond du texte chargé pour l'aperçu (200 Kio) : le flux est coupé à cette taille. */
 const TEXT_PREVIEW_LIMIT = 200 * 1024;
@@ -177,17 +209,6 @@ async function readTextPreview(response: Response): Promise<{ text: string; trun
   return { text, truncated };
 }
 
-/** Libellé du badge des fichiers liés (ouverts par l'application dédiée). */
-const LINKED_LABELS: Record<string, string> = {
-  [DOCS_MIME]: "Document",
-  [SHEETS_MIME]: "Feuille",
-  [SLIDES_MIME]: "Présentation",
-  [FORMS_MIME]: "Formulaire",
-};
-
-/** Types connus → libellés français (badges et dialogue de détails). */
-const MIME_LABELS: Record<string, string> = { ...LINKED_LABELS, [SITES_MIME]: "Site" };
-
 type CreationKind = "doc" | "sheet" | "slide" | "form";
 
 const CREATION: Record<
@@ -227,9 +248,62 @@ const TABS: { id: string; label: string; to: string }[] = [
   { id: "trash", label: "Corbeille", to: "/trash" },
 ];
 
+/** Vrai si la frappe au clavier se produit dans un champ de saisie. */
+function isTypingTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  return (
+    target.isContentEditable ||
+    ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName) ||
+    target.getAttribute("role") === "textbox"
+  );
+}
+
+/** Vrai si un dialogue modal de l'interface est ouvert (il gère Échap lui-même). */
+function isModalOpen(): boolean {
+  return typeof document === "undefined" || document.querySelector("dialog[open]") !== null;
+}
+
+/**
+ * Préférences d'affichage persistées dans le stockage local : lecture au montage
+ * (une valeur illisible retombe sur les défauts), écriture à chaque changement.
+ * Le stockage peut être indisponible — navigation privée, quota atteint : la
+ * préférence s'applique alors sans être retenue.
+ */
+function useViewPrefs(): [ViewPrefs, (next: ViewPrefs) => void] {
+  const [prefs, setPrefs] = useState<ViewPrefs>(DEFAULT_VIEW_PREFS);
+
+  useEffect(() => {
+    let stored: string | null = null;
+    try {
+      stored = window.localStorage.getItem(VIEW_PREFS_STORAGE_KEY);
+    } catch {
+      stored = null;
+    }
+    const parsed = parseViewPrefs(stored);
+    setPrefs(parsed);
+    try {
+      window.localStorage.setItem(VIEW_PREFS_STORAGE_KEY, serializeViewPrefs(parsed));
+    } catch {
+      // stockage indisponible : la préférence reste valable pour la session.
+    }
+  }, []);
+
+  const update = useCallback((next: ViewPrefs) => {
+    setPrefs(next);
+    try {
+      window.localStorage.setItem(VIEW_PREFS_STORAGE_KEY, serializeViewPrefs(next));
+    } catch {
+      // idem : pas de persistance, mais pas d'erreur affichée à l'utilisateur.
+    }
+  }, []);
+
+  return [prefs, update];
+}
+
 /**
  * Navigateur de fichiers Drive : dossiers, upload (bouton ou glisser-déposer),
- * recherche dans la vue, tri, renommage, corbeille, aperçu des versions et partage.
+ * recherche dans la vue, tri et densité persistés, sélection multiple avec
+ * barre d'actions, renommage, corbeille, aperçu des versions et partage.
  */
 export function DriveBrowser({
   view = "drive",
@@ -244,6 +318,7 @@ export function DriveBrowser({
   createForm,
 }: Props) {
   const router = useRouter();
+  const { toasts, push, dismiss } = useToasts();
 
   const [entries, setEntries] = useState<DriveEntryView[] | null>(null);
   const [sharedRoles, setSharedRoles] = useState<Map<string, string>>(new Map());
@@ -255,7 +330,12 @@ export function DriveBrowser({
 
   const [query, setQuery] = useState("");
   const [typeFilter, setTypeFilter] = useState<TypeFilter>("all");
-  const [sortAsc, setSortAsc] = useState(true);
+  const [prefs, setPrefs] = useViewPrefs();
+
+  const [selection, setSelection] = useState<Selection>(EMPTY_SELECTION);
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [moveOpen, setMoveOpen] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
 
   const [folderDialogOpen, setFolderDialogOpen] = useState(false);
   const [folderName, setFolderName] = useState("");
@@ -342,14 +422,50 @@ export function DriveBrowser({
     if (typeFilter === "folders") rows = rows.filter((entry) => entry.kind === "folder");
     if (typeFilter === "files") rows = rows.filter((entry) => entry.kind === "file");
 
-    // Le tri est toujours appliqué : la flèche de l'en-tête ne peut pas mentir.
-    rows = [...rows].sort((a, b) => {
-      if (a.kind !== b.kind) return a.kind === "folder" ? -1 : 1;
-      return a.name.localeCompare(b.name, "fr", { sensitivity: "base" }) * (sortAsc ? 1 : -1);
-    });
+    // Le tri est toujours appliqué : un en-tête ne peut pas mentir sur l'ordre.
+    return sortEntries(rows, prefs);
+  }, [entries, query, typeFilter, prefs]);
 
-    return rows;
-  }, [entries, query, typeFilter, sortAsc]);
+  const orderedIds = useMemo(
+    () => (visibleEntries ?? []).map((entry) => entry.id),
+    [visibleEntries],
+  );
+
+  const selectedEntries = useMemo(
+    () => (visibleEntries ?? []).filter((entry) => selection.ids.has(entry.id)),
+    [visibleEntries, selection.ids],
+  );
+
+  // Une ligne qui disparaît (filtre, suppression, déplacement) ne reste pas
+  // sélectionnée : la barre d'actions ne doit jamais agir sur un fantôme.
+  useEffect(() => {
+    if (visibleEntries === null || selection.ids.size === 0) return;
+    const pruned = pruneSelection(selection.ids, orderedIds);
+    if (pruned.size === selection.ids.size) return;
+    setSelection((current) => ({ ...current, ids: pruned }));
+  }, [visibleEntries, orderedIds, selection.ids]);
+
+  const clearSelection = useCallback(() => setSelection(EMPTY_SELECTION), []);
+
+  // Raccourcis de la sélection : Ctrl/⌘ + A tout sélectionner, Échap tout annuler.
+  // Ignorés pendant la saisie pour ne pas casser le champ de recherche.
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if (isTypingTarget(event.target)) return;
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "a") {
+        event.preventDefault();
+        setSelection({ ids: selectAllIds(orderedIds), anchorId: null });
+        return;
+      }
+      if (event.key === "Escape" && selection.ids.size > 0) {
+        // Un dialogue modal est ouvert : Échap lui appartient, il ne doit pas
+        // aussi vider la sélection en arrière-plan.
+        if (!isModalOpen()) clearSelection();
+      }
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [orderedIds, selection.ids.size, clearSelection]);
 
   async function onUpload(files: FileList | File[]) {
     const list = Array.from(files);
@@ -387,11 +503,7 @@ export function DriveBrowser({
 
   async function onOpen(entry: DriveEntryView) {
     if (entry.kind === "folder") {
-      if (view === "drive") {
-        void router.navigate({ to: "/$entryId", params: { entryId: entry.id } });
-      } else {
-        void router.navigate({ to: "/$entryId", params: { entryId: entry.id } });
-      }
+      void router.navigate({ to: "/$entryId", params: { entryId: entry.id } });
       return;
     }
     if (entry.mimeType === DOCS_MIME) {
@@ -522,8 +634,123 @@ export function DriveBrowser({
     }
   }
 
+  /** Nombre accordé en français, pour les comptes rendus d'actions groupées. */
+  function counted(count: number, singular: string, plural: string): string {
+    return `${count} ${count === 1 ? singular : plural}`;
+  }
+
+  function onDownloadSelected() {
+    const files = downloadableEntries(selectedEntries);
+    // Les navigateurs ignorent les téléchargements en rafale : on les espace
+    // légèrement, et on borne le lot pour ne pas saturer l'onglet.
+    const ids = files.slice(0, MAX_BULK_DOWNLOAD).map((entry) => entry.id);
+    ids.forEach((id, index) => {
+      window.setTimeout(() => {
+        const link = document.createElement("a");
+        link.href = `/api/drive/download/${id}`;
+        link.download = "";
+        document.body.append(link);
+        link.click();
+        link.remove();
+      }, index * 150);
+    });
+
+    const skipped = files.length - ids.length;
+    push(
+      "success",
+      skipped > 0
+        ? `${counted(ids.length, "téléchargement lancé", "téléchargements lancés")} — ${skipped} fichier(s) au-delà de la limite de ${MAX_BULK_DOWNLOAD} ignoré(s).`
+        : `${counted(ids.length, "téléchargement lancé", "téléchargements lancés")}.`,
+    );
+  }
+
+  async function onMoveSelected(targetParentId: string | null) {
+    const ids = [...selection.ids];
+    if (ids.length === 0) return;
+
+    setBulkBusy(true);
+    try {
+      const result = await moveEntriesFn({ data: { entryIds: ids, targetParentId } });
+      await refresh();
+      window.dispatchEvent(new Event("workspace:storage-changed"));
+      clearSelection();
+      setMoveOpen(false);
+      push(
+        result.failures.length === 0 ? "success" : "danger",
+        result.failures.length === 0
+          ? `${counted(result.moved.length, "élément déplacé", "éléments déplacés")}.`
+          : `${counted(result.moved.length, "élément déplacé", "éléments déplacés")} et ${counted(result.failures.length, "échec", "échecs")} : ${result.failures[0]?.message ?? "erreur inconnue"}`,
+      );
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Déplacement impossible.");
+    } finally {
+      setBulkBusy(false);
+    }
+  }
+
+  async function onDeleteSelected() {
+    const ids = [...selection.ids];
+    if (ids.length === 0) return;
+
+    setBulkBusy(true);
+    try {
+      const result = await trashEntriesFn({ data: { entryIds: ids } });
+      await refresh();
+      window.dispatchEvent(new Event("workspace:storage-changed"));
+      clearSelection();
+      setDeleteOpen(false);
+      push(
+        result.failures.length === 0 ? "success" : "danger",
+        result.failures.length === 0
+          ? `${counted(result.trashed.length, "élément mis à la corbeille", "éléments mis à la corbeille")}.`
+          : `${counted(result.failures.length, "Élément non supprimé", "Éléments non supprimés")} : ${result.failures[0]?.message ?? "erreur inconnue"}`,
+      );
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Suppression impossible.");
+    } finally {
+      setBulkBusy(false);
+    }
+  }
+
+  /**
+   * Clic sur une ligne, à la façon d'un gestionnaire de fichiers :
+   * Maj + clic sélectionne la plage depuis l'ancrage, Ctrl/⌘ + clic bascule
+   * l'élément sans toucher au reste, un clic sur une ligne déjà sélectionnée la
+   * retire seule, un clic sur une ligne non sélectionnée la prend seule.
+   */
+  function onRowClick(event: ReactMouseEvent<HTMLTableRowElement>, entry: DriveEntryView) {
+    if (event.shiftKey) {
+      setSelection((current) => ({
+        ids: selectRange(current.anchorId, entry.id, orderedIds),
+        anchorId: current.anchorId ?? entry.id,
+      }));
+      return;
+    }
+    if (event.ctrlKey || event.metaKey) {
+      setSelection((current) => ({
+        ids: toggleSelection(current.ids, entry.id),
+        anchorId: entry.id,
+      }));
+      return;
+    }
+    setSelection((current) =>
+      current.ids.has(entry.id)
+        ? { ids: deselectId(current.ids, entry.id), anchorId: entry.id }
+        : { ids: new Set([entry.id]), anchorId: entry.id },
+    );
+  }
+
   const title =
     view === "recent" ? "Récents" : view === "shared" ? "Partagés avec moi" : "Mon Drive";
+
+  const allSelected = orderedIds.length > 0 && selection.ids.size === orderedIds.length;
+  const someSelected = selection.ids.size > 0 && !allSelected;
+  const selectAllRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    const node = selectAllRef.current;
+    if (node) node.indeterminate = someSelected;
+  }, [someSelected]);
 
   return (
     // biome-ignore lint/a11y/noStaticElementInteractions: la zone de dépôt est une amélioration souris ; le chemin clavier reste le bouton « Téléverser ».
@@ -556,30 +783,7 @@ export function DriveBrowser({
 
       <header className="flex flex-wrap items-center gap-3">
         {view === "drive" ? (
-          <nav aria-label="Fil d'Ariane" className="flex min-w-0 flex-1 items-center gap-1 text-sm">
-            <Link to="/" className="font-medium hover:underline">
-              Mon Drive
-            </Link>
-            {crumbs.map((crumb, index) => {
-              const isLast = index === crumbs.length - 1;
-              return (
-                <span key={crumb.id} className="flex min-w-0 items-center gap-1">
-                  <span className="text-muted-foreground">/</span>
-                  {isLast ? (
-                    <span className="truncate font-medium">{crumb.name}</span>
-                  ) : (
-                    <Link
-                      to="/$entryId"
-                      params={{ entryId: crumb.id }}
-                      className="truncate hover:underline"
-                    >
-                      {crumb.name}
-                    </Link>
-                  )}
-                </span>
-              );
-            })}
-          </nav>
+          <Breadcrumbs crumbs={crumbs} />
         ) : (
           <h1 className="min-w-0 flex-1 truncate text-lg font-semibold tracking-tight">{title}</h1>
         )}
@@ -617,7 +821,19 @@ export function DriveBrowser({
         </p>
       ) : null}
 
-      {/* Recherche locale + filtres */}
+      {selection.ids.size > 0 ? (
+        <SelectionActionBar
+          count={selection.ids.size}
+          downloadCount={downloadableEntries(selectedEntries).length}
+          busy={bulkBusy}
+          onClear={clearSelection}
+          onDownload={onDownloadSelected}
+          onMove={() => setMoveOpen(true)}
+          onDelete={() => setDeleteOpen(true)}
+        />
+      ) : null}
+
+      {/* Recherche locale + filtres + réglages d'affichage */}
       <div className="flex flex-wrap items-center gap-2">
         <Input
           aria-label="Rechercher dans cette vue"
@@ -636,10 +852,13 @@ export function DriveBrowser({
           <option value="folders">Dossiers</option>
           <option value="files">Fichiers</option>
         </select>
+        <ViewControls prefs={prefs} onChange={setPrefs} />
         <span className="ml-auto text-xs text-muted-foreground">
-          {visibleEntries ? `${visibleEntries.length} élément(s)` : ""}
+          {visibleEntries ? counted(visibleEntries.length, "élément", "éléments") : ""}
         </span>
       </div>
+
+      <ViewControlsHint prefs={prefs} />
 
       {loadError ? (
         <Card>
@@ -685,89 +904,155 @@ export function DriveBrowser({
           </div>
         </Card>
       ) : (
-        <div className="rounded-xl border border-border">
+        <div id="drive-list" className="rounded-xl border border-border">
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-border bg-muted/40 text-left text-xs uppercase tracking-wider text-muted-foreground">
-                  <th
-                    className="w-full px-4 py-2 font-medium"
-                    aria-sort={sortAsc ? "ascending" : "descending"}
-                  >
-                    <button
-                      type="button"
-                      className="inline-flex items-center gap-1 hover:text-foreground"
-                      onClick={() => setSortAsc((current) => !current)}
-                      title="Trier par nom"
-                    >
-                      Nom <span aria-hidden>{sortAsc ? "↑" : "↓"}</span>
-                    </button>
+                  <th scope="col" className="w-9 px-2 py-2 font-medium">
+                    <input
+                      ref={selectAllRef}
+                      type="checkbox"
+                      className="size-4 accent-primary"
+                      checked={allSelected}
+                      onChange={() =>
+                        setSelection(
+                          allSelected
+                            ? EMPTY_SELECTION
+                            : { ids: selectAllIds(orderedIds), anchorId: null },
+                        )
+                      }
+                      aria-label={
+                        allSelected ? "Tout désélectionner" : "Tout sélectionner dans cette vue"
+                      }
+                      title={allSelected ? "Tout désélectionner" : "Tout sélectionner"}
+                    />
                   </th>
+                  <SortableColumn
+                    column="name"
+                    prefs={prefs}
+                    onChange={setPrefs}
+                    label="Nom"
+                    className="w-full"
+                  >
+                    Nom
+                  </SortableColumn>
                   <th className="hidden px-4 py-2 font-medium sm:table-cell">
                     {view === "shared" ? "Droit" : "Propriétaire"}
                   </th>
-                  <th className="hidden px-4 py-2 font-medium md:table-cell">Modifié</th>
-                  <th className="hidden px-4 py-2 font-medium sm:table-cell">Taille</th>
+                  <SortableColumn
+                    column="date"
+                    prefs={prefs}
+                    onChange={setPrefs}
+                    label="Date de modification"
+                    className="hidden whitespace-nowrap md:table-cell"
+                  >
+                    Modifié
+                  </SortableColumn>
+                  <SortableColumn
+                    column="size"
+                    prefs={prefs}
+                    onChange={setPrefs}
+                    label="Taille"
+                    className="hidden px-4 py-2 font-medium sm:table-cell"
+                  >
+                    Taille
+                  </SortableColumn>
                   <th className="px-2 py-2 font-medium sr-only">Actions</th>
                 </tr>
               </thead>
               <tbody>
-                {visibleEntries.map((entry) => (
-                  <tr
-                    key={entry.id}
-                    className="border-b border-border/60 last:border-b-0 hover:bg-muted/30"
-                  >
-                    <td className="w-full px-4 py-2">
-                      <button
-                        type="button"
-                        onClick={() => void onOpen(entry)}
-                        className="flex w-full min-w-0 items-center gap-2 text-left"
-                      >
-                        <FileIcon
-                          kind={entry.kind}
-                          mimeType={entry.mimeType}
-                          name={entry.name}
-                          className="size-4 shrink-0"
+                {visibleEntries.map((entry) => {
+                  const selected = selection.ids.has(entry.id);
+                  return (
+                    <tr
+                      key={entry.id}
+                      aria-selected={selected}
+                      className={cn(
+                        "border-b border-border/60 last:border-b-0 hover:bg-muted/30",
+                        selected ? "bg-accent/60" : undefined,
+                      )}
+                      onClick={(event) => onRowClick(event, entry)}
+                      onDoubleClick={() => void onOpen(entry)}
+                      title="Cliquer pour sélectionner, double-cliquer pour ouvrir"
+                    >
+                      <td className="w-9 px-2 align-middle">
+                        <input
+                          type="checkbox"
+                          className="size-4 accent-primary"
+                          checked={selected}
+                          onChange={() =>
+                            setSelection((current) => ({
+                              ids: toggleSelection(current.ids, entry.id),
+                              anchorId: entry.id,
+                            }))
+                          }
+                          onClick={(event) => event.stopPropagation()}
+                          aria-label={`Sélectionner « ${entry.name} »`}
                         />
-                        <span className="truncate font-medium">{entry.name}</span>
-                        {entry.mimeType && LINKED_LABELS[entry.mimeType] ? (
-                          <Badge variant="accent" className="hidden sm:inline-flex">
-                            {LINKED_LABELS[entry.mimeType]}
-                          </Badge>
-                        ) : null}
-                      </button>
-                    </td>
-                    <td className="hidden px-4 py-2 text-muted-foreground sm:table-cell">
-                      {view === "shared"
-                        ? (ROLE_LABELS[sharedRoles.get(entry.id) ?? "viewer"] ?? "Partagé")
-                        : entry.isOwner
-                          ? "moi"
-                          : "Partagé"}
-                    </td>
-                    <td className="hidden whitespace-nowrap px-4 py-2 text-muted-foreground md:table-cell">
-                      {formatDateShort(entry.updatedAt)}
-                    </td>
-                    <td className="hidden px-4 py-2 text-muted-foreground sm:table-cell">
-                      {entry.kind === "folder" ? "—" : formatBytes(entry.sizeBytes)}
-                    </td>
-                    <td className="relative px-2 py-2 text-right">
-                      <RowMenu
-                        entry={entry}
-                        showDownload={entry.kind === "file" && !isLinkedMime(entry.mimeType)}
-                        onOpen={() => void onOpen(entry)}
-                        onRename={() => {
-                          setRenameTarget(entry);
-                          setRenameValue(entry.name);
-                        }}
-                        onShare={() => setShareTarget(entry)}
-                        onTrash={() => void onTrash(entry)}
-                      />
-                    </td>
-                  </tr>
-                ))}
+                      </td>
+                      <td className={cn("w-full px-4", rowPadding(prefs.density))}>
+                        <button
+                          type="button"
+                          onClick={(event) => {
+                            // Le nom reste le geste « ouvrir » : il ne doit pas
+                            // déclencher la sélection de la ligne.
+                            event.stopPropagation();
+                            void onOpen(entry);
+                          }}
+                          onDoubleClick={(event) => event.stopPropagation()}
+                          className="flex w-full min-w-0 items-center gap-2 text-left"
+                        >
+                          <FileIcon
+                            kind={entry.kind}
+                            mimeType={entry.mimeType}
+                            name={entry.name}
+                            className="size-4 shrink-0"
+                          />
+                          <span className="truncate font-medium">{entry.name}</span>
+                          {entry.mimeType && LINKED_LABELS[entry.mimeType] ? (
+                            <Badge variant="accent" className="hidden sm:inline-flex">
+                              {LINKED_LABELS[entry.mimeType]}
+                            </Badge>
+                          ) : null}
+                        </button>
+                      </td>
+                      <td className="hidden px-4 py-2 text-muted-foreground sm:table-cell">
+                        {view === "shared"
+                          ? (ROLE_LABELS[sharedRoles.get(entry.id) ?? "viewer"] ?? "Partagé")
+                          : entry.isOwner
+                            ? "moi"
+                            : "Partagé"}
+                      </td>
+                      <td className="hidden whitespace-nowrap px-4 py-2 text-muted-foreground md:table-cell">
+                        {formatDateShort(entry.updatedAt)}
+                      </td>
+                      <td className="hidden px-4 py-2 text-muted-foreground sm:table-cell">
+                        {entry.kind === "folder" ? "—" : formatBytes(entry.sizeBytes)}
+                      </td>
+                      <td className="relative px-2 py-2 text-right">
+                        <RowMenu
+                          entry={entry}
+                          showDownload={entry.kind === "file" && !isLinkedMime(entry.mimeType)}
+                          onOpen={() => void onOpen(entry)}
+                          onRename={() => {
+                            setRenameTarget(entry);
+                            setRenameValue(entry.name);
+                          }}
+                          onShare={() => setShareTarget(entry)}
+                          onTrash={() => void onTrash(entry)}
+                        />
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
+          <p className="border-t border-border px-4 py-2 text-xs text-muted-foreground">
+            Cliquez sur une ligne pour la sélectionner · Maj + clic pour une plage · Ctrl/⌘ + A pour
+            tout sélectionner · Échap pour annuler
+          </p>
         </div>
       )}
 
@@ -1000,268 +1285,47 @@ export function DriveBrowser({
           )
         ) : null}
       </Dialog>
-    </div>
-  );
-}
 
-/** Ferme un menu ouvert lorsque l'utilisateur appuie sur Échap. */
-function useEscapeToClose(open: boolean, close: () => void) {
-  useEffect(() => {
-    if (!open) return;
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") close();
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [open, close]);
-}
+      {/* Déplacement et suppression de la sélection */}
+      <MoveDialog
+        open={moveOpen}
+        onClose={() => setMoveOpen(false)}
+        entries={selectedEntries}
+        busy={bulkBusy}
+        onConfirm={(targetParentId) => void onMoveSelected(targetParentId)}
+      />
 
-/** Menu « Nouveau » : dossier, document ou téléversement. */
-function NewMenu({
-  onFolder,
-  onDoc,
-  onSheet,
-  onSlide,
-  onForm,
-  onUpload,
-  uploading,
-}: {
-  onFolder: () => void;
-  onDoc?: () => void;
-  onSheet?: () => void;
-  onSlide?: () => void;
-  onForm?: () => void;
-  onUpload: () => void;
-  uploading: boolean;
-}) {
-  const [open, setOpen] = useState(false);
+      <ConfirmDialog
+        open={deleteOpen}
+        onClose={() => setDeleteOpen(false)}
+        onConfirm={() => void onDeleteSelected()}
+        title="Mettre la sélection à la corbeille ?"
+        message={
+          selection.ids.size === 1 ? (
+            "L'élément sélectionné sera mis à la corbeille. Son contenu reste stocké et pourra être restauré depuis la corbeille."
+          ) : (
+            <>
+              <p>
+                {`Les ${selection.ids.size} éléments sélectionnés seront mis à la corbeille. Leur contenu reste stocké et pourra être restauré depuis la corbeille.`}
+              </p>
+              {selectedEntries.length > 0 ? (
+                <p className="mt-2 text-xs">
+                  {selectedEntries
+                    .slice(0, 5)
+                    .map((entry) => entry.name)
+                    .join(", ")}
+                  {selectedEntries.length > 5 ? ` et ${selectedEntries.length - 5} autre(s)…` : ""}
+                </p>
+              ) : null}
+            </>
+          )
+        }
+        confirmLabel="Mettre à la corbeille"
+        destructive
+        busy={bulkBusy}
+      />
 
-  useEscapeToClose(open, () => setOpen(false));
-
-  function choose(action: () => void) {
-    setOpen(false);
-    action();
-  }
-
-  return (
-    <div className="relative">
-      <Button
-        size="sm"
-        onClick={() => setOpen((current) => !current)}
-        aria-haspopup="menu"
-        aria-expanded={open}
-        loading={uploading}
-      >
-        Nouveau <IconChevronDown className="size-3.5" />
-      </Button>
-      {open ? (
-        <>
-          <button
-            type="button"
-            aria-label="Fermer le menu"
-            tabIndex={-1}
-            className="fixed inset-0 z-10 cursor-default"
-            onClick={() => setOpen(false)}
-          />
-          <div
-            role="menu"
-            className="absolute right-0 z-20 mt-1 w-56 rounded-md border border-border bg-card p-1 shadow-lift"
-          >
-            <button
-              type="button"
-              role="menuitem"
-              className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-sm hover:bg-muted"
-              onClick={() => choose(onFolder)}
-            >
-              <IconFolder /> Nouveau dossier
-            </button>
-            {onDoc ? (
-              <button
-                type="button"
-                role="menuitem"
-                className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-sm hover:bg-muted"
-                onClick={() => choose(onDoc)}
-              >
-                <FileIcon kind="file" mimeType={DOCS_MIME} name="doc" /> Nouveau document
-              </button>
-            ) : null}
-            {onSheet ? (
-              <button
-                type="button"
-                role="menuitem"
-                className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-sm hover:bg-muted"
-                onClick={() => choose(onSheet)}
-              >
-                <FileIcon kind="file" mimeType={SHEETS_MIME} name="sheet" /> Nouvelle feuille de
-                calcul
-              </button>
-            ) : null}
-            {onSlide ? (
-              <button
-                type="button"
-                role="menuitem"
-                className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-sm hover:bg-muted"
-                onClick={() => choose(onSlide)}
-              >
-                <FileIcon kind="file" mimeType={SLIDES_MIME} name="slide" /> Nouvelle présentation
-              </button>
-            ) : null}
-            {onForm ? (
-              <button
-                type="button"
-                role="menuitem"
-                className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-sm hover:bg-muted"
-                onClick={() => choose(onForm)}
-              >
-                <FileIcon kind="file" mimeType={FORMS_MIME} name="form" /> Nouveau formulaire
-              </button>
-            ) : null}
-            <button
-              type="button"
-              role="menuitem"
-              className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-sm hover:bg-muted"
-              onClick={() => choose(onUpload)}
-            >
-              Téléverser un fichier
-            </button>
-          </div>
-        </>
-      ) : null}
-    </div>
-  );
-}
-
-/**
- * Menu contextuel « ⋮ » d'une ligne. Le menu est positionné en `fixed` d'après le
- * rectangle du bouton : il échappe ainsi au conteneur `overflow-x-auto` du tableau
- * qui le rognait pour les dernières lignes.
- */
-function RowMenu({
-  entry,
-  showDownload,
-  onOpen,
-  onRename,
-  onShare,
-  onTrash,
-}: {
-  entry: DriveEntryView;
-  showDownload: boolean;
-  onOpen: () => void;
-  onRename: () => void;
-  onShare: () => void;
-  onTrash: () => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const [menuPos, setMenuPos] = useState<{ top: number; left: number } | null>(null);
-
-  useEscapeToClose(open, () => setOpen(false));
-
-  useEffect(() => {
-    if (!open) return;
-    // Menu ancré à l'écran : on le referme au défilement/redimensionnement
-    // plutôt que de le laisser se désaligner du bouton.
-    const close = () => setOpen(false);
-    window.addEventListener("scroll", close, true);
-    window.addEventListener("resize", close);
-    return () => {
-      window.removeEventListener("scroll", close, true);
-      window.removeEventListener("resize", close);
-    };
-  }, [open]);
-
-  /** Ouvre/ferme le menu sous le bouton, en le maintenant dans la fenêtre. */
-  function toggleMenu(rect: DOMRect) {
-    if (open) {
-      setOpen(false);
-      return;
-    }
-    const width = 208; // w-52
-    const margin = 8;
-    const maxLeft = Math.max(margin, window.innerWidth - width - margin);
-    setMenuPos({
-      top: rect.bottom + 4,
-      left: Math.min(Math.max(rect.right - width, margin), maxLeft),
-    });
-    setOpen(true);
-  }
-
-  function choose(action: () => void) {
-    setOpen(false);
-    action();
-  }
-
-  return (
-    <div className="relative inline-block text-left">
-      <Button
-        variant="ghost"
-        size="sm"
-        aria-haspopup="menu"
-        aria-expanded={open}
-        aria-label={`Actions pour « ${entry.name} »`}
-        title="Actions"
-        onClick={(event) => toggleMenu(event.currentTarget.getBoundingClientRect())}
-      >
-        ⋮
-      </Button>
-      {open && menuPos ? (
-        <>
-          <button
-            type="button"
-            aria-label="Fermer le menu"
-            tabIndex={-1}
-            className="fixed inset-0 z-10 cursor-default"
-            onClick={() => setOpen(false)}
-          />
-          <div
-            role="menu"
-            style={{ top: menuPos.top, left: menuPos.left }}
-            className="fixed z-30 w-52 rounded-md border border-border bg-card p-1 text-left shadow-lift"
-          >
-            <button
-              type="button"
-              role="menuitem"
-              className="block w-full rounded-sm px-2 py-1.5 text-left text-sm hover:bg-muted"
-              onClick={() => choose(onOpen)}
-            >
-              Ouvrir
-            </button>
-            {showDownload ? (
-              <a
-                role="menuitem"
-                href={`/api/drive/download/${entry.id}`}
-                download
-                className="block w-full rounded-sm px-2 py-1.5 text-left text-sm hover:bg-muted"
-              >
-                Télécharger
-              </a>
-            ) : null}
-            <button
-              type="button"
-              role="menuitem"
-              className="block w-full rounded-sm px-2 py-1.5 text-left text-sm hover:bg-muted"
-              onClick={() => choose(onRename)}
-            >
-              Renommer
-            </button>
-            <button
-              type="button"
-              role="menuitem"
-              className="block w-full rounded-sm px-2 py-1.5 text-left text-sm hover:bg-muted"
-              onClick={() => choose(onShare)}
-            >
-              Partager
-            </button>
-            <button
-              type="button"
-              role="menuitem"
-              className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-sm text-destructive hover:bg-muted"
-              onClick={() => choose(onTrash)}
-            >
-              <IconTrash /> Mettre à la corbeille
-            </button>
-          </div>
-        </>
-      ) : null}
+      <Toasts toasts={toasts} dismiss={dismiss} />
     </div>
   );
 }

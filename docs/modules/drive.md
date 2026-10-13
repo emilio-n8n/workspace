@@ -18,8 +18,9 @@ Le coffre-fort de fichiers de la suite : dossiers, uploads, aperçus, partages, 
 ## Interfaces publiques
 
 - `createFolder`, `listEntries`, `getEntry`, `listTrash`, `searchEntries`, `uploadFile`, `createLinkedFile` (pointeurs inter-modules), `touchEntry`, `download`, `replaceContent`, `rename`, `trash`, `restore`, `purge`, `listVersions`, `getAncestors`, `effectiveRole`
+- **Actions groupées** : `moveEntries` (cible validée, échecs isolés par élément, audit `drive.entry.move`), `trashEntries`, `listMoveTargets` (dossiers accessibles en écriture, descendance des exclus écartée)
 - Partage : `shareEntry`, `unshareEntry`, `listEntryGrants`, `listShareLinks`, `createShareLink`, `revokeShareLink`, `accessShareLink`
-- **Server functions web** : `apps/web/src/server/drive.ts` (liste, fil d'Ariane, détails, corbeille, mutations, partage)
+- **Server functions web** : `modules/drive/src/server.ts` (liste, fil d'Ariane, détails, corbeille, mutations, actions groupées, partage)
 - **Routes binaires** : `/api/drive/upload` (multipart), `/api/drive/download/$fileId` (session), `/api/drive/shared/$token` (lien public)
 
 ## Données
@@ -37,6 +38,10 @@ Le coffre-fort de fichiers de la suite : dossiers, uploads, aperçus, partages, 
 
 - Routes : `/app/drive` (racine), `/app/drive/$entryId` (dossier), `/app/drive/trash` (corbeille) ; page publique `/s/$token`.
 - États : vide, chargement, erreur, glisser-déposer, dialogues (dossier, document, renommage, partage, détails/versions).
+- **Navigation** : fil d'Ariane cliquable, chemins longs repliés en menu « … », menu des sous-dossiers du dossier courant.
+- **Affichage** : tri (nom, date, taille) et densité persistés localement (`workspace.drive.view`), en-têtes de colonne triables avec `aria-sort`.
+- **Sélection multiple** : clic, Ctrl/⌘ + clic, Maj + clic (plage), Ctrl/⌘ + A, Échap ; barre d'actions (télécharger, déplacer, supprimer) avec comptes rendus par toast.
+- La logique de présentation (tri, repli du fil, sémantique de sélection) vit dans des modules purs sous `src/ui/`, testés sans DOM.
 
 ## Outils MCP
 
@@ -49,6 +54,8 @@ Le coffre-fort de fichiers de la suite : dossiers, uploads, aperçus, partages, 
 ## Tests et critères d'acceptation
 
 - Service : 11 tests (cycle complet, conflits, limite de taille, partage/révocation, héritage, isolation inter-orgs, corbeille/purge, versions, liens).
+- **Actions groupées** : déplacement (lot, racine, dédoublonnage, refus de descendance, conflit de nom isolé, élément introuvable, corbeille, permission), cibles proposées, corbeille groupée (17 tests d'intégration).
+- **Interface** : tri et persistance des préférences (22), repli et libellés du fil d'Ariane (15), sémantique de la sélection et fichiers téléchargeables (18).
 - E2E navigateur : dossier → upload → navigation → corbeille → restauration ; partage entre deux membres → accès réel → révocation effective.
 - MCP : recherche/lecture autorisées ; refus sans scope ; isolation inter-organisations.
 

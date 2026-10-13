@@ -6,6 +6,8 @@ import { and, eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import {
   accessShareLink,
+  type BulkMoveResult,
+  type BulkTrashResult,
   createFolder,
   createShareLink,
   createTextFile,
@@ -17,11 +19,13 @@ import {
   getEntry,
   listEntries,
   listEntryGrants,
+  listMoveTargets,
   listRecent,
   listSharedWithMe,
   listShareLinks,
   listTrash,
   listVersions,
+  moveEntries,
   purge,
   rename,
   restore,
@@ -29,6 +33,7 @@ import {
   shareEntry,
   TEXT_FILE_MIME_TYPES,
   trash,
+  trashEntries,
   unshareEntry,
 } from "./index.ts";
 
@@ -229,6 +234,53 @@ export const deleteEntryFn = createServerFn({ method: "POST" })
     const { actor } = await requireActor(getRequest().headers);
     await deleteEntry(actor, data.entryId, { permanent: data.permanent });
     return { ok: true };
+  });
+
+// ---------------------------------------------------------------------------
+// Actions groupées (sélection multiple)
+// ---------------------------------------------------------------------------
+
+/** Identifiants d'une sélection : au moins un élément, 200 au plus. */
+const bulkIdsInput = z
+  .array(z.string().uuid())
+  .min(1)
+  .max(200)
+  .transform((ids) => [...new Set(ids)]);
+
+const moveInput = z.object({
+  entryIds: z.array(z.string().uuid()).min(1).max(200),
+  targetParentId: z.string().uuid().nullable(),
+});
+
+/** Cibles de déplacement proposées par le dialogue « Déplacer ». */
+export const listMoveTargetsFn = createServerFn({ method: "GET" })
+  .validator((input: unknown) =>
+    z.object({ excludeIds: z.array(z.string().uuid()).max(200).optional() }).parse(input ?? {}),
+  )
+  .handler(async ({ data }): Promise<DriveEntryView[]> => {
+    const { actor, userId } = await requireActor(getRequest().headers);
+    const rows = await listMoveTargets(actor, { excludeIds: data.excludeIds });
+    return rows.map((entry) => toView(entry, userId));
+  });
+
+/**
+ * Déplace une sélection entière. Le service isole les échecs par élément : la
+ * réponse porte le compte de succès et le détail des refus, que la barre
+ * d'actions traduit en message.
+ */
+export const moveEntriesFn = createServerFn({ method: "POST" })
+  .validator((input: unknown) => moveInput.parse(input))
+  .handler(async ({ data }): Promise<BulkMoveResult> => {
+    const { actor } = await requireActor(getRequest().headers);
+    return moveEntries(actor, { entryIds: data.entryIds, targetParentId: data.targetParentId });
+  });
+
+/** Met une sélection entière à la corbeille (échecs isolés par élément). */
+export const trashEntriesFn = createServerFn({ method: "POST" })
+  .validator((input: unknown) => z.object({ entryIds: bulkIdsInput }).parse(input))
+  .handler(async ({ data }): Promise<BulkTrashResult> => {
+    const { actor } = await requireActor(getRequest().headers);
+    return trashEntries(actor, { entryIds: data.entryIds });
   });
 
 // ---------------------------------------------------------------------------
