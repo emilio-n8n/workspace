@@ -1,45 +1,49 @@
 import { createFileRoute } from "@tanstack/react-router";
-import {
-  Badge,
-  Button,
-  currentTheme,
-  IconMoon,
-  IconSun,
-  SUITE_APPS,
-  type Theme,
-  toggleTheme,
-} from "@workspace/ui";
+import { currentTheme, type Theme, toggleTheme } from "@workspace/ui";
 import { useEffect, useState } from "react";
+import {
+  CapturesSection,
+  FaqSection,
+  FeaturesSection,
+  FinalCtaSection,
+  HeroSection,
+  LandingFooter,
+  LandingHeader,
+  PricingSection,
+} from "../landing/sections.tsx";
 
-export const Route = createFileRoute("/")({ component: HomePage });
+export const Route = createFileRoute("/")({
+  component: LandingPage,
+  head: () => ({
+    links: externalOrigins.map((origin) => ({ rel: "preconnect", href: origin })),
+  }),
+});
 
-// Dérivé du registre unique de la suite : plus jamais de liste en dur périmée.
-const suiteApps = SUITE_APPS.map((app) => ({
-  label: app.name,
-  icon: <app.Icon />,
-  phase: `Phase ${app.phase}`,
-}));
+/*
+ * Page d'accueil — composition des six sections, dans l'ordre annoncé :
+ * héros, fonctionnalités, captures, tarifs, questions fréquentes, appel à
+ * l'action.
+ *
+ * Performance — ce que la page fait et pourquoi :
+ * - aucune ressource tierce : les polices sont auto-hébergées
+ *   (`@workspace/design-tokens`, `font-display: swap`), les captures sont des
+ *   SVG en ligne. Le premier écran est donc peint sans requête supplémentaire ;
+ * - chaque média déclare ses dimensions (`width`/`height` sur les SVG des
+ *   captures) et `h-auto w-full` : le rapport 8/5 est réservé avant l'application
+ *   de la feuille de styles, donc aucun décalage de mise en page ;
+ * - par conséquent, aucune balise `preconnect` : préconnecter une origine que la
+ *   page ne contacte pas ouvrirait une connexion DNS/TCP/TLS pour rien. Le jour
+ *   où une ressource externe apparaît (CDN d'images, API distante), la liste
+ *   `externalOrigins` ci-dessous la déclare et l'indice est émis
+ *   automatiquement dans le `<head>` de la route.
+ */
 
-const principles = [
-  {
-    title: "Une seule suite",
-    body: "Une identité visuelle, des comptes, des fichiers et des permissions partagés entre toutes les applications.",
-  },
-  {
-    title: "Autonome",
-    body: "Chaque organisation héberge sa propre instance. Aucune dépendance à un service propriétaire.",
-  },
-  {
-    title: "Sécurisée par construction",
-    body: "Autorisation côté serveur, isolation des organisations, sessions révocables, journal d'audit.",
-  },
-  {
-    title: "Prête pour l'IA",
-    body: "Un serveur MCP officiel, avec jetons scopés et révocables, respecte exactement vos permissions.",
-  },
-];
+/** Origines réellement contactées par la page (vides : page auto-suffisante). */
+const externalOrigins: string[] = [];
 
-function HomePage() {
+function LandingPage() {
+  // Le thème est appliqué avant la première peinture par `themeInitScript` :
+  // l'état local part du thème clair pour rester identique au rendu serveur.
   const [theme, setTheme] = useState<Theme>("light");
 
   useEffect(() => {
@@ -48,115 +52,32 @@ function HomePage() {
 
   return (
     <div className="flex min-h-screen flex-col bg-background text-foreground">
-      <header className="flex h-14 items-center gap-3 border-b border-border px-4 md:px-6">
-        <span className="flex items-center gap-2">
-          <span className="flex size-6 items-center justify-center rounded-sm bg-primary text-[10px] font-bold text-primary-foreground">
-            W
-          </span>
-          <span className="font-semibold tracking-tight">Workspace</span>
-        </span>
-        <span className="hidden text-xs text-muted-foreground sm:block">
-          open source · auto-hébergeable
-        </span>
-        <div className="ml-auto flex items-center gap-2">
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => setTheme(toggleTheme())}
-            aria-label={theme === "dark" ? "Passer en thème clair" : "Passer en thème sombre"}
-          >
-            {theme === "dark" ? <IconSun /> : <IconMoon />}
-          </Button>
-          <a href="/login">
-            <Button variant="ghost" size="sm">
-              Connexion
-            </Button>
-          </a>
-          <a href="/signup">
-            <Button size="sm">Créer un compte</Button>
-          </a>
-        </div>
-      </header>
+      {/* Premier élément focusable de la page : évite l'en-tête au clavier. */}
+      <a
+        href="#contenu"
+        className={[
+          "fixed left-4 top-4 z-50 -translate-y-24 rounded-md bg-primary px-3 py-2",
+          "text-sm font-medium text-primary-foreground shadow-lift transition-transform",
+          "focus-visible:translate-y-0 focus-visible:outline-none focus-visible:ring-2",
+          "focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
+          "motion-reduce:transition-none",
+        ].join(" ")}
+      >
+        Aller au contenu
+      </a>
 
-      <main className="flex-1">
-        <section className="mx-auto grid max-w-6xl gap-10 px-4 py-16 md:grid-cols-[1.2fr_1fr] md:py-24">
-          <div className="flex flex-col gap-6">
-            <Badge variant="accent" className="w-fit">
-              En construction active · fondations livrées
-            </Badge>
-            <h1 className="text-4xl font-semibold leading-tight tracking-tight md:text-5xl">
-              La suite bureautique libre,{" "}
-              <span className="text-muted-foreground">auto-hébergeable</span> et prête pour l'IA.
-            </h1>
-            <p className="max-w-xl text-lg leading-relaxed text-muted-foreground">
-              Drive, Docs, Sheets, Slides, Mail, Calendar, Meet et bien plus — une seule suite,
-              cohérente et rapide, qui appartient à ceux qui l'utilisent. Et un serveur MCP officiel
-              pour la piloter avec des agents IA autorisés.
-            </p>
-            <div className="flex flex-wrap items-center gap-3">
-              <a href="/app">
-                <Button size="lg">Ouvrir l'application</Button>
-              </a>
-              <a href="/signup">
-                <Button size="lg" variant="outline">
-                  Créer un compte
-                </Button>
-              </a>
-            </div>
-            <dl className="mt-4 flex flex-wrap gap-x-8 gap-y-3 text-sm">
-              <div>
-                <dt className="text-muted-foreground">Licence</dt>
-                <dd className="font-medium">AGPL-3.0-only</dd>
-              </div>
-              <div>
-                <dt className="text-muted-foreground">Déploiement</dt>
-                <dd className="font-medium">Docker, chez vous</dd>
-              </div>
-              <div>
-                <dt className="text-muted-foreground">Données</dt>
-                <dd className="font-medium">PostgreSQL + S3/local</dd>
-              </div>
-            </dl>
-          </div>
+      <LandingHeader theme={theme} onToggleTheme={() => setTheme(toggleTheme())} />
 
-          <aside className="rounded-xl border border-border bg-card p-6 shadow-xs">
-            <h2 className="text-sm font-semibold uppercase tracking-widest text-muted-foreground">
-              Applications
-            </h2>
-            <ul className="mt-4 flex flex-col divide-y divide-border">
-              {suiteApps.map((app) => (
-                <li key={app.label} className="flex items-center gap-3 py-2.5 text-sm">
-                  <span className="text-muted-foreground">{app.icon}</span>
-                  <span className="font-medium">{app.label}</span>
-                  <Badge variant="outline" className="ml-auto">
-                    {app.phase}
-                  </Badge>
-                </li>
-              ))}
-            </ul>
-            <p className="mt-4 text-xs text-muted-foreground">
-              L'avancement affiché est l'avancement réel : nous n'annonçons pas de fonctionnalité
-              avant qu'elle ne fonctionne.
-            </p>
-          </aside>
-        </section>
-
-        <section className="border-t border-border bg-muted/40">
-          <div className="mx-auto grid max-w-6xl gap-6 px-4 py-12 md:grid-cols-4">
-            {principles.map((principle) => (
-              <div key={principle.title} className="flex flex-col gap-2">
-                <h3 className="font-semibold tracking-tight">{principle.title}</h3>
-                <p className="text-sm leading-relaxed text-muted-foreground">{principle.body}</p>
-              </div>
-            ))}
-          </div>
-        </section>
+      <main id="contenu" tabIndex={-1} className="flex-1 focus-visible:outline-none">
+        <HeroSection />
+        <FeaturesSection />
+        <CapturesSection />
+        <PricingSection />
+        <FaqSection />
+        <FinalCtaSection />
       </main>
 
-      <footer className="flex h-12 items-center justify-between border-t border-border px-4 text-xs text-muted-foreground md:px-6">
-        <span>Workspace — suite bureautique open source</span>
-        <span>AGPL-3.0 · auto-hébergée · vérifiable</span>
-      </footer>
+      <LandingFooter />
     </div>
   );
 }
