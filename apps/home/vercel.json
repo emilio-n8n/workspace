@@ -1,11 +1,17 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "framework": "vite",
   "installCommand": "cd ../.. && pnpm install --frozen-lockfile",
-  "buildCommand": "cd ../.. && pnpm --filter @app/home build",
-  "outputDirectory": "dist",
+  "buildCommand": "cd ../.. && if [ \"$VERCEL_ENV\" = production ]; then DATABASE_URL=\"${DATABASE_URL_UNPOOLED:-$DATABASE_URL}\" pnpm db:migrate; fi && pnpm --filter @app/home build",
   "regions": ["cdg1"],
   "headers": [
-    { "source": "/api/health", "headers": [{ "key": "Cache-Control", "value": "no-store" }] }
+    {
+      "source": "/api/health",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "no-store"
+        }
+      ]
+    }
   ]
 }

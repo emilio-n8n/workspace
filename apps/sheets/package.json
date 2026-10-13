@@ -29,7 +29,8 @@
     "tailwindcss": "^4.1.18",
     "@workspace/sheets": "workspace:*",
     "zod": "^4.1.12",
-    "@workspace/search": "workspace:*"
+    "@workspace/search": "workspace:*",
+    "nitro": "3.0.260903-beta"
   },
   "devDependencies": {
     "@tanstack/devtools-vite": "0.8.5",

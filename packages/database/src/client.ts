@@ -16,7 +16,12 @@ let database: Database | undefined;
 export function getPool(): Pool {
   if (!pool) {
     const env = getServerEnv();
-    pool = new Pool({ connectionString: env.DATABASE_URL, max: 10 });
+    pool = new Pool({
+      connectionString: env.DATABASE_URL,
+      max: Number(
+        process.env.DATABASE_POOL_MAX ?? (process.env.VERCEL || process.env.NETLIFY ? 1 : 10),
+      ),
+    });
   }
   return pool;
 }
