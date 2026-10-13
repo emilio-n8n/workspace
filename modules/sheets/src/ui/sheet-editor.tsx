@@ -13,6 +13,12 @@ import {
 } from "react";
 import { cellKey, evaluateCells, formatValue } from "../formula.ts";
 import {
+  CELL_STYLE_BACKGROUNDS,
+  type CellStyle,
+  type CellStyleAlign,
+  type CellStyleBackground,
+} from "../schema.ts";
+import {
   addTabFn,
   deleteTabFn,
   getSpreadsheetFn,
@@ -21,6 +27,7 @@ import {
   renameTabFn,
   type SpreadsheetDetail,
   saveCellsFn,
+  setCellStyleFn,
 } from "../server.ts";
 
 const COLS = 20;
@@ -33,6 +40,27 @@ const ROW_KEYS = Array.from({ length: ROWS }, (_, index) => `ligne-${index + 1}`
 const SAVE_DEBOUNCE_MS = 700;
 const SAVE_RETRY_MS = 3_000;
 
+/** Classes Tailwind statiques des fonds de cellule (jetons de palette → teinte). */
+const STYLE_BACKGROUND_CLASSES: Record<CellStyleBackground, string> = {
+  accent: "bg-accent",
+  attention: "bg-attention/30",
+  danger: "bg-destructive/10",
+  muted: "bg-muted",
+};
+/** Pastilles de la barre de mise en forme (teinte pleine du jeton). */
+const STYLE_SWATCH_CLASSES: Record<CellStyleBackground, string> = {
+  accent: "bg-accent",
+  attention: "bg-attention",
+  danger: "bg-destructive",
+  muted: "bg-muted",
+};
+const STYLE_SWATCH_LABELS: Record<CellStyleBackground, string> = {
+  accent: "Accent",
+  attention: "Attention",
+  danger: "Danger",
+  muted: "Neutre",
+};
+
 type SaveStatus = "idle" | "saving" | "saved" | "error";
 type MoveDirection = "down" | "right" | "none";
 type CellTone = "number" | "error" | "text";
@@ -43,6 +71,8 @@ type GridCellProps = {
   raw: string;
   display: string;
   tone: CellTone;
+  cellStyle: CellStyle | null;
+  selected: boolean;
   canEdit: boolean;
   editing: boolean;
   lastRow: boolean;
@@ -56,6 +86,7 @@ type GridCellProps = {
  * Cellule mémoïsée : le brouillon d'édition reste local, donc la frappe ne
  * re-rend que cette cellule (pas les 2 000 de la grille). L'édition est validée
  * au blur ou à Entrée (descente), Tab (droite) et annulée avec Échap.
+ * La mise en forme (v1) rend gras/italique/alignement/fond de jeton.
  */
 const GridCell = memo(function GridCell({
   row,
@@ -63,6 +94,8 @@ const GridCell = memo(function GridCell({
   raw,
   display,
   tone,
+  cellStyle,
+  selected,
   canEdit,
   editing,
   lastRow,
@@ -116,13 +149,20 @@ const GridCell = memo(function GridCell({
       aria-label={`Cellule ${cellKey(row, col)}`}
       onClick={() => onStart(row, col)}
       title={raw || undefined}
+      style={{
+        fontWeight: cellStyle?.bold ? 700 : undefined,
+        fontStyle: cellStyle?.italic ? "italic" : undefined,
+        textAlign: cellStyle?.align,
+      }}
       className={cn(
         "truncate px-2 py-1 text-sm",
         !lastRow && "border-b border-border",
         !lastCol && "border-r border-border",
         tone === "number" ? "text-right tabular-nums" : "text-left",
+        cellStyle?.background ? STYLE_BACKGROUND_CLASSES[cellStyle.background] : undefined,
         canEdit ? "cursor-cell hover:bg-muted/60" : "cursor-default",
         tone === "error" && "text-destructive",
+        selected && "-outline-offset-2 outline-2 outline-ring",
       )}
     >
       {display}
@@ -140,7 +180,10 @@ export function SheetEditor({ fileId }: { fileId: string }) {
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
   const [cellsByTab, setCellsByTab] = useState<Map<string, Map<string, string>>>(new Map());
   const [editing, setEditing] = useState<{ row: number; col: number } | null>(null);
+  const [selected, setSelected] = useState<{ row: number; col: number } | null>(null);
+  const [stylesByTab, setStylesByTab] = useState<Map<string, Map<string, CellStyle>>>(new Map());
   const [status, setStatus] = useState<SaveStatus>("idle");
+  const [styleBusy, setStyleBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [tabDialog, setTabDialog] = useState<"add" | "rename" | null>(null);
   const [tabName, setTabName] = useState("");
@@ -168,17 +211,25 @@ export function SheetEditor({ fileId }: { fileId: string }) {
     try {
       const data = await getSpreadsheetFn({ data: { fileId } });
       const byTab = new Map<string, Map<string, string>>();
+      const styles = new Map<string, Map<string, CellStyle>>();
       for (const cell of data.cells) {
         const map = byTab.get(cell.tabId) ?? new Map<string, string>();
         map.set(`${cell.row}:${cell.col}`, cell.value);
         byTab.set(cell.tabId, map);
+        if (cell.style) {
+          const styleMap = styles.get(cell.tabId) ?? new Map<string, CellStyle>();
+          styleMap.set(`${cell.row}:${cell.col}`, cell.style);
+          styles.set(cell.tabId, styleMap);
+        }
       }
       for (const tab of data.tabs) {
         if (!byTab.has(tab.id)) byTab.set(tab.id, new Map());
+        if (!styles.has(tab.id)) styles.set(tab.id, new Map());
       }
       setDetail(data);
       setTitle(data.title);
       setCellsByTab(byTab);
+      setStylesByTab(styles);
       setActiveTabId((current) =>
         current && data.tabs.some((tab) => tab.id === current)
           ? current
@@ -200,6 +251,14 @@ export function SheetEditor({ fileId }: { fileId: string }) {
         ? (cellsByTab.get(activeTabId) ?? new Map<string, string>())
         : new Map<string, string>(),
     [activeTabId, cellsByTab],
+  );
+
+  const activeStyles = useMemo(
+    () =>
+      activeTabId
+        ? (stylesByTab.get(activeTabId) ?? new Map<string, CellStyle>())
+        : new Map<string, CellStyle>(),
+    [activeTabId, stylesByTab],
   );
 
   const evaluated = useMemo(() => {
@@ -296,6 +355,7 @@ export function SheetEditor({ fileId }: { fileId: string }) {
 
   const startEditing = useCallback((row: number, col: number) => {
     if (!canEditRef.current) return;
+    setSelected({ row, col });
     setEditing({ row, col });
   }, []);
 
@@ -306,14 +366,85 @@ export function SheetEditor({ fileId }: { fileId: string }) {
       commitCell(row, col, value);
       if (move === "none") {
         setEditing(null);
+        setSelected({ row, col });
         return;
       }
       const nextRow = move === "down" ? Math.min(row + 1, ROWS - 1) : row;
       const nextCol = move === "right" ? Math.min(col + 1, COLS - 1) : col;
       setEditing({ row: nextRow, col: nextCol });
+      setSelected({ row: nextRow, col: nextCol });
     },
     [commitCell],
   );
+
+  /** Met à jour localement le style d'une cellule (même carte que la lecture). */
+  function setCellStyleLocally(tabId: string, key: string, style: CellStyle | null): void {
+    setStylesByTab((current) => {
+      const next = new Map(current);
+      const map = new Map(next.get(tabId) ?? []);
+      if (style === null) map.delete(key);
+      else map.set(key, style);
+      next.set(tabId, map);
+      return next;
+    });
+  }
+
+  /**
+   * Applique une mutation au style de la cellule sélectionnée (v1 : une seule
+   * cellule), en optimiste : la grille est mise à jour tout de suite puis
+   * rejouée à l'identique côté serveur ; en cas d'échec, l'ancien style est
+   * restauré.
+   */
+  async function applyCellStyle(mutate: (current: CellStyle | null) => CellStyle | null) {
+    const tabId = activeTabId;
+    const target = selected;
+    if (!tabId || !target || !canEdit || styleBusy) return;
+    const key = `${target.row}:${target.col}`;
+    const previous = stylesByTab.get(tabId)?.get(key) ?? null;
+    const next = mutate(previous);
+    setStyleBusy(true);
+    setError(null);
+    setCellStyleLocally(tabId, key, next);
+    try {
+      await setCellStyleFn({
+        data: { fileId, tabId, cells: [{ row: target.row, col: target.col }], style: next },
+      });
+    } catch (caught) {
+      setCellStyleLocally(tabId, key, previous);
+      setError(caught instanceof Error ? caught.message : "Mise en forme impossible.");
+    } finally {
+      setStyleBusy(false);
+    }
+  }
+
+  function withoutKey(style: CellStyle, key: "align" | "background"): CellStyle | null {
+    const next = { ...style };
+    delete next[key];
+    return Object.keys(next).length > 0 ? next : null;
+  }
+
+  function toggleFlag(flag: "bold" | "italic"): void {
+    void applyCellStyle((current) => {
+      const next = { ...(current ?? {}) };
+      if (next[flag]) delete next[flag];
+      else next[flag] = true;
+      return Object.keys(next).length > 0 ? next : null;
+    });
+  }
+
+  function toggleAlign(align: CellStyleAlign): void {
+    void applyCellStyle((current) =>
+      current?.align === align ? withoutKey(current, "align") : { ...(current ?? {}), align },
+    );
+  }
+
+  function toggleBackground(background: CellStyleBackground): void {
+    void applyCellStyle((current) =>
+      current?.background === background
+        ? withoutKey(current, "background")
+        : { ...(current ?? {}), background },
+    );
+  }
 
   async function onRenameSpreadsheet() {
     if (!detail) return;
@@ -368,6 +499,7 @@ export function SheetEditor({ fileId }: { fileId: string }) {
     try {
       await flush(activeTabId);
       await deleteTabFn({ data: { tabId } });
+      setSelected(null);
       setActiveTabId(null);
       await load();
     } catch (caught) {
@@ -411,6 +543,8 @@ export function SheetEditor({ fileId }: { fileId: string }) {
 
   const activeTab = detail?.tabs.find((tab) => tab.id === activeTabId) ?? null;
   const canEdit = detail?.canEdit ?? false;
+  const selectedKey = selected ? `${selected.row}:${selected.col}` : null;
+  const selectedStyle = selectedKey ? (activeStyles.get(selectedKey) ?? null) : null;
   const statusLabel =
     status === "saving"
       ? "Enregistrement…"
@@ -494,6 +628,7 @@ export function SheetEditor({ fileId }: { fileId: string }) {
                   void flush(activeTabId);
                   setActiveTabId(tab.id);
                   setEditing(null);
+                  setSelected(null);
                 }}
                 className={cn(
                   "rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors",
@@ -544,6 +679,100 @@ export function SheetEditor({ fileId }: { fileId: string }) {
               Formules : =SUM(A1:A5), =AVG(B1:B3), + − × ÷, références A1
             </span>
           </div>
+
+          {canEdit && selected ? (
+            <div
+              role="toolbar"
+              aria-label="Mise en forme de la cellule"
+              className="flex flex-wrap items-center gap-1 rounded-xl border border-border bg-card px-2 py-1.5"
+            >
+              <span className="px-1 text-xs font-medium tabular-nums text-muted-foreground">
+                {cellKey(selected.row, selected.col)}
+              </span>
+              <Button
+                size="sm"
+                variant={selectedStyle?.bold ? "secondary" : "ghost"}
+                aria-pressed={selectedStyle?.bold === true}
+                aria-label="Gras"
+                title="Gras"
+                disabled={styleBusy}
+                onClick={() => toggleFlag("bold")}
+              >
+                <strong>B</strong>
+              </Button>
+              <Button
+                size="sm"
+                variant={selectedStyle?.italic ? "secondary" : "ghost"}
+                aria-pressed={selectedStyle?.italic === true}
+                aria-label="Italique"
+                title="Italique"
+                disabled={styleBusy}
+                onClick={() => toggleFlag("italic")}
+              >
+                <em>I</em>
+              </Button>
+              <span aria-hidden className="mx-1 h-5 w-px bg-border" />
+              <Button
+                size="sm"
+                variant={selectedStyle?.align === "left" ? "secondary" : "ghost"}
+                aria-pressed={selectedStyle?.align === "left"}
+                aria-label="Aligner à gauche"
+                title="Aligner à gauche"
+                disabled={styleBusy}
+                onClick={() => toggleAlign("left")}
+              >
+                Gauche
+              </Button>
+              <Button
+                size="sm"
+                variant={selectedStyle?.align === "center" ? "secondary" : "ghost"}
+                aria-pressed={selectedStyle?.align === "center"}
+                aria-label="Centrer"
+                title="Centrer"
+                disabled={styleBusy}
+                onClick={() => toggleAlign("center")}
+              >
+                Centre
+              </Button>
+              <Button
+                size="sm"
+                variant={selectedStyle?.align === "right" ? "secondary" : "ghost"}
+                aria-pressed={selectedStyle?.align === "right"}
+                aria-label="Aligner à droite"
+                title="Aligner à droite"
+                disabled={styleBusy}
+                onClick={() => toggleAlign("right")}
+              >
+                Droite
+              </Button>
+              <span aria-hidden className="mx-1 h-5 w-px bg-border" />
+              {CELL_STYLE_BACKGROUNDS.map((background) => (
+                <button
+                  key={background}
+                  type="button"
+                  aria-label={`Fond ${STYLE_SWATCH_LABELS[background]}`}
+                  aria-pressed={selectedStyle?.background === background}
+                  title={`Fond ${STYLE_SWATCH_LABELS[background]}`}
+                  disabled={styleBusy}
+                  onClick={() => toggleBackground(background)}
+                  className={cn(
+                    "size-5 rounded-sm border border-border disabled:opacity-50",
+                    STYLE_SWATCH_CLASSES[background],
+                    selectedStyle?.background === background && "ring-2 ring-ring",
+                  )}
+                />
+              ))}
+              <Button
+                size="sm"
+                variant="ghost"
+                className="ml-auto"
+                disabled={styleBusy || !selectedStyle}
+                onClick={() => void applyCellStyle(() => null)}
+              >
+                Effacer le format
+              </Button>
+            </div>
+          ) : null}
 
           <div className="max-h-[70vh] overflow-auto rounded-xl border border-border bg-card">
             <div
@@ -599,6 +828,8 @@ export function SheetEditor({ fileId }: { fileId: string }) {
                         raw={raw}
                         display={value ? formatValue(value) : ""}
                         tone={tone}
+                        cellStyle={activeStyles.get(`${row}:${col}`) ?? null}
+                        selected={selected?.row === row && selected?.col === col}
                         canEdit={canEdit}
                         editing={isEditing}
                         lastRow={row === ROWS - 1}

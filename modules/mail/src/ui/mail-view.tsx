@@ -13,8 +13,9 @@ import {
   Toasts,
   useToasts,
 } from "@workspace/ui";
-import { type FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { type ChangeEvent, type FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import {
+  type AttachmentToken,
   deleteMessageFn,
   type FolderCounts,
   type FolderKey,
@@ -31,6 +32,7 @@ import {
   type ThreadSummary,
   toggleStarFn,
   trashMessageFn,
+  uploadMailAttachmentFn,
 } from "../server.ts";
 
 const FOLDER_LABELS: Record<FolderKey, string> = {
@@ -63,13 +65,70 @@ function splitAddresses(value: string): string[] {
     .filter((entry) => entry.length > 0);
 }
 
+/** Bornes du compositeur, alignées sur le service (MAX_ATTACHMENTS / 10 Mio). */
+const COMPOSER_MAX_ATTACHMENTS = 5;
+const COMPOSER_MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
+
+function fmtSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} o`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} Ko`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} Mo`;
+}
+
+/** Lit un fichier local en base64 (sans préfixe data:) pour le serveur. */
+function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error(`Lecture de « ${file.name} » impossible.`));
+    reader.onload = () => {
+      const result = typeof reader.result === "string" ? reader.result : "";
+      const comma = result.indexOf(",");
+      if (comma < 0) {
+        reject(new Error(`Lecture de « ${file.name} » impossible.`));
+        return;
+      }
+      resolve(result.slice(comma + 1));
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
 type Composer = {
   id?: string;
   to: string;
   cc: string;
   subject: string;
   body: string;
+  attachments: AttachmentToken[];
 };
+
+/** Liste des pièces jointes d'un message lues (liens de téléchargement). */
+function AttachmentLinks({ attachments }: { attachments: MessageDetail["attachments"] }) {
+  if (attachments.length === 0) return null;
+  return (
+    <div className="flex flex-col gap-1 border-t border-border pt-2">
+      <p className="text-xs font-medium text-muted-foreground">
+        Pièce{attachments.length > 1 ? "s" : ""} jointe{attachments.length > 1 ? "s" : ""} (
+        {attachments.length})
+      </p>
+      <ul className="flex flex-col gap-0.5">
+        {attachments.map((attachment) => (
+          <li key={attachment.id}>
+            <a
+              href={`/api/mail/attachments/${attachment.id}`}
+              className="text-sm text-primary underline-offset-2 hover:underline"
+            >
+              📎 {attachment.filename}{" "}
+              <span className="text-xs text-muted-foreground">
+                ({fmtSize(attachment.sizeBytes)})
+              </span>
+            </a>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
 
 type ViewMode = "conversations" | "messages";
 
@@ -174,8 +233,8 @@ export function MailView() {
     }
   }
 
-  function openComposer(base?: Partial<Composer>) {
-    setComposer({ to: "", cc: "", subject: "", body: "", ...base });
+  function openComposer(base?: Partial<Omit<Composer, "attachments">>) {
+    setComposer({ to: "", cc: "", subject: "", body: "", attachments: [], ...base });
   }
 
   function replyTo(message: MessageDetail) {
@@ -199,6 +258,7 @@ export function MailView() {
           cc: splitAddresses(composer.cc),
           subject: composer.subject,
           body: composer.body,
+          attachments: composer.attachments.length > 0 ? composer.attachments : undefined,
         },
       });
       if (result.sendError) {
@@ -215,8 +275,74 @@ export function MailView() {
     }
   }
 
+  /**
+   * Téléverse les fichiers choisis un par un (jetons provisoires), avec les
+   * bornes du serveur appliquées côté client : 5 fichiers, 10 Mo chacun.
+   */
+  async function onPickAttachments(event: ChangeEvent<HTMLInputElement>) {
+    const files = [...(event.target.files ?? [])];
+    event.target.value = "";
+    if (!composer || files.length === 0) return;
+
+    const remaining = COMPOSER_MAX_ATTACHMENTS - composer.attachments.length;
+    if (remaining <= 0) {
+      push("danger", `${COMPOSER_MAX_ATTACHMENTS} pièces jointes au maximum.`);
+      return;
+    }
+    if (files.length > remaining) {
+      push(
+        "danger",
+        `${COMPOSER_MAX_ATTACHMENTS} pièces jointes au maximum (${remaining} emplacement${remaining > 1 ? "s" : ""} restant${remaining > 1 ? "s" : ""}).`,
+      );
+    }
+
+    setBusy(true);
+    try {
+      let updated = composer;
+      for (const file of files.slice(0, remaining)) {
+        if (file.size > COMPOSER_MAX_ATTACHMENT_BYTES) {
+          push("danger", `« ${file.name} » dépasse 10 Mo.`);
+          continue;
+        }
+        try {
+          const contentBase64 = await fileToBase64(file);
+          const token = await uploadMailAttachmentFn({
+            data: {
+              filename: file.name,
+              contentType: file.type || "application/octet-stream",
+              contentBase64,
+            },
+          });
+          updated = { ...updated, attachments: [...updated.attachments, token] };
+          setComposer(updated);
+        } catch (caught) {
+          push(
+            "danger",
+            caught instanceof Error
+              ? caught.message
+              : `Téléversement de « ${file.name} » impossible.`,
+          );
+        }
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function removeAttachment(storageKey: string) {
+    if (!composer) return;
+    setComposer({
+      ...composer,
+      attachments: composer.attachments.filter((token) => token.storageKey !== storageKey),
+    });
+  }
+
   async function onSaveDraft() {
     if (!composer) return;
+    if (composer.attachments.length > 0) {
+      push("danger", "Les pièces jointes ne sont conservées qu'à l'envoi — envoyez le message.");
+      return;
+    }
     setBusy(true);
     try {
       await saveDraftFn({
@@ -441,6 +567,14 @@ export function MailView() {
                         <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
                           {thread.latest.snippet}
                         </span>
+                        {thread.latest.attachmentCount > 0 ? (
+                          <span
+                            className="text-[10px] text-muted-foreground"
+                            title="Pièces jointes"
+                          >
+                            📎 {thread.latest.attachmentCount}
+                          </span>
+                        ) : null}
                         {thread.latest.starred ? <span className="text-attention">★</span> : null}
                         {thread.latest.sendError ? (
                           <span
@@ -500,6 +634,11 @@ export function MailView() {
                       <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
                         {message.snippet}
                       </span>
+                      {message.attachmentCount > 0 ? (
+                        <span className="text-[10px] text-muted-foreground" title="Pièces jointes">
+                          📎 {message.attachmentCount}
+                        </span>
+                      ) : null}
                       {message.starred ? <span className="text-attention">★</span> : null}
                       {message.sendError ? (
                         <span className="text-[10px] text-destructive" title={message.sendError}>
@@ -628,6 +767,7 @@ export function MailView() {
                     <div className="whitespace-pre-wrap text-sm">
                       {message.body || "(message vide)"}
                     </div>
+                    <AttachmentLinks attachments={message.attachments} />
                   </article>
                 ))}
               </div>
@@ -719,8 +859,11 @@ export function MailView() {
                   )}
                 </div>
               </header>
-              <div className="flex-1 overflow-y-auto whitespace-pre-wrap p-4 text-sm">
-                {selected.body || "(message vide)"}
+              <div className="flex flex-1 flex-col gap-3 overflow-y-auto p-4">
+                <div className="whitespace-pre-wrap text-sm">
+                  {selected.body || "(message vide)"}
+                </div>
+                <AttachmentLinks attachments={selected.attachments} />
               </div>
             </>
           ) : (
@@ -780,6 +923,43 @@ export function MailView() {
                 rows={10}
                 className="rounded-md border border-input bg-background px-3 py-2 text-sm"
               />
+            </div>
+            <div className="flex flex-col gap-1">
+              <Label htmlFor="mail-attachments">Pièces jointes (5 max, 10 Mo chacune)</Label>
+              <Input
+                id="mail-attachments"
+                type="file"
+                multiple
+                aria-label="Pièces jointes"
+                disabled={busy}
+                onChange={(event) => void onPickAttachments(event)}
+                className="h-auto py-1.5"
+              />
+              {composer.attachments.length > 0 ? (
+                <ul className="flex flex-col gap-1">
+                  {composer.attachments.map((attachment) => (
+                    <li
+                      key={attachment.storageKey}
+                      className="flex items-center gap-2 rounded-md border border-border bg-muted/40 px-2 py-1 text-xs"
+                    >
+                      <span className="min-w-0 flex-1 truncate" title={attachment.filename}>
+                        {attachment.filename}
+                      </span>
+                      <span className="shrink-0 text-muted-foreground">
+                        {fmtSize(attachment.sizeBytes)}
+                      </span>
+                      <button
+                        type="button"
+                        aria-label={`Retirer ${attachment.filename}`}
+                        onClick={() => removeAttachment(attachment.storageKey)}
+                        className="shrink-0 text-muted-foreground transition-colors hover:text-destructive"
+                      >
+                        ✕
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
             </div>
             <div className="flex justify-end gap-2">
               <Button type="button" variant="ghost" onClick={() => setComposer(null)}>

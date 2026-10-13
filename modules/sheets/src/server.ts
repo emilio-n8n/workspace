@@ -4,14 +4,17 @@ import { requireActor } from "@workspace/auth";
 import { z } from "zod";
 import {
   addTab,
+  CELL_STYLE_BACKGROUNDS,
   createSpreadsheet,
   deleteTab,
   getSpreadsheet,
   importCsv,
   listSpreadsheets,
+  MAX_STYLE_CELLS,
   renameSpreadsheet,
   renameTab,
   saveCells,
+  setCellStyle,
 } from "./index.ts";
 
 export type { CellView, SpreadsheetDetail, TabView } from "./index.ts";
@@ -67,6 +70,41 @@ export const saveCellsFn = createServerFn({ method: "POST" })
   .handler(async ({ data }) => {
     const { actor } = await requireActor(getRequest().headers);
     return saveCells(actor, data.fileId, { tabId: data.tabId, updates: data.updates });
+  });
+
+export const setCellStyleFn = createServerFn({ method: "POST" })
+  .validator((input: unknown) =>
+    z
+      .object({
+        fileId: z.string().uuid(),
+        tabId: z.string().uuid(),
+        cells: z
+          .array(
+            z.object({
+              row: z.number().int().min(0),
+              col: z.number().int().min(0),
+            }),
+          )
+          .min(1)
+          .max(MAX_STYLE_CELLS),
+        style: z
+          .object({
+            bold: z.literal(true).optional(),
+            italic: z.literal(true).optional(),
+            align: z.enum(["left", "center", "right"]).optional(),
+            background: z.enum(CELL_STYLE_BACKGROUNDS).optional(),
+          })
+          .nullable(),
+      })
+      .parse(input),
+  )
+  .handler(async ({ data }) => {
+    const { actor } = await requireActor(getRequest().headers);
+    return setCellStyle(actor, data.fileId, {
+      tabId: data.tabId,
+      cells: data.cells,
+      style: data.style,
+    });
   });
 
 export const importCsvFn = createServerFn({ method: "POST" })

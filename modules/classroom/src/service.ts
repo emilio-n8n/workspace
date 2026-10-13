@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { recordAudit } from "@workspace/audit";
 import { getAppUrls } from "@workspace/config";
 import { schema as core, getDb, withTransaction } from "@workspace/database";
 import { createNotification } from "@workspace/notifications";
@@ -188,6 +189,15 @@ export async function createCourse(
         return course;
       });
 
+      await recordAudit({
+        orgId: actor.orgId,
+        actorUserId: actor.userId,
+        action: "classroom.course.create",
+        resourceType: "course",
+        resourceId: created.id,
+        result: "success",
+      });
+
       return {
         id: created.id,
         name: created.name,
@@ -222,12 +232,26 @@ export async function joinByCode(actor: Actor, code: string): Promise<{ courseId
   }
 
   // Rejoindre deux fois reste idempotent : la contrainte unique absorbe le doublon.
-  await db()
+  const inserted = await db()
     .insert(classroomMembers)
     .values({ courseId: course.id, userId: actor.userId, role: "student" })
     .onConflictDoNothing({
       target: [classroomMembers.courseId, classroomMembers.userId],
+    })
+    .returning({ id: classroomMembers.id });
+
+  // Seule une adhésion réelle est journalisée : un second appel idempotent ne
+  // produit aucune ligne d'audit.
+  if (inserted.length > 0) {
+    await recordAudit({
+      orgId: actor.orgId,
+      actorUserId: actor.userId,
+      action: "classroom.course.join",
+      resourceType: "course",
+      resourceId: course.id,
+      result: "success",
     });
+  }
   return { courseId: course.id };
 }
 
@@ -391,12 +415,31 @@ export async function createAssignment(
     .values({ courseId, title, instructions, dueAt, points })
     .returning({ id: classroomAssignments.id });
   if (!created) throw new ClassroomError("conflict", "Création du devoir impossible.");
+
+  await recordAudit({
+    orgId: actor.orgId,
+    actorUserId: actor.userId,
+    action: "classroom.assignment.create",
+    resourceType: "assignment",
+    resourceId: created.id,
+    result: "success",
+  });
+
   return created;
 }
 
 export async function deleteAssignment(actor: Actor, assignmentId: string): Promise<void> {
   await requireTeacherByAssignment(actor, assignmentId);
   await db().delete(classroomAssignments).where(eq(classroomAssignments.id, assignmentId));
+
+  await recordAudit({
+    orgId: actor.orgId,
+    actorUserId: actor.userId,
+    action: "classroom.assignment.delete",
+    resourceType: "assignment",
+    resourceId: assignmentId,
+    result: "success",
+  });
 }
 
 export async function submitAssignment(
@@ -430,6 +473,16 @@ export async function submitAssignment(
       // conservée : l'enseignant re-note explicitement s'il le souhaite.
       set: { content: clean, submittedAt: new Date() },
     });
+
+  await recordAudit({
+    orgId: actor.orgId,
+    actorUserId: actor.userId,
+    action: "classroom.submission.submit",
+    resourceType: "assignment",
+    resourceId: assignmentId,
+    result: "success",
+  });
+
   return { ok: true };
 }
 
@@ -501,6 +554,16 @@ export async function gradeSubmission(
     .update(classroomSubmissions)
     .set({ grade: input.grade, feedback, gradedAt: new Date() })
     .where(eq(classroomSubmissions.id, submissionId));
+
+  await recordAudit({
+    orgId: actor.orgId,
+    actorUserId: actor.userId,
+    action: "classroom.submission.grade",
+    resourceType: "submission",
+    resourceId: submissionId,
+    result: "success",
+    metadata: { grade: input.grade },
+  });
 
   // Notification best-effort à l'élève noté.
   await createNotification({

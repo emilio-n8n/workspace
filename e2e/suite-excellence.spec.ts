@@ -106,8 +106,9 @@ test("palette ⌘K : recherche en direct et navigation vers un résultat", async
   await palette.fill("Cible");
   await expect(dialogue.getByText("Cible Palette")).toBeVisible({ timeout: 5_000 });
 
-  // Entrée ouvre le premier résultat : le dossier vit dans le Drive.
-  await page.keyboard.press("Enter");
+  // Clic sur la ligne de résultat : le dossier vit dans le Drive.
+  // (Plus déterministe que la sélection implicite d'Entrée de cmdk.)
+  await dialogue.getByText("Cible Palette").click();
   await expect(page).toHaveURL(/localhost:3001/, { timeout: 25_000 });
 });
 

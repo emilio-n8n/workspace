@@ -75,6 +75,7 @@ Prouver de bout en bout : authentification → stockage → permissions → édi
 
 - Vague « produit complet » (2026-10-12) : notifications (cœur + cloche dans les 14 apps), commentaires Docs (fils/résolution), MCP `files.write`/`files.delete` (confirmation destructive), Admin → Politiques réglables, récurrences Calendar + salle Meet en un clic, fils de discussion Mail, visionneuse Drive (images/PDF/texte), démarrage guidé, PWA installable (Accueil + Drive), alignement/extension E2E — **322 tests / 21 suites**.- Le serveur MCP utilise exclusivement les services de modules — toute nouvelle capacité passe par eux.
 
+- Vagues « excellence opérationnelle » et « temps réel » (2026-10-13) : audit web exhaustif (10 modules), recherche plein texte française avec dossiers, pièces jointes Mail/Chat, conformité RGPD (export/effacement), mise en forme Sheets, impression Slides, **collaboration Docs temps réel (Yjs : serveur dédié + client Tiptap, dégradation locale propre)**, restauration de versions Docs.
 ## Risques majeurs suivis
 
 - **Moteurs bureautiques** : fidélité OOXML partielle assumée ; POC de conversion exigés avant développement (Docs/Sheets/Slides).

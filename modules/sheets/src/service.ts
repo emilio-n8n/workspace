@@ -1,3 +1,4 @@
+import { recordAudit } from "@workspace/audit";
 import { getDb, withTransaction } from "@workspace/database";
 import {
   createLinkedFile,
@@ -12,7 +13,14 @@ import { type Actor, roleSatisfies } from "@workspace/permissions";
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import { MAX_CELL_CHARS, MAX_COLS, MAX_ROWS, parseCsv } from "./csv.ts";
 import { cellKey, evaluateCells, formatValue } from "./formula.ts";
-import { type SheetTabRow, sheetCells, sheetTabs, spreadsheets } from "./schema.ts";
+import {
+  CELL_STYLE_BACKGROUNDS,
+  type CellStyle,
+  type SheetTabRow,
+  sheetCells,
+  sheetTabs,
+  spreadsheets,
+} from "./schema.ts";
 
 export { MAX_CELL_CHARS, MAX_COLS, MAX_ROWS } from "./csv.ts";
 
@@ -26,6 +34,8 @@ const MAX_CELLS_PER_IMPORT = 20_000;
 const SAVE_CHUNK = 500;
 /** Nombre maximal d'onglets par feuille. */
 export const MAX_TABS = 20;
+/** Nombre maximal de cellules mises en forme par appel (v1 mono-cellule côté UI). */
+export const MAX_STYLE_CELLS = 500;
 
 export type SheetsErrorCode = "not_found" | "forbidden" | "validation" | "conflict";
 
@@ -39,7 +49,7 @@ export class SheetsError extends Error {
 }
 
 export type TabView = { id: string; name: string; position: number };
-export type CellView = { row: number; col: number; value: string };
+export type CellView = { row: number; col: number; value: string; style: CellStyle | null };
 
 export type SpreadsheetDetail = {
   fileId: string;
@@ -150,6 +160,15 @@ export async function createSpreadsheet(
     return created;
   });
 
+  await recordAudit({
+    orgId: actor.orgId,
+    actorUserId: actor.userId,
+    action: "sheets.spreadsheet.create",
+    resourceType: "spreadsheet",
+    resourceId: entry.id,
+    result: "success",
+  });
+
   return { entry, spreadsheet };
 }
 
@@ -172,6 +191,7 @@ export async function getSpreadsheet(actor: Actor, fileId: string): Promise<Spre
             row: sheetCells.row,
             col: sheetCells.col,
             value: sheetCells.value,
+            style: sheetCells.style,
           })
           .from(sheetCells)
           .where(inArray(sheetCells.tabId, tabIds))
@@ -195,18 +215,23 @@ export async function getSpreadsheet(actor: Actor, fileId: string): Promise<Spre
 
 type CellUpdate = { row: number; col: number; value: string };
 
-/** Cellule dans les bornes de la grille et sous la limite de caractères. */
-function assertCell(update: CellUpdate): void {
+/** Position de cellule dans les bornes de la grille. */
+function assertPosition(row: number, col: number): void {
   if (
-    !Number.isInteger(update.row) ||
-    !Number.isInteger(update.col) ||
-    update.row < 0 ||
-    update.row >= MAX_ROWS ||
-    update.col < 0 ||
-    update.col >= MAX_COLS
+    !Number.isInteger(row) ||
+    !Number.isInteger(col) ||
+    row < 0 ||
+    row >= MAX_ROWS ||
+    col < 0 ||
+    col >= MAX_COLS
   ) {
     throw new SheetsError("validation", "Cellule hors limites.");
   }
+}
+
+/** Cellule dans les bornes de la grille et sous la limite de caractères. */
+function assertCell(update: CellUpdate): void {
+  assertPosition(update.row, update.col);
   if (update.value.length > MAX_CELL_CHARS) {
     throw new SheetsError("validation", `Cellule limitée à ${MAX_CELL_CHARS} caractères.`);
   }
@@ -237,7 +262,13 @@ async function upsertCells(
   }
 }
 
-/** Sauvegarde par lots de cellules (mise à jour creuse, valeur vide = efface). */
+/**
+ * Sauvegarde par lots de cellules (mise à jour creuse, valeur vide = efface).
+ * Volontairement NON journalisée dans l'audit : l'autosave produit un appel
+ * par frappe (volume incompatible avec un journal d'audit lisible) ; les
+ * opérations structurantes (création, onglets, import, renommage, style) le
+ * sont.
+ */
 export async function saveCells(
   actor: Actor,
   fileId: string,
@@ -299,6 +330,119 @@ export async function saveCells(
   return { saved: updates.length };
 }
 
+// ---------------------------------------------------------------------------
+// Mise en forme des cellules (v1 : gras, italique, alignement, jetons de fond)
+// ---------------------------------------------------------------------------
+
+const STYLE_KEYS: ReadonlySet<string> = new Set(["bold", "italic", "align", "background"]);
+const CELL_ALIGNS: ReadonlySet<string> = new Set(["left", "center", "right"]);
+
+/**
+ * Valide strictement un style de cellule : clés inconnues et valeurs hors du
+ * jeu fixé sont refusées. `null` (ou un objet sans attribut utile) efface.
+ */
+export function normalizeCellStyle(style: unknown): CellStyle | null {
+  if (style === null) return null;
+  if (typeof style !== "object" || Array.isArray(style)) {
+    throw new SheetsError("validation", "Style de cellule invalide.");
+  }
+  const raw = style as Record<string, unknown>;
+  for (const key of Object.keys(raw)) {
+    if (!STYLE_KEYS.has(key)) {
+      throw new SheetsError("validation", `Clé de style inconnue : ${key}.`);
+    }
+  }
+
+  const clean: CellStyle = {};
+  if (raw.bold !== undefined) {
+    if (raw.bold !== true) throw new SheetsError("validation", "« bold » doit valoir true.");
+    clean.bold = true;
+  }
+  if (raw.italic !== undefined) {
+    if (raw.italic !== true) throw new SheetsError("validation", "« italic » doit valoir true.");
+    clean.italic = true;
+  }
+  if (raw.align !== undefined) {
+    if (typeof raw.align !== "string" || !CELL_ALIGNS.has(raw.align)) {
+      throw new SheetsError("validation", "Alignement invalide (left, center ou right).");
+    }
+    clean.align = raw.align as CellStyle["align"];
+  }
+  if (raw.background !== undefined) {
+    if (
+      typeof raw.background !== "string" ||
+      !(CELL_STYLE_BACKGROUNDS as readonly string[]).includes(raw.background)
+    ) {
+      throw new SheetsError("validation", "Fond invalide (jeton de palette inconnu).");
+    }
+    clean.background = raw.background as CellStyle["background"];
+  }
+  return Object.keys(clean).length > 0 ? clean : null;
+}
+
+/**
+ * Applique un style à un lot de cellules d'un onglet, ou l'efface
+ * (`style: null`). Une cellule vide mise en forme crée une ligne creuse
+ * (valeur "") qui porte le style ; la valeur existante n'est jamais touchée.
+ */
+export async function setCellStyle(
+  actor: Actor,
+  fileId: string,
+  input: { tabId: string; cells: { row: number; col: number }[]; style: CellStyle | null },
+): Promise<{ styled: number }> {
+  const { spreadsheet } = await requireSpreadsheet(actor, fileId);
+  await requireEditor(actor, fileId);
+  const style = normalizeCellStyle(input.style);
+
+  // Dédoublonnage par cellule : l'upsert multi-lignes refuse deux fois la
+  // même cible (tab_id, row, col) dans un même lot.
+  const deduped = new Map<string, { row: number; col: number }>();
+  for (const cell of input.cells) {
+    deduped.set(`${cell.row}:${cell.col}`, cell);
+  }
+  const cells = [...deduped.values()];
+  if (cells.length === 0) {
+    throw new SheetsError("validation", "Aucune cellule à mettre en forme.");
+  }
+  if (cells.length > MAX_STYLE_CELLS) {
+    throw new SheetsError("validation", `Mise en forme limitée à ${MAX_STYLE_CELLS} cellules.`);
+  }
+  for (const cell of cells) {
+    assertPosition(cell.row, cell.col);
+  }
+
+  const [tab] = await db()
+    .select({ id: sheetTabs.id })
+    .from(sheetTabs)
+    .where(and(eq(sheetTabs.id, input.tabId), eq(sheetTabs.spreadsheetId, spreadsheet.id)))
+    .limit(1);
+  if (!tab) throw new SheetsError("not_found", "Onglet introuvable.");
+
+  await withTransaction(async (tx) => {
+    for (let offset = 0; offset < cells.length; offset += SAVE_CHUNK) {
+      const chunk = cells.slice(offset, offset + SAVE_CHUNK);
+      await tx
+        .insert(sheetCells)
+        .values(
+          chunk.map((cell) => ({
+            tabId: tab.id,
+            row: cell.row,
+            col: cell.col,
+            value: "",
+            style,
+          })),
+        )
+        .onConflictDoUpdate({
+          target: [sheetCells.tabId, sheetCells.row, sheetCells.col],
+          set: { style },
+        });
+    }
+  });
+
+  await touchEntry(actor, fileId).catch(() => undefined);
+  return { styled: cells.length };
+}
+
 /**
  * Importe un texte CSV dans un onglet : le contenu actuel de l'onglet est
  * remplacé (suppression puis insertion par lots), les cellules vides n'étant
@@ -347,6 +491,17 @@ export async function importCsv(
   });
 
   await touchEntry(actor, fileId).catch(() => undefined);
+
+  await recordAudit({
+    orgId: actor.orgId,
+    actorUserId: actor.userId,
+    action: "sheets.csv.import",
+    resourceType: "spreadsheet",
+    resourceId: fileId,
+    result: "success",
+    metadata: { imported: updates.length },
+  });
+
   return { imported: updates.length };
 }
 
@@ -357,7 +512,7 @@ export async function addTab(actor: Actor, fileId: string, name: string): Promis
 
   // Verrouillage de la feuille (SELECT … FOR UPDATE) : le décompte et
   // l'insertion sont ainsi sérialisés face aux ajouts concurrents.
-  return withTransaction(async (tx) => {
+  const { tabs, tabId } = await withTransaction(async (tx) => {
     const [locked] = await tx
       .select({ id: spreadsheets.id })
       .from(spreadsheets)
@@ -374,28 +529,50 @@ export async function addTab(actor: Actor, fileId: string, name: string): Promis
       throw new SheetsError("validation", `${MAX_TABS} onglets au maximum.`);
     }
 
-    await tx
+    const [created] = await tx
       .insert(sheetTabs)
-      .values({ spreadsheetId: spreadsheet.id, name: clean, position: count });
+      .values({ spreadsheetId: spreadsheet.id, name: clean, position: count })
+      .returning({ id: sheetTabs.id });
 
-    return tx
+    const rows = await tx
       .select({ id: sheetTabs.id, name: sheetTabs.name, position: sheetTabs.position })
       .from(sheetTabs)
       .where(eq(sheetTabs.spreadsheetId, spreadsheet.id))
       .orderBy(asc(sheetTabs.position));
+    return { tabs: rows, tabId: created?.id ?? null };
   });
+
+  await recordAudit({
+    orgId: actor.orgId,
+    actorUserId: actor.userId,
+    action: "sheets.tab.add",
+    resourceType: "tab",
+    resourceId: tabId,
+    result: "success",
+    metadata: { fileId, name: clean },
+  });
+
+  return tabs;
 }
 
 export async function renameTab(actor: Actor, tabId: string, name: string): Promise<void> {
-  const { tab } = await requireTab(actor, tabId);
-  await db()
-    .update(sheetTabs)
-    .set({ name: assertTabName(name) })
-    .where(eq(sheetTabs.id, tab.id));
+  const { tab, fileId } = await requireTab(actor, tabId);
+  const clean = assertTabName(name);
+  await db().update(sheetTabs).set({ name: clean }).where(eq(sheetTabs.id, tab.id));
+
+  await recordAudit({
+    orgId: actor.orgId,
+    actorUserId: actor.userId,
+    action: "sheets.tab.rename",
+    resourceType: "tab",
+    resourceId: tab.id,
+    result: "success",
+    metadata: { fileId, name: clean },
+  });
 }
 
 export async function deleteTab(actor: Actor, tabId: string): Promise<void> {
-  const { tab } = await requireTab(actor, tabId);
+  const { tab, fileId } = await requireTab(actor, tabId);
 
   // Suppression conditionnelle en une seule instruction : la sous-requête
   // garantit qu'il reste au moins un onglet, même en cas de course (TOCTOU).
@@ -410,6 +587,16 @@ export async function deleteTab(actor: Actor, tabId: string): Promise<void> {
   if (result.rows.length === 0) {
     throw new SheetsError("validation", "Une feuille doit conserver au moins un onglet.");
   }
+
+  await recordAudit({
+    orgId: actor.orgId,
+    actorUserId: actor.userId,
+    action: "sheets.tab.delete",
+    resourceType: "tab",
+    resourceId: tab.id,
+    result: "success",
+    metadata: { fileId, name: tab.name },
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -485,7 +672,19 @@ export async function renameSpreadsheet(
 ): Promise<DriveEntry> {
   const clean = assertTitle(title);
   await requireSpreadsheet(actor, fileId);
-  return driveRename(actor, fileId, clean);
+  const entry = await driveRename(actor, fileId, clean);
+
+  await recordAudit({
+    orgId: actor.orgId,
+    actorUserId: actor.userId,
+    action: "sheets.spreadsheet.rename",
+    resourceType: "spreadsheet",
+    resourceId: fileId,
+    result: "success",
+    metadata: { title: clean },
+  });
+
+  return entry;
 }
 
 /** Feuilles visibles (fichiers Drive liés). */

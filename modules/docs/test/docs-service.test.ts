@@ -19,11 +19,12 @@ import {
   pruneDocumentVersions,
   renameDocument,
   resolveComment,
+  restoreDocumentVersion,
   saveDocument,
 } from "../src/index.ts";
 import { docsVersions } from "../src/schema.ts";
 
-const { user, organization } = coreSchema;
+const { user, organization, auditEvents } = coreSchema;
 
 let counter = 0;
 const tag = (prefix: string) => `${prefix}${++counter}_${randomUUID().slice(0, 8)}`;
@@ -512,6 +513,72 @@ describe("docs — commentaires", () => {
   });
 });
 
+describe("docs — audit (mutations notables uniquement)", () => {
+  const auditEntries = () =>
+    getDb().select().from(auditEvents).where(eq(auditEvents.orgId, f.orgId));
+
+  it("journalise la création et le renommage du document", async () => {
+    const { entry } = await createDocument(f.actorAlice, { title: "Auditable" });
+    await renameDocument(f.actorAlice, entry.id, "Audité");
+
+    const rows = await auditEntries();
+    const created = rows.filter((row) => row.action === "docs.document.create");
+    const renamed = rows.filter((row) => row.action === "docs.document.rename");
+    expect(created).toHaveLength(1);
+    expect(renamed).toHaveLength(1);
+    expect(created[0]).toMatchObject({
+      orgId: f.orgId,
+      actorUserId: f.alice,
+      resourceType: "document",
+      resourceId: entry.id,
+      result: "success",
+    });
+    expect(renamed[0]).toMatchObject({
+      actorUserId: f.alice,
+      resourceType: "document",
+      resourceId: entry.id,
+      result: "success",
+    });
+  });
+
+  it("journalise ajout, résolution, réouverture et suppression d'un commentaire", async () => {
+    const { entry } = await createDocument(f.actorAlice, { title: "Commentaires audités" });
+    const comment = await addComment(f.actorAlice, entry.id, { body: "À corriger" });
+    await resolveComment(f.actorAlice, entry.id, comment.id, true);
+    await resolveComment(f.actorAlice, entry.id, comment.id, false);
+    await deleteComment(f.actorAlice, entry.id, comment.id);
+
+    const rows = (await auditEntries()).filter((row) => row.action.startsWith("docs.comment."));
+    expect(rows.map((row) => row.action).sort()).toEqual([
+      "docs.comment.add",
+      "docs.comment.delete",
+      "docs.comment.reopen",
+      "docs.comment.resolve",
+    ]);
+    for (const row of rows) {
+      expect(row.resourceType).toBe("document");
+      expect(row.resourceId).toBe(entry.id);
+    }
+    const added = rows.find((row) => row.action === "docs.comment.add");
+    expect(added?.metadata).toEqual({ commentId: comment.id });
+  });
+
+  it("l'autosave, l'export et la liste des versions ne produisent aucune entrée", async () => {
+    const { entry } = await createDocument(f.actorAlice, { title: "Brouillon" });
+    const before = await auditEntries();
+    expect(before.map((row) => row.action)).toEqual(["docs.document.create"]);
+
+    await saveDocument(f.actorAlice, entry.id, { content: contentV2, mode: "replace-latest" });
+    await saveDocument(f.actorAlice, entry.id, { content: contentV3, mode: "append" });
+    await listDocumentVersions(f.actorAlice, entry.id);
+    await exportDocument(f.actorAlice, entry.id, "md");
+
+    const after = await auditEntries();
+    expect(after).toHaveLength(before.length);
+    expect(after.map((row) => row.action)).toEqual(["docs.document.create"]);
+  });
+});
+
 describe("docs — export", () => {
   it("exporte le Markdown et le HTML à partir du contenu courant", async () => {
     const { entry } = await createDocument(f.actorAlice, { title: "Rapport trimestriel" });
@@ -583,5 +650,86 @@ describe("docs — rétention des versions", () => {
     expect((await listDocumentVersions(f.actorAlice, entry.id)).map((v) => v.version)).toEqual([
       3, 2,
     ]);
+  });
+});
+
+describe("docs — restauration de versions", () => {
+  it("recopie le contenu choisi dans une nouvelle version (historique intact + audit)", async () => {
+    const { entry } = await createDocument(f.actorAlice, { title: "Historique" });
+    await saveDocument(f.actorAlice, entry.id, { content: contentV2, mode: "append" });
+    await saveDocument(f.actorAlice, entry.id, { content: contentV3, mode: "append" });
+
+    const restored = await restoreDocumentVersion(f.actorAlice, entry.id, 2);
+    expect(restored.version).toBe(4);
+
+    // La relecture renvoie le contenu de la version restaurée.
+    const reread = await getDocumentByFileId(f.actorAlice, entry.id);
+    expect(reread.content).toEqual(contentV2);
+    expect(reread.document.currentVersion).toBe(4);
+
+    // Historique préservé : les anciennes versions restent intactes, les
+    // numéros séquentiels, et la restauration est elle-même une version.
+    const versions = await listDocumentVersions(f.actorAlice, entry.id);
+    expect(versions.map((v) => v.version)).toEqual([4, 3, 2, 1]);
+    expect(versions.find((v) => v.version === 1)?.content).toEqual(EMPTY_DOC);
+    expect(versions.find((v) => v.version === 2)?.content).toEqual(contentV2);
+    expect(versions.find((v) => v.version === 3)?.content).toEqual(contentV3);
+    expect(versions.find((v) => v.version === 4)?.content).toEqual(contentV2);
+
+    // Une seconde restauration continue la séquence.
+    const again = await restoreDocumentVersion(f.actorAlice, entry.id, 1);
+    expect(again.version).toBe(5);
+
+    // Audit : une entrée par restauration, avec la version d'origine.
+    const rows = await getDb().select().from(auditEvents).where(eq(auditEvents.orgId, f.orgId));
+    const restoreRows = rows.filter((row) => row.action === "docs.document.restore");
+    expect(restoreRows).toHaveLength(2);
+    expect(restoreRows.map((row) => row.metadata)).toEqual(
+      expect.arrayContaining([{ restoredFrom: 2 }, { restoredFrom: 1 }]),
+    );
+    for (const row of restoreRows) {
+      expect(row).toMatchObject({
+        actorUserId: f.alice,
+        resourceType: "document",
+        resourceId: entry.id,
+        result: "success",
+      });
+    }
+  });
+
+  it("version inconnue : not_found, sans créer de version", async () => {
+    const { entry } = await createDocument(f.actorAlice, { title: "Inconnue" });
+    await saveDocument(f.actorAlice, entry.id, { content: contentV2, mode: "append" });
+
+    await expect(restoreDocumentVersion(f.actorAlice, entry.id, 42)).rejects.toMatchObject({
+      name: "DocsError",
+      code: "not_found",
+    });
+
+    const versions = await listDocumentVersions(f.actorAlice, entry.id);
+    expect(versions.map((v) => v.version)).toEqual([2, 1]);
+    expect((await getDocumentByFileId(f.actorAlice, entry.id)).content).toEqual(contentV2);
+  });
+
+  it("un viewer ne restaure pas (le rôle write est requis)", async () => {
+    const { entry } = await createDocument(f.actorAlice, { title: "Partagé" });
+    await saveDocument(f.actorAlice, entry.id, { content: contentV2, mode: "append" });
+    const grant = await shareEntry(f.actorAlice, entry.id, {
+      subject: { kind: "user", id: f.bruno },
+      role: "viewer",
+    });
+    if (!grant) throw new Error("grant viewer attendu");
+
+    // Le viewer lit l'historique…
+    expect(await listDocumentVersions(f.actorBruno, entry.id)).toHaveLength(2);
+
+    // …mais la restauration exige le rôle write.
+    await expect(restoreDocumentVersion(f.actorBruno, entry.id, 1)).rejects.toMatchObject({
+      code: "forbidden",
+    });
+
+    // Rien n'a changé.
+    expect(await listDocumentVersions(f.actorAlice, entry.id)).toHaveLength(2);
+    expect((await getDocumentByFileId(f.actorAlice, entry.id)).content).toEqual(contentV2);
   });
 });

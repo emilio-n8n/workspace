@@ -41,6 +41,11 @@ const serverEnvSchema = z.object({
   CLASSROOM_URL: z.string().url().optional(),
   ADMIN_URL: z.string().url().optional(),
 
+  /** Serveur de collaboration temps réel (Yjs) : absent = collaboration désactivée. */
+  COLLAB_URL: z.string().url().optional(),
+  /** Port d'écoute du serveur de collaboration (défaut : 3100). */
+  COLLAB_PORT: z.coerce.number().int().positive().optional().default(3100),
+
   /** Messagerie : domaine des adresses locales et relais SMTP sortant. */
   MAIL_DOMAIN: z.string().optional(),
   SMTP_HOST: z.string().optional(),

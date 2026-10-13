@@ -1,13 +1,43 @@
 import { schema as core } from "@workspace/database";
 import { driveFiles } from "@workspace/drive";
 import { sql } from "drizzle-orm";
-import { index, integer, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import {
+  index,
+  integer,
+  jsonb,
+  pgTable,
+  text,
+  timestamp,
+  uniqueIndex,
+  uuid,
+} from "drizzle-orm/pg-core";
 
 /**
  * Schéma du module Sheets — voir docs/modules/sheets.md.
  * Une feuille est un fichier Drive lié ; les cellules sont stockées creuses
  * (`row`, `col` 0-indexées), les formules ne sont jamais stockées calculées.
  */
+
+/** Alignement horizontal d'une cellule (v1 de la mise en forme). */
+export type CellStyleAlign = "left" | "center" | "right";
+
+/**
+ * Jetons de fond autorisés : jamais de couleur en dur en base, l'interface
+ * choisit la teinte réelle de chaque jeton (palette fixe).
+ */
+export const CELL_STYLE_BACKGROUNDS = ["accent", "attention", "danger", "muted"] as const;
+export type CellStyleBackground = (typeof CELL_STYLE_BACKGROUNDS)[number];
+
+/**
+ * Mise en forme d'une cellule (v1) : `true` uniquement quand l'attribut est
+ * actif (un attribut absent est inactif) ; `null` sur la colonne = aucun style.
+ */
+export type CellStyle = {
+  bold?: true;
+  italic?: true;
+  align?: CellStyleAlign;
+  background?: CellStyleBackground;
+};
 
 export const spreadsheets = pgTable(
   "spreadsheets",
@@ -50,6 +80,7 @@ export const sheetCells = pgTable(
     row: integer("row").notNull(),
     col: integer("col").notNull(),
     value: text("value").notNull(),
+    style: jsonb("style").$type<CellStyle>(),
     updatedAt: timestamp("updated_at", { withTimezone: true })
       .defaultNow()
       .notNull()

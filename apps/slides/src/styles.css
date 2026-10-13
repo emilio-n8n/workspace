@@ -21,3 +21,68 @@ body {
 body {
   margin: 0;
 }
+
+/* Racine d'impression : montée par l'éditeur uniquement le temps de
+   window.print(), invisible à l'écran. */
+#slides-print-root {
+  display: none;
+}
+
+/* Imprimable : « Imprimer » produit un PDF/une impression paysage où chaque
+   diapositive occupe sa propre page, sur fond papier blanc. */
+@media print {
+  @page {
+    size: landscape;
+    margin: 0;
+  }
+
+  html,
+  body {
+    background: white !important;
+    color-scheme: light;
+  }
+
+  /* Le chrome de l'application (rail, barre haute, éditeur) ne s'imprime
+     pas : seules les pages de la racine d'impression restent. */
+  body > *:not(#slides-print-root) {
+    display: none !important;
+  }
+
+  #slides-print-root {
+    display: block;
+  }
+
+  .print-hide {
+    display: none !important;
+  }
+
+  .print-slide {
+    page-break-after: always;
+    break-inside: avoid;
+    width: 100vw;
+    height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: white;
+    color: black;
+  }
+
+  /* La dernière page ne laisse pas de feuille blanche derrière elle. */
+  .print-slide:last-child {
+    page-break-after: auto;
+  }
+
+  /* Le canevas 16:9 est mis à l'échelle pour tenir dans la page. */
+  .print-slide > * {
+    max-width: 96vw;
+    max-height: 96vh;
+    background: white;
+  }
+
+  /* Texte noir quel que soit le thème actif. */
+  .print-slide,
+  .print-slide * {
+    color: black !important;
+  }
+}

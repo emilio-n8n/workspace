@@ -3,6 +3,7 @@ import { sql } from "drizzle-orm";
 import {
   boolean,
   index,
+  integer,
   jsonb,
   pgTable,
   text,
@@ -88,5 +89,27 @@ export const mailMessages = pgTable(
   ],
 );
 
+/**
+ * Pièces jointes : métadonnées en base, binaire dans @workspace/storage
+ * (clé `mail/<orgId>/<uuid>`). La suppression du message entraîne celle des
+ * métadonnées ; le blob reste dans le stockage (nettoyage hors ligne).
+ */
+export const mailAttachments = pgTable(
+  "mail_attachments",
+  {
+    id: uuid("id").primaryKey().default(sql`uuidv7()`),
+    messageId: uuid("message_id")
+      .notNull()
+      .references(() => mailMessages.id, { onDelete: "cascade" }),
+    filename: text("filename").notNull(),
+    contentType: text("content_type").notNull(),
+    sizeBytes: integer("size_bytes").notNull(),
+    storageKey: text("storage_key").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [index("mail_attachments_message_idx").on(table.messageId)],
+);
+
 export type MailMailboxRow = typeof mailMailboxes.$inferSelect;
 export type MailMessageRow = typeof mailMessages.$inferSelect;
+export type MailAttachmentRow = typeof mailAttachments.$inferSelect;

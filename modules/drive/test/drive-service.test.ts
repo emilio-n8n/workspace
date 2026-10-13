@@ -24,6 +24,7 @@ import {
   resolveRolesForEntries,
   restore,
   revokeShareLink,
+  searchEntries,
   shareEntry,
   trash,
   uploadFile,
@@ -733,5 +734,106 @@ describe("drive — résolution par lots et pagination", () => {
 
     // Sans options, la vue complète reste celle d'avant pour un petit ensemble.
     expect(await page({})).toHaveLength(5);
+  });
+});
+
+describe("drive — journal d'audit", () => {
+  it("shareEntry écrit un événement d'audit avec le rôle", async () => {
+    const { entry } = await uploadFile(f.actorAlice, {
+      name: "audit-share.txt",
+      body: bufferOf("x"),
+    });
+
+    await shareEntry(f.actorAlice, entry.id, {
+      subject: { kind: "user", id: f.bruno },
+      role: "viewer",
+    });
+
+    const events = await getDb()
+      .select()
+      .from(coreSchema.auditEvents)
+      .where(
+        and(
+          eq(coreSchema.auditEvents.orgId, f.orgId),
+          eq(coreSchema.auditEvents.action, "drive.entry.share"),
+        ),
+      );
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      actorUserId: f.alice,
+      resourceType: "file",
+      resourceId: entry.id,
+      result: "success",
+      metadata: { role: "viewer" },
+    });
+  });
+
+  it("purge écrit un événement d'audit", async () => {
+    const { entry } = await uploadFile(f.actorAlice, {
+      name: "audit-purge.txt",
+      body: bufferOf("x"),
+    });
+    await trash(f.actorAlice, entry.id);
+    await purge(f.actorAlice, entry.id);
+
+    const events = await getDb()
+      .select()
+      .from(coreSchema.auditEvents)
+      .where(
+        and(
+          eq(coreSchema.auditEvents.orgId, f.orgId),
+          eq(coreSchema.auditEvents.action, "drive.entry.purge"),
+        ),
+      );
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      actorUserId: f.alice,
+      resourceType: "file",
+      resourceId: entry.id,
+      result: "success",
+    });
+  });
+});
+
+describe("drive — recherche plein texte (français)", () => {
+  it("trouve « notes réunions.txt » en cherchant « réunion » (racinisation)", async () => {
+    const { entry } = await uploadFile(f.actorAlice, {
+      name: "notes réunions.txt",
+      body: bufferOf("compte rendu"),
+    });
+
+    const results = await searchEntries(f.actorAlice, { query: "réunion" });
+    expect(results.map((row) => row.id)).toEqual([entry.id]);
+  });
+
+  it("requête de 2 caractères : le chemin sous-chaîne (ILIKE) reste utilisé", async () => {
+    const { entry } = await uploadFile(f.actorAlice, {
+      name: "planning.txt",
+      body: bufferOf("plan"),
+    });
+
+    // « la » est un mot vide français : le plein texte ne matcherait rien,
+    // seule la sous-chaîne « la » de « planning » doit le trouver.
+    const results = await searchEntries(f.actorAlice, { query: "la" });
+    expect(results.map((row) => row.id)).toEqual([entry.id]);
+  });
+
+  it("classe nom exact et préfixe avant les correspondances incluses", async () => {
+    const exact = await uploadFile(f.actorAlice, { name: "réunion", body: bufferOf("1") });
+    const prefix = await uploadFile(f.actorAlice, {
+      name: "réunion annuelle",
+      body: bufferOf("2"),
+    });
+    const contains = await uploadFile(f.actorAlice, {
+      name: "compte rendu réunion",
+      body: bufferOf("3"),
+    });
+
+    const results = await searchEntries(f.actorAlice, { query: "réunion" });
+    expect(results.map((row) => row.id)).toEqual([
+      exact.entry.id,
+      prefix.entry.id,
+      contains.entry.id,
+    ]);
   });
 });

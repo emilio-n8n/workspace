@@ -4,6 +4,8 @@ import { requireActor } from "@workspace/auth";
 import { z } from "zod";
 import {
   addMemberByEmail,
+  eraseUserAccount,
+  exportUserData,
   getOverview,
   getPolicies,
   listActiveSessions,
@@ -26,6 +28,7 @@ export type {
   MemberFull,
   OrgOverview,
   OrgPolicies,
+  UserDataExportBundle,
 } from "./index.ts";
 
 export const getOverviewFn = createServerFn({ method: "GET" }).handler(async () => {
@@ -131,4 +134,25 @@ export const revokeAllSessionsFn = createServerFn({ method: "POST" })
   .handler(async ({ data }) => {
     const { actor } = await requireActor(getRequest().headers);
     return revokeAllSessions(actor, data.userId);
+  });
+
+/**
+ * Export RGPD des données d'un membre — GET `?userId=` : le bundle complet est
+ * construit côté serveur (autorisation revérifiée à chaque appel).
+ */
+export const exportUserDataFn = createServerFn({ method: "GET" })
+  .validator((input: unknown) => z.object({ userId: z.string().min(1) }).parse(input))
+  .handler(async ({ data }) => {
+    const { actor } = await requireActor(getRequest().headers);
+    return exportUserData(actor, data.userId);
+  });
+
+/** Efface (pseudonymise) le compte d'un membre — confirmation « EFFACER » exigée. */
+export const eraseUserAccountFn = createServerFn({ method: "POST" })
+  .validator((input: unknown) =>
+    z.object({ userId: z.string().min(1), confirm: z.string() }).parse(input),
+  )
+  .handler(async ({ data }) => {
+    const { actor } = await requireActor(getRequest().headers);
+    return eraseUserAccount(actor, data.userId, { confirm: data.confirm });
   });

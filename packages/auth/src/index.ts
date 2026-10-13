@@ -1,4 +1,4 @@
-export { isWorkspaceScope, WORKSPACE_SCOPES, type WorkspaceScope } from "./scopes";
+export { isWorkspaceScope, WORKSPACE_SCOPES, type WorkspaceScope } from "./scopes.ts";
 export {
   type Auth,
   auth,
@@ -9,7 +9,7 @@ export {
   requireActor,
   requireActorContext,
   UnauthorizedError,
-} from "./server";
+} from "./server.ts";
 export {
   API_TOKEN_DEFAULT_TTL_MS,
   type ApiTokenListItem,
@@ -22,4 +22,4 @@ export {
   TOKEN_PREFIX,
   type TokenPrincipal,
   tokenHasScope,
-} from "./tokens";
+} from "./tokens.ts";

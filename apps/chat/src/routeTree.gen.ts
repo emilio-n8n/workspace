@@ -14,6 +14,7 @@ import { Route as AppIndexRouteImport } from './routes/_app/index'
 import { Route as ApiHealthRouteImport } from './routes/api/health'
 import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
 import { Route as ApiChatStreamRouteImport } from './routes/api/chat/stream'
+import { Route as ApiChatAttachmentsIdRouteImport } from './routes/api/chat/attachments/$id'
 
 const AppRoute = AppRouteImport.update({
   id: '/_app',
@@ -39,18 +40,25 @@ const ApiChatStreamRoute = ApiChatStreamRouteImport.update({
   path: '/api/chat/stream',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiChatAttachmentsIdRoute = ApiChatAttachmentsIdRouteImport.update({
+  id: '/api/chat/attachments/$id',
+  path: '/api/chat/attachments/$id',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof AppIndexRoute
   '/api/health': typeof ApiHealthRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/chat/stream': typeof ApiChatStreamRoute
+  '/api/chat/attachments/$id': typeof ApiChatAttachmentsIdRoute
 }
 export interface FileRoutesByTo {
   '/api/health': typeof ApiHealthRoute
   '/': typeof AppIndexRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/chat/stream': typeof ApiChatStreamRoute
+  '/api/chat/attachments/$id': typeof ApiChatAttachmentsIdRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -59,12 +67,23 @@ export interface FileRoutesById {
   '/_app/': typeof AppIndexRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/chat/stream': typeof ApiChatStreamRoute
+  '/api/chat/attachments/$id': typeof ApiChatAttachmentsIdRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/api/health' | '/api/auth/$' | '/api/chat/stream'
+  fullPaths:
+    | '/'
+    | '/api/health'
+    | '/api/auth/$'
+    | '/api/chat/stream'
+    | '/api/chat/attachments/$id'
   fileRoutesByTo: FileRoutesByTo
-  to: '/api/health' | '/' | '/api/auth/$' | '/api/chat/stream'
+  to:
+    | '/api/health'
+    | '/'
+    | '/api/auth/$'
+    | '/api/chat/stream'
+    | '/api/chat/attachments/$id'
   id:
     | '__root__'
     | '/_app'
@@ -72,6 +91,7 @@ export interface FileRouteTypes {
     | '/_app/'
     | '/api/auth/$'
     | '/api/chat/stream'
+    | '/api/chat/attachments/$id'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -79,6 +99,7 @@ export interface RootRouteChildren {
   ApiHealthRoute: typeof ApiHealthRoute
   ApiAuthSplatRoute: typeof ApiAuthSplatRoute
   ApiChatStreamRoute: typeof ApiChatStreamRoute
+  ApiChatAttachmentsIdRoute: typeof ApiChatAttachmentsIdRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -118,6 +139,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiChatStreamRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/chat/attachments/$id': {
+      id: '/api/chat/attachments/$id'
+      path: '/api/chat/attachments/$id'
+      fullPath: '/api/chat/attachments/$id'
+      preLoaderRoute: typeof ApiChatAttachmentsIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
@@ -136,6 +164,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiHealthRoute: ApiHealthRoute,
   ApiAuthSplatRoute: ApiAuthSplatRoute,
   ApiChatStreamRoute: ApiChatStreamRoute,
+  ApiChatAttachmentsIdRoute: ApiChatAttachmentsIdRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

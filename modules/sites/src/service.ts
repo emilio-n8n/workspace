@@ -1,3 +1,4 @@
+import { recordAudit } from "@workspace/audit";
 import { getDb, withTransaction } from "@workspace/database";
 import {
   createLinkedFile,
@@ -174,6 +175,15 @@ export async function createSite(
     return created;
   });
 
+  await recordAudit({
+    orgId: actor.orgId,
+    actorUserId: actor.userId,
+    action: "sites.site.create",
+    resourceType: "site",
+    resourceId: entry.id,
+    result: "success",
+  });
+
   return { entry, site };
 }
 
@@ -213,6 +223,16 @@ export async function savePage(
     .where(eq(sitesPages.id, page.id));
   await touchEntry(actor, fileId).catch(() => undefined);
 
+  await recordAudit({
+    orgId: actor.orgId,
+    actorUserId: actor.userId,
+    action: "sites.page.save",
+    resourceType: "site",
+    resourceId: fileId,
+    result: "success",
+    metadata: { pageId: page.id },
+  });
+
   // Le slug de la page reste inchangé lors d'un renommage : il est déjà
   // public (URL de page) et des liens externes peuvent le référencer.
   return { id: page.id, slug: page.slug, title, content: input.content };
@@ -245,6 +265,15 @@ export async function addPage(
         })
         .returning({ id: sitesPages.id });
       if (!created) throw new SitesError("conflict", "Création de la page impossible.");
+      await recordAudit({
+        orgId: actor.orgId,
+        actorUserId: actor.userId,
+        action: "sites.page.add",
+        resourceType: "site",
+        resourceId: fileId,
+        result: "success",
+        metadata: { pageId: created.id },
+      });
       return { pageId: created.id, pages: await listPages(siteId) };
     } catch (error) {
       // Un createSite/addPage concurrent a pris le slug entre la vérification
@@ -280,6 +309,16 @@ export async function deletePage(
   if (deleted.length === 0) {
     throw new SitesError("validation", "Un site doit conserver au moins une page.");
   }
+
+  await recordAudit({
+    orgId: actor.orgId,
+    actorUserId: actor.userId,
+    action: "sites.page.delete",
+    resourceType: "site",
+    resourceId: fileId,
+    result: "success",
+    metadata: { pageId },
+  });
 
   return listPages(siteId);
 }

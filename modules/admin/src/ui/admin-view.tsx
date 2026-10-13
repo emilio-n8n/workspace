@@ -1,9 +1,11 @@
-import { Alert, Badge, Button, ConfirmDialog, Input, Label } from "@workspace/ui";
+import { Alert, Badge, Button, ConfirmDialog, Dialog, Input, Label } from "@workspace/ui";
 import { useCallback, useEffect, useState } from "react";
 import {
   type ActiveSession,
   type AuditEntry,
   addMemberFn,
+  eraseUserAccountFn,
+  exportUserDataFn,
   getOverviewFn,
   getPoliciesFn,
   listActiveSessionsFn,
@@ -44,6 +46,86 @@ function truncateAgent(userAgent: string | null): { short: string; full: string 
   return { short: full.length > 60 ? `${full.slice(0, 57)}…` : full, full };
 }
 
+/** Mot à recopier pour confirmer l'effacement d'un compte (côté service aussi). */
+const ERASE_CONFIRMATION = "EFFACER";
+
+/** Déclenche le téléchargement d'un bundle JSON côté navigateur. */
+function downloadJsonFile(file: { filename: string; json: string }): void {
+  const url = URL.createObjectURL(new Blob([file.json], { type: "application/json" }));
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = file.filename;
+  anchor.click();
+  URL.revokeObjectURL(url);
+}
+
+type EraseAccountDialogProps = {
+  target: MemberFull | null;
+  confirmText: string;
+  busy: boolean;
+  onConfirmTextChange: (value: string) => void;
+  onClose: () => void;
+  onConfirm: () => void;
+};
+
+/**
+ * Confirmation destructive exigeant de recopier « EFFACER ». `ConfirmDialog`
+ * ne permet ni champ de saisie ni désactivation conditionnelle de sa
+ * confirmation : ce dialogue reprend la même mise en page (annuler / action
+ * rouge) avec la porte de saisie.
+ */
+function EraseAccountDialog({
+  target,
+  confirmText,
+  busy,
+  onConfirmTextChange,
+  onClose,
+  onConfirm,
+}: EraseAccountDialogProps) {
+  const ready = confirmText === ERASE_CONFIRMATION;
+  return (
+    <Dialog
+      open={target !== null}
+      onClose={onClose}
+      title={target ? `Effacer le compte de ${target.name} ?` : "Effacer ce compte ?"}
+      footer={
+        <>
+          <Button variant="ghost" onClick={onClose} disabled={busy}>
+            Annuler
+          </Button>
+          <Button
+            variant="outline"
+            className="text-destructive"
+            onClick={onConfirm}
+            disabled={!ready || busy}
+            loading={busy}
+          >
+            Effacer le compte
+          </Button>
+        </>
+      }
+    >
+      <div className="flex flex-col gap-3 text-sm text-muted-foreground">
+        <p>
+          Le compte est pseudonymisé : nom et adresse sont remplacés, sessions et jetons d'API sont
+          supprimés. Les contenus (fichiers, documents, tâches, copies) restent la propriété de
+          l'organisation.
+        </p>
+        <div className="flex flex-col gap-1">
+          <Label htmlFor="erase-confirm">{`Tapez ${ERASE_CONFIRMATION} pour confirmer`}</Label>
+          <Input
+            id="erase-confirm"
+            value={confirmText}
+            autoComplete="off"
+            disabled={busy}
+            onChange={(event) => onConfirmTextChange(event.target.value)}
+          />
+        </div>
+      </div>
+    </Dialog>
+  );
+}
+
 const RESULT_LABELS: Record<string, { label: string; bad?: boolean }> = {
   success: { label: "Succès" },
   denied: { label: "Refusé", bad: true },
@@ -60,6 +142,8 @@ export function AdminView() {
   const [members, setMembers] = useState<MemberFull[]>([]);
   const [sessions, setSessions] = useState<ActiveSession[]>([]);
   const [revokeTarget, setRevokeTarget] = useState<ActiveSession | null>(null);
+  const [eraseTarget, setEraseTarget] = useState<MemberFull | null>(null);
+  const [eraseConfirm, setEraseConfirm] = useState("");
   const [audit, setAudit] = useState<AuditEntry[]>([]);
   const [orgName, setOrgName] = useState("");
   const [quotaGo, setQuotaGo] = useState("");
@@ -126,6 +210,24 @@ export function AdminView() {
     const target = revokeTarget;
     await guard(() => revokeSessionFn({ data: { sessionId: target.id } }), "Session révoquée.");
     setRevokeTarget(null);
+  }
+
+  /** Export RGPD : le serveur construit le bundle, le navigateur le télécharge. */
+  async function onExport(entry: MemberFull) {
+    await guard(async () => {
+      downloadJsonFile(await exportUserDataFn({ data: { userId: entry.userId } }));
+    }, "Export téléchargé.");
+  }
+
+  async function confirmErase() {
+    if (!eraseTarget) return;
+    const target = eraseTarget;
+    await guard(
+      () => eraseUserAccountFn({ data: { userId: target.userId, confirm: eraseConfirm } }),
+      "Compte effacé.",
+    );
+    setEraseTarget(null);
+    setEraseConfirm("");
   }
 
   const retentionValue = Number(retentionDraft);
@@ -211,6 +313,32 @@ export function AdminView() {
                   <option value="admin">Administrateur</option>
                 </select>
               )}
+              {entry.role !== "owner" && entry.userId !== overview?.actorUserId ? (
+                <>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    aria-label={`Exporter les données de ${entry.name}`}
+                    disabled={busy}
+                    onClick={() => void onExport(entry)}
+                  >
+                    Exporter
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="text-destructive"
+                    aria-label={`Effacer le compte de ${entry.name}`}
+                    disabled={busy}
+                    onClick={() => {
+                      setEraseConfirm("");
+                      setEraseTarget(entry);
+                    }}
+                  >
+                    Effacer
+                  </Button>
+                </>
+              ) : null}
               {entry.role !== "owner" ? (
                 <Button
                   size="sm"
@@ -454,6 +582,18 @@ export function AdminView() {
         confirmLabel="Révoquer"
         busy={busy}
         destructive
+      />
+
+      <EraseAccountDialog
+        target={eraseTarget}
+        confirmText={eraseConfirm}
+        busy={busy}
+        onConfirmTextChange={setEraseConfirm}
+        onClose={() => {
+          setEraseTarget(null);
+          setEraseConfirm("");
+        }}
+        onConfirm={() => void confirmErase()}
       />
     </div>
   );

@@ -2,6 +2,8 @@ import { createFileRoute } from "@tanstack/react-router";
 import {
   createInboundMessage,
   isMailError,
+  MAX_ATTACHMENTS,
+  MAX_INBOUND_ATTACHMENT_BYTES,
   MAX_INBOUND_BODY_LENGTH,
   type MailError,
 } from "@workspace/mail";
@@ -15,14 +17,20 @@ type InboundBody = {
   body?: string;
   /** Identifiant du message chez le relais MX (idempotence). */
   messageId?: string;
+  /** Pièces jointes en base64 (≤ 5, ≤ 5 Mo décodés chacune). */
+  attachments?: { filename?: string; contentType?: string; contentBase64?: string }[];
 };
 
 /**
- * Marge au-dessus de la limite du corps pour les autres champs JSON
- * (`to`, `from`, objet, échappement). La limite réelle du corps est appliquée
- * par @workspace/mail, qui renvoie une MailError « validation ».
+ * Marge au-dessus des limites du service pour les autres champs JSON (`to`,
+ * `from`, objet, échappement) et l'encodage base64 des pièces jointes
+ * (4 caractères pour 3 octets). Les limites réelles sont appliquées par
+ * @workspace/mail, qui renvoie une MailError « validation ».
  */
-const MAX_REQUEST_LENGTH = MAX_INBOUND_BODY_LENGTH + 64 * 1024;
+const MAX_REQUEST_LENGTH =
+  MAX_INBOUND_BODY_LENGTH +
+  MAX_ATTACHMENTS * Math.ceil(MAX_INBOUND_ATTACHMENT_BYTES / 3) * 4 +
+  64 * 1024;
 
 /**
  * Garde-fou anti-abus (audit) : 30 ingestions par minute et par IP, vérifié
@@ -86,6 +94,7 @@ export const Route = createFileRoute("/api/mail/inbound")({
               subject: payload.subject,
               body: payload.body,
               externalId: payload.messageId,
+              attachments: payload.attachments,
             },
             request.headers.get("x-mail-secret"),
           );

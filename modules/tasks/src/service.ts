@@ -1,3 +1,4 @@
+import { recordAudit } from "@workspace/audit";
 import { getAppUrls } from "@workspace/config";
 import { schema as core, getDb } from "@workspace/database";
 import { createNotification } from "@workspace/notifications";
@@ -130,6 +131,14 @@ export async function createList(actor: Actor, input: { name: string }): Promise
     .values({ orgId: actor.orgId, ownerId: actor.userId, name })
     .returning();
   if (!row) throw new TasksError("conflict", "Création impossible.");
+  await recordAudit({
+    orgId: actor.orgId,
+    actorUserId: actor.userId,
+    action: "tasks.list.create",
+    resourceType: "task_list",
+    resourceId: row.id,
+    result: "success",
+  });
   return row;
 }
 
@@ -150,6 +159,15 @@ export async function renameList(actor: Actor, listId: string, name: string): Pr
 export async function deleteList(actor: Actor, listId: string): Promise<void> {
   await assertList(actor, "delete", listId);
   await db().delete(taskLists).where(eq(taskLists.id, listId));
+
+  await recordAudit({
+    orgId: actor.orgId,
+    actorUserId: actor.userId,
+    action: "tasks.list.delete",
+    resourceType: "task_list",
+    resourceId: listId,
+    result: "success",
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -162,17 +180,42 @@ export async function shareList(
   input: { subject: GrantSubject; role: GrantRole },
 ): Promise<ResourceGrantRow | null> {
   await assertList(actor, "share", listId);
-  return createGrant({
+  const grant = await createGrant({
     resource: { type: "task_list", id: listId, orgId: actor.orgId },
     subject: input.subject,
     role: input.role,
     actor,
   });
+  // Doublon ignoré par l'unicité → aucune mutation, donc aucune ligne d'audit.
+  if (grant) {
+    await recordAudit({
+      orgId: actor.orgId,
+      actorUserId: actor.userId,
+      action: "tasks.list.share",
+      resourceType: "task_list",
+      resourceId: listId,
+      result: "success",
+      metadata: { subjectKind: input.subject.kind, subjectId: input.subject.id, role: input.role },
+    });
+  }
+  return grant;
 }
 
 export async function unshareList(actor: Actor, listId: string, grantId: string): Promise<boolean> {
   await assertList(actor, "share", listId);
-  return revokeGrant({ type: "task_list", id: listId, orgId: actor.orgId }, grantId);
+  const revoked = await revokeGrant({ type: "task_list", id: listId, orgId: actor.orgId }, grantId);
+  // Révocation sans effet (grant inexistant) → aucune mutation à journaliser.
+  if (revoked) {
+    await recordAudit({
+      orgId: actor.orgId,
+      actorUserId: actor.userId,
+      action: "tasks.list.unshare",
+      resourceType: "task_list",
+      resourceId: listId,
+      result: "success",
+    });
+  }
+  return revoked;
 }
 
 export async function listListGrants(actor: Actor, listId: string): Promise<ResourceGrantRow[]> {
@@ -314,9 +357,23 @@ export async function createTask(
     })
     .returning();
   if (!row) throw new TasksError("conflict", "Création impossible.");
+  await recordAudit({
+    orgId: actor.orgId,
+    actorUserId: actor.userId,
+    action: "tasks.task.create",
+    resourceType: "task",
+    resourceId: row.id,
+    result: "success",
+  });
   return row;
 }
 
+/**
+ * Mise à jour d'une tâche. Volontairement NON journalisée dans l'audit : la
+ * bascule d'une case à cocher, le changement de priorité ou de date sont des
+ * micro-interactions à fort volume. L'audit couvre les créations/suppressions
+ * et le partage des listes.
+ */
 export async function updateTask(
   actor: Actor,
   taskId: string,
@@ -385,4 +442,13 @@ export async function deleteTask(actor: Actor, taskId: string): Promise<void> {
 
   await assertList(actor, "write", task.listId);
   await db().delete(tasks).where(eq(tasks.id, taskId));
+
+  await recordAudit({
+    orgId: actor.orgId,
+    actorUserId: actor.userId,
+    action: "tasks.task.delete",
+    resourceType: "task",
+    resourceId: taskId,
+    result: "success",
+  });
 }

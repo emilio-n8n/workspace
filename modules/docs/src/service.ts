@@ -323,6 +323,81 @@ export async function listDocumentVersions(actor: Actor, fileId: string): Promis
     .orderBy(desc(docsVersions.version));
 }
 
+/**
+ * Restaure une version : son contenu est recopié dans une NOUVELLE version
+ * (sémantique append) — l'historique n'est jamais réécrit, une restauration
+ * est donc elle-même réversible et visible dans l'historique. Retourne le
+ * numéro de la version créée.
+ */
+export async function restoreDocumentVersion(
+  actor: Actor,
+  fileId: string,
+  version: number,
+): Promise<{ version: number }> {
+  await requireDocument(actor, fileId);
+
+  const role = await effectiveRole(actor, fileId);
+  if (!roleSatisfies(role, "write")) {
+    throw new DocsError("forbidden", "Permission insuffisante pour restaurer ce document.");
+  }
+
+  const restored = await withTransaction(async (tx) => {
+    // Même verrou que saveDocument : les restaurations et sauvegardes
+    // concurrentes sont sérialisées sur la ligne document.
+    const [doc] = await tx
+      .select()
+      .from(docsDocuments)
+      .where(eq(docsDocuments.fileId, fileId))
+      .limit(1)
+      .for("update");
+    if (!doc || doc.orgId !== actor.orgId) {
+      throw new DocsError("not_found", "Document introuvable.");
+    }
+
+    const [target] = await tx
+      .select({ content: docsVersions.content })
+      .from(docsVersions)
+      .where(and(eq(docsVersions.documentId, doc.id), eq(docsVersions.version, version)))
+      .limit(1);
+    if (!target) {
+      throw new DocsError("not_found", "Version introuvable.");
+    }
+
+    // Incrément atomique identique à l'append de saveDocument : deux
+    // restaurations concurrentes ne peuvent pas produire la même version.
+    const [bumped] = await tx
+      .update(docsDocuments)
+      .set({ currentVersion: sql`${docsDocuments.currentVersion} + 1` })
+      .where(eq(docsDocuments.id, doc.id))
+      .returning({ version: docsDocuments.currentVersion });
+    if (!bumped) throw new DocsError("conflict", "Restauration concurrente impossible.");
+
+    await tx.insert(docsVersions).values({
+      documentId: doc.id,
+      version: bumped.version,
+      content: target.content as PmNode,
+      createdBy: actor.userId,
+    });
+
+    return bumped.version;
+  });
+
+  await recordAudit({
+    orgId: actor.orgId,
+    actorUserId: actor.userId,
+    action: "docs.document.restore",
+    resourceType: "document",
+    resourceId: fileId,
+    result: "success",
+    metadata: { restoredFrom: version },
+  });
+
+  // Met à jour « modifié récemment » côté Drive (best-effort, non bloquant).
+  await touchEntry(actor, fileId).catch(() => undefined);
+
+  return { version: restored };
+}
+
 /** Fenêtre de rétention des versions (jours) — réglage d'organisation, 90 par défaut. */
 async function loadVersionRetentionDays(orgId: string): Promise<number> {
   const [settings] = await db()
@@ -580,6 +655,15 @@ export async function resolveComment(
     .returning();
   if (!updated) throw new DocsError("not_found", "Commentaire introuvable.");
 
+  await recordAudit({
+    orgId: actor.orgId,
+    actorUserId: actor.userId,
+    action: resolved ? "docs.comment.resolve" : "docs.comment.reopen",
+    resourceType: "document",
+    resourceId: fileId,
+    result: "success",
+  });
+
   return toCommentView(updated, await commentAuthorName(updated.authorId));
 }
 
@@ -601,6 +685,15 @@ export async function deleteComment(
   }
 
   await db().delete(docsComments).where(eq(docsComments.id, comment.id));
+
+  await recordAudit({
+    orgId: actor.orgId,
+    actorUserId: actor.userId,
+    action: "docs.comment.delete",
+    resourceType: "document",
+    resourceId: fileId,
+    result: "success",
+  });
 }
 
 // ---------------------------------------------------------------------------

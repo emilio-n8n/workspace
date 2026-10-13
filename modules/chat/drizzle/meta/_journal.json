@@ -15,6 +15,13 @@
       "when": 1791749908469,
       "tag": "0001_windy_dakota_north",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1791913780537,
+      "tag": "0002_tearful_gorgon",
+      "breakpoints": true
     }
   ]
 }

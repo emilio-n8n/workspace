@@ -9,11 +9,13 @@ import {
   createInboundMessage,
   deleteMessage,
   ensureMailbox,
+  getAttachment,
   getMessage,
   isMailError,
   listFolders,
   listMessages,
   listThreadMessages,
+  MAX_ATTACHMENT_BYTES,
   MAX_INBOUND_BODY_LENGTH,
   MailError,
   restoreMessage,
@@ -21,10 +23,11 @@ import {
   sendMail,
   toggleStar,
   trashMessage,
+  uploadMailAttachment,
 } from "../src/index.ts";
 import { mailMailboxes, mailMessages } from "../src/schema.ts";
 
-const { user, organization } = coreSchema;
+const { user, organization, auditEvents } = coreSchema;
 
 let counter = 0;
 const tag = (prefix: string) => `${prefix}${++counter}_${randomUUID().slice(0, 8)}`;
@@ -751,5 +754,197 @@ describe("mail — fils de discussion", () => {
     expect(singleton.map((message) => message.id)).toEqual([solo]);
 
     await expect(listThreadMessages(f.actorBruno, first)).rejects.toThrow(MailError);
+  });
+});
+
+describe("mail — audit", () => {
+  it("journalise envoi, corbeille, suppression et ingestion, jamais les brouillons", async () => {
+    const box = await ensureMailbox(f.actorAlice);
+
+    const sent = await sendMail(f.actorAlice, {
+      to: ["bruno@example.org", "chloe@example.org"],
+      cc: [],
+      subject: "Audité",
+      body: "Contenu",
+    });
+    await trashMessage(f.actorAlice, sent.id);
+    await deleteMessage(f.actorAlice, sent.id);
+
+    const inbound = await createInboundMessage(
+      { to: box.address, from: "expediteur@example.org", subject: "Entrant", body: "x" },
+      webhookSecret(),
+    );
+    // Les brouillons ne sont délibérément pas journalisés.
+    await saveDraft(f.actorAlice, {
+      to: ["bruno@example.org"],
+      cc: [],
+      subject: "Brouillon",
+      body: "x",
+    });
+
+    const events = await getDb().select().from(auditEvents).where(eq(auditEvents.orgId, f.orgId));
+    expect(events).toHaveLength(4);
+
+    const byAction = new Map(events.map((event) => [event.action, event]));
+    expect(byAction.get("mail.message.send")).toMatchObject({
+      resourceId: sent.id,
+      result: "success",
+      metadata: { to: 2 },
+    });
+    expect(byAction.get("mail.message.trash")).toMatchObject({
+      resourceId: sent.id,
+      result: "success",
+    });
+    expect(byAction.get("mail.message.delete")).toMatchObject({
+      resourceId: sent.id,
+      result: "success",
+    });
+    expect(byAction.get("mail.message.inbound")).toMatchObject({
+      resourceId: inbound.id,
+      result: "success",
+    });
+  });
+});
+
+describe("mail — pièces jointes", () => {
+  it("téléverse, envoie puis relit une pièce jointe (octets identiques)", async () => {
+    const bytes = Buffer.concat([
+      Buffer.from([0x00, 0x01, 0xff, 0xfe, 0x80]),
+      Buffer.from("rapport trimestriel — accents éàü"),
+    ]);
+    const token = await uploadMailAttachment(f.actorAlice, {
+      filename: "rapport.pdf",
+      contentType: "application/pdf",
+      body: bytes,
+    });
+    expect(token.storageKey.startsWith(`mail/${f.orgId}/`)).toBe(true);
+    expect(token.sizeBytes).toBe(bytes.length);
+
+    const sent = await sendMail(f.actorAlice, {
+      to: ["bruno@example.org"],
+      cc: [],
+      subject: "Avec pièce",
+      body: "Voir ci-joint",
+      attachments: [token],
+    });
+
+    const detail = await getMessage(f.actorAlice, sent.id);
+    expect(detail.attachments).toHaveLength(1);
+    const meta = detail.attachments[0];
+    if (!meta) throw new Error("pièce jointe manquante");
+    expect(meta).toMatchObject({
+      filename: "rapport.pdf",
+      contentType: "application/pdf",
+      sizeBytes: bytes.length,
+    });
+
+    const download = await getAttachment(f.actorAlice, meta.id);
+    expect(download.filename).toBe("rapport.pdf");
+    expect(download.contentType).toBe("application/pdf");
+    expect(download.body.equals(bytes)).toBe(true);
+
+    const list = await listMessages(f.actorAlice, { folder: "sent" });
+    expect(list[0]?.attachmentCount).toBe(1);
+  });
+
+  it("refuse un jeton de pièce jointe d'une autre organisation", async () => {
+    await expect(
+      sendMail(f.actorAlice, {
+        to: ["bruno@example.org"],
+        cc: [],
+        subject: "Détournement",
+        body: "x",
+        attachments: [
+          {
+            storageKey: `mail/${f.otherOrgId}/${randomUUID()}`,
+            filename: "x.txt",
+            contentType: "text/plain",
+            sizeBytes: 3,
+          },
+        ],
+      }),
+    ).rejects.toMatchObject({ code: "validation" });
+
+    // Rien n'est écrit dans « Envoyés » quand la validation échoue.
+    expect(await listMessages(f.actorAlice, { folder: "sent" })).toHaveLength(0);
+  });
+
+  it("réserve la lecture d'une pièce jointe à la boîte propriétaire du message", async () => {
+    const token = await uploadMailAttachment(f.actorAlice, {
+      filename: "prive.txt",
+      contentType: "text/plain",
+      body: Buffer.from("secret"),
+    });
+    const sent = await sendMail(f.actorAlice, {
+      to: ["bruno@example.org"],
+      cc: [],
+      subject: "Privé",
+      body: "x",
+      attachments: [token],
+    });
+    const detail = await getMessage(f.actorAlice, sent.id);
+    const attachmentId = detail.attachments[0]?.id;
+    if (!attachmentId) throw new Error("pièce jointe manquante");
+
+    await expect(getAttachment(f.actorBruno, attachmentId)).rejects.toMatchObject({
+      code: "not_found",
+    });
+    await expect(getAttachment(f.actorChloe, attachmentId)).rejects.toMatchObject({
+      code: "not_found",
+    });
+    expect((await getAttachment(f.actorAlice, attachmentId)).body.toString()).toBe("secret");
+  });
+
+  it("stocke une pièce jointe entrante et la rattache au message", async () => {
+    const box = await ensureMailbox(f.actorAlice);
+    const content = Buffer.from("contenu de la note entrante");
+
+    const created = await createInboundMessage(
+      {
+        to: box.address,
+        from: "expediteur@example.org",
+        subject: "Avec pièce",
+        body: "x",
+        attachments: [
+          {
+            filename: "note.txt",
+            contentType: "text/plain",
+            contentBase64: content.toString("base64"),
+          },
+        ],
+      },
+      webhookSecret(),
+    );
+
+    const detail = await getMessage(f.actorAlice, created.id);
+    expect(detail.attachments).toHaveLength(1);
+    const attachmentId = detail.attachments[0]?.id;
+    if (!attachmentId) throw new Error("pièce jointe manquante");
+    expect(detail.attachments[0]?.filename).toBe("note.txt");
+    expect((await getAttachment(f.actorAlice, attachmentId)).body.equals(content)).toBe(true);
+  });
+
+  it("refuse les noms avec séparateur de chemin et les fichiers trop volumineux", async () => {
+    await expect(
+      uploadMailAttachment(f.actorAlice, {
+        filename: "../secret.txt",
+        contentType: "text/plain",
+        body: Buffer.from("x"),
+      }),
+    ).rejects.toMatchObject({ code: "validation" });
+    await expect(
+      uploadMailAttachment(f.actorAlice, {
+        filename: "dossier/fichier.txt",
+        contentType: "text/plain",
+        body: Buffer.from("x"),
+      }),
+    ).rejects.toMatchObject({ code: "validation" });
+    await expect(
+      uploadMailAttachment(f.actorAlice, {
+        filename: "gros.bin",
+        contentType: "application/octet-stream",
+        body: Buffer.alloc(MAX_ATTACHMENT_BYTES + 1),
+      }),
+    ).rejects.toMatchObject({ code: "validation" });
   });
 });

@@ -5,18 +5,22 @@ import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   ChatError,
+  chatAttachments,
   chatChannels,
   chatMembers,
   chatMessages,
   createChannel,
+  getAttachment,
   listChannels,
   listMessages,
+  MAX_ATTACHMENT_BYTES,
   markRead,
   sendMessage,
   startDm,
+  uploadChatAttachment,
 } from "../src/index.ts";
 
-const { user, organization, member } = coreSchema;
+const { user, organization, member, auditEvents } = coreSchema;
 
 let counter = 0;
 const tag = (prefix: string) => `${prefix}${++counter}_${randomUUID().slice(0, 8)}`;
@@ -429,5 +433,184 @@ describe("chat — messages", () => {
     const channel = await createChannel(f.actorAlice, "privé");
     await expect(listMessages(f.actorChloe, channel.id)).rejects.toThrow(ChatError);
     await expect(markRead(f.actorChloe, channel.id)).rejects.toThrow(ChatError);
+  });
+});
+
+describe("chat — pièces jointes", () => {
+  it("téléverse, envoie et relit une pièce jointe (octets identiques)", async () => {
+    const channel = await createChannel(f.actorAlice, "fichiers");
+    const body = Buffer.from("Bonjour, pièce jointe !", "utf8");
+    const token = await uploadChatAttachment(f.actorAlice, {
+      filename: "notes.txt",
+      contentType: "text/plain",
+      body,
+    });
+    expect(token.storageKey.startsWith(`chat/${f.orgId}/`)).toBe(true);
+    expect(token.sizeBytes).toBe(body.length);
+
+    const sent = await sendMessage(f.actorAlice, channel.id, "Voici le fichier", [token]);
+    expect(sent.attachments).toHaveLength(1);
+    expect(sent.attachments[0]).toMatchObject({
+      filename: "notes.txt",
+      contentType: "text/plain",
+      sizeBytes: body.length,
+    });
+
+    const messages = await listMessages(f.actorAlice, channel.id);
+    const metadata = messages[0]?.attachments ?? [];
+    expect(metadata).toHaveLength(1);
+    expect(metadata[0]).toMatchObject({ filename: "notes.txt", sizeBytes: body.length });
+    // La liste ne divulgue jamais la clé de stockage.
+    expect(metadata[0]).not.toHaveProperty("storageKey");
+
+    const attachmentId = metadata[0]?.id;
+    if (!attachmentId) throw new Error("Identifiant de pièce jointe manquant.");
+    const download = await getAttachment(f.actorAlice, attachmentId);
+    expect(download.filename).toBe("notes.txt");
+    expect(download.contentType).toBe("text/plain");
+    expect(download.body.equals(body)).toBe(true);
+  });
+
+  it("refuse une clé de pièce jointe étrangère à l'organisation", async () => {
+    const channel = await createChannel(f.actorAlice, "clés");
+    const token = await uploadChatAttachment(f.actorAlice, {
+      filename: "notes.txt",
+      contentType: "text/plain",
+      body: Buffer.from("x"),
+    });
+
+    await expect(
+      sendMessage(f.actorAlice, channel.id, "intrusion", [
+        { ...token, storageKey: `chat/${f.otherOrgId}/${randomUUID()}` },
+      ]),
+    ).rejects.toMatchObject({ code: "validation" });
+
+    // Aucun message, aucune pièce jointe orpheline.
+    expect(await listMessages(f.actorAlice, channel.id)).toHaveLength(0);
+    expect(await getDb().select().from(chatAttachments)).toHaveLength(0);
+  });
+
+  it("un non-membre ne peut pas lire la pièce jointe d'un message", async () => {
+    const channel = await createChannel(f.actorAlice, "privée");
+    const token = await uploadChatAttachment(f.actorAlice, {
+      filename: "secret.txt",
+      contentType: "text/plain",
+      body: Buffer.from("confidentiel"),
+    });
+    const sent = await sendMessage(f.actorAlice, channel.id, "secret", [token]);
+    const attachmentId = sent.attachments[0]?.id;
+    if (!attachmentId) throw new Error("Identifiant de pièce jointe manquant.");
+
+    // Bruno est de la même organisation mais pas du canal ; Chloé est ailleurs.
+    await expect(getAttachment(f.actorBruno, attachmentId)).rejects.toMatchObject({
+      code: "not_found",
+    });
+    await expect(getAttachment(f.actorChloe, attachmentId)).rejects.toMatchObject({
+      code: "not_found",
+    });
+  });
+
+  it("rejette les noms de fichier avec séparateur et les fichiers de plus de 10 Mo", async () => {
+    await expect(
+      uploadChatAttachment(f.actorAlice, {
+        filename: "dossier/notes.txt",
+        contentType: "text/plain",
+        body: Buffer.from("x"),
+      }),
+    ).rejects.toMatchObject({ code: "validation" });
+    await expect(
+      uploadChatAttachment(f.actorAlice, {
+        filename: "dossier\\notes.txt",
+        contentType: "text/plain",
+        body: Buffer.from("x"),
+      }),
+    ).rejects.toMatchObject({ code: "validation" });
+
+    // Borne inclusive : 10 Mo passent, 10 Mo + 1 octet non.
+    await expect(
+      uploadChatAttachment(f.actorAlice, {
+        filename: "limite.bin",
+        contentType: "application/octet-stream",
+        body: Buffer.alloc(MAX_ATTACHMENT_BYTES),
+      }),
+    ).resolves.toMatchObject({ sizeBytes: MAX_ATTACHMENT_BYTES });
+    await expect(
+      uploadChatAttachment(f.actorAlice, {
+        filename: "gros.bin",
+        contentType: "application/octet-stream",
+        body: Buffer.alloc(MAX_ATTACHMENT_BYTES + 1),
+      }),
+    ).rejects.toMatchObject({ code: "validation" });
+  });
+});
+
+describe("chat — audit", () => {
+  it("journalise la création d'un canal", async () => {
+    const channel = await createChannel(f.actorAlice, "journal");
+    const rows = await getDb().select().from(auditEvents).where(eq(auditEvents.orgId, f.orgId));
+
+    expect(rows).toHaveLength(1);
+    const [row] = rows;
+    expect(row).toMatchObject({
+      orgId: f.orgId,
+      actorUserId: f.alice,
+      action: "chat.channel.create",
+      resourceType: "channel",
+      resourceId: channel.id,
+      result: "success",
+      metadata: null,
+    });
+  });
+
+  it("journalise le démarrage d'une discussion, jamais les messages", async () => {
+    const dm = await startDm(f.actorAlice, f.bruno);
+    // Rappel idempotent : rouvrir une discussion existante n'est pas une mutation.
+    await startDm(f.actorAlice, f.bruno);
+    await sendMessage(f.actorAlice, dm.id, "Bonjour");
+    await sendMessage(f.actorAlice, dm.id, "Toujours là ?");
+
+    const rows = await getDb().select().from(auditEvents).where(eq(auditEvents.orgId, f.orgId));
+
+    // Une seule ligne : le démarrage. Les deux messages ne sont PAS audités
+    // (volume) — voir le commentaire de `sendMessage`.
+    expect(rows).toHaveLength(1);
+    const [row] = rows;
+    expect(row).toMatchObject({
+      orgId: f.orgId,
+      actorUserId: f.alice,
+      action: "chat.dm.start",
+      resourceType: "dm",
+      resourceId: dm.id,
+      result: "success",
+    });
+  });
+
+  it("n'audite un envoi que s'il porte des pièces jointes", async () => {
+    const db = getDb();
+    const channel = await createChannel(f.actorAlice, "journal-fichiers");
+    await sendMessage(f.actorAlice, channel.id, "sans pièce jointe");
+
+    const afterPlain = await db.select().from(auditEvents).where(eq(auditEvents.orgId, f.orgId));
+    expect(afterPlain.filter((row) => row.action === "chat.attachment.send")).toHaveLength(0);
+
+    const token = await uploadChatAttachment(f.actorAlice, {
+      filename: "preuve.txt",
+      contentType: "text/plain",
+      body: Buffer.from("audit"),
+    });
+    const sent = await sendMessage(f.actorAlice, channel.id, "avec pièce jointe", [token]);
+
+    const afterAttached = await db.select().from(auditEvents).where(eq(auditEvents.orgId, f.orgId));
+    const attachmentRows = afterAttached.filter((row) => row.action === "chat.attachment.send");
+    expect(attachmentRows).toHaveLength(1);
+    expect(attachmentRows[0]).toMatchObject({
+      orgId: f.orgId,
+      actorUserId: f.alice,
+      action: "chat.attachment.send",
+      resourceType: "message",
+      resourceId: sent.id,
+      result: "success",
+      metadata: { count: 1 },
+    });
   });
 });

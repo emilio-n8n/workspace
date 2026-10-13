@@ -14,6 +14,7 @@ import { Route as AppIndexRouteImport } from './routes/_app/index'
 import { Route as ApiHealthRouteImport } from './routes/api/health'
 import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
 import { Route as ApiMailInboundRouteImport } from './routes/api/mail/inbound'
+import { Route as ApiMailAttachmentsIdRouteImport } from './routes/api/mail/attachments/$id'
 
 const AppRoute = AppRouteImport.update({
   id: '/_app',
@@ -39,18 +40,25 @@ const ApiMailInboundRoute = ApiMailInboundRouteImport.update({
   path: '/api/mail/inbound',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiMailAttachmentsIdRoute = ApiMailAttachmentsIdRouteImport.update({
+  id: '/api/mail/attachments/$id',
+  path: '/api/mail/attachments/$id',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof AppIndexRoute
   '/api/health': typeof ApiHealthRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/mail/inbound': typeof ApiMailInboundRoute
+  '/api/mail/attachments/$id': typeof ApiMailAttachmentsIdRoute
 }
 export interface FileRoutesByTo {
   '/api/health': typeof ApiHealthRoute
   '/': typeof AppIndexRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/mail/inbound': typeof ApiMailInboundRoute
+  '/api/mail/attachments/$id': typeof ApiMailAttachmentsIdRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -59,12 +67,23 @@ export interface FileRoutesById {
   '/_app/': typeof AppIndexRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/mail/inbound': typeof ApiMailInboundRoute
+  '/api/mail/attachments/$id': typeof ApiMailAttachmentsIdRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/api/health' | '/api/auth/$' | '/api/mail/inbound'
+  fullPaths:
+    | '/'
+    | '/api/health'
+    | '/api/auth/$'
+    | '/api/mail/inbound'
+    | '/api/mail/attachments/$id'
   fileRoutesByTo: FileRoutesByTo
-  to: '/api/health' | '/' | '/api/auth/$' | '/api/mail/inbound'
+  to:
+    | '/api/health'
+    | '/'
+    | '/api/auth/$'
+    | '/api/mail/inbound'
+    | '/api/mail/attachments/$id'
   id:
     | '__root__'
     | '/_app'
@@ -72,6 +91,7 @@ export interface FileRouteTypes {
     | '/_app/'
     | '/api/auth/$'
     | '/api/mail/inbound'
+    | '/api/mail/attachments/$id'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -79,6 +99,7 @@ export interface RootRouteChildren {
   ApiHealthRoute: typeof ApiHealthRoute
   ApiAuthSplatRoute: typeof ApiAuthSplatRoute
   ApiMailInboundRoute: typeof ApiMailInboundRoute
+  ApiMailAttachmentsIdRoute: typeof ApiMailAttachmentsIdRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -118,6 +139,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiMailInboundRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/mail/attachments/$id': {
+      id: '/api/mail/attachments/$id'
+      path: '/api/mail/attachments/$id'
+      fullPath: '/api/mail/attachments/$id'
+      preLoaderRoute: typeof ApiMailAttachmentsIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
@@ -136,6 +164,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiHealthRoute: ApiHealthRoute,
   ApiAuthSplatRoute: ApiAuthSplatRoute,
   ApiMailInboundRoute: ApiMailInboundRoute,
+  ApiMailAttachmentsIdRoute: ApiMailAttachmentsIdRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

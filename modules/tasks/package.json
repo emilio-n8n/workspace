@@ -17,6 +17,7 @@
     "db:migrate": "drizzle-kit migrate"
   },
   "dependencies": {
+    "@workspace/audit": "workspace:*",
     "@workspace/config": "workspace:*",
     "@workspace/database": "workspace:*",
     "@workspace/notifications": "workspace:*",

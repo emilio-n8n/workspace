@@ -1,12 +1,17 @@
 import { createServerFn } from "@tanstack/react-start";
 import { getRequest } from "@tanstack/react-start/server";
 import { requireActor } from "@workspace/auth";
+import { getServerEnv } from "@workspace/config";
+import { getDb, schema } from "@workspace/database";
 import { effectiveRole } from "@workspace/drive";
 import { roleSatisfies } from "@workspace/permissions";
+import { eq } from "drizzle-orm";
 import { z } from "zod";
+import { COLLAB_TOKEN_TTL_MS, signCollabToken } from "./collab-token.ts";
 import {
   addComment,
   createDocument,
+  DocsError,
   deleteComment,
   getDocumentByFileId,
   listComments,
@@ -14,6 +19,7 @@ import {
   listDocumentVersions,
   renameDocument,
   resolveComment,
+  restoreDocumentVersion,
   saveDocument,
 } from "./index.ts";
 
@@ -125,6 +131,20 @@ export const listDocumentVersionsFn = createServerFn({ method: "GET" })
     }));
   });
 
+export const restoreDocumentVersionFn = createServerFn({ method: "POST" })
+  .validator((input: unknown) =>
+    z
+      .object({
+        fileId: z.string().uuid(),
+        version: z.number().int().min(1),
+      })
+      .parse(input),
+  )
+  .handler(async ({ data }) => {
+    const { actor } = await requireActor(getRequest().headers);
+    return restoreDocumentVersion(actor, data.fileId, data.version);
+  });
+
 const commentInput = z.object({
   fileId: z.string().uuid(),
   body: z.string().trim().min(1).max(4000),
@@ -168,4 +188,58 @@ export const deleteCommentFn = createServerFn({ method: "POST" })
     const { actor } = await requireActor(getRequest().headers);
     await deleteComment(actor, data.fileId, data.commentId);
     return { ok: true as const };
+  });
+
+/** Résultat de `getCollabTokenFn`. */
+export type CollabTokenResult = {
+  /** URL du serveur de collaboration, ou `null` si l'instance n'en a pas. */
+  url: string | null;
+  /** Jeton signé, valable {@link COLLAB_TOKEN_TTL_MS}. */
+  token: string;
+};
+
+/**
+ * Jeton d'accès au serveur de collaboration temps réel (Yjs).
+ *
+ * L'URL `null` signale au client que la collaboration est désactivée : il
+ * conserve l'autosave existant. Le jeton lie l'utilisateur au document avec
+ * son droit d'écriture effectif ; la vérification et l'application des droits
+ * se font côté serveur de collaboration, sans accès à la base.
+ */
+export const getCollabTokenFn = createServerFn({ method: "GET" })
+  .validator((input: unknown) => fileInput.parse(input))
+  .handler(async ({ data }): Promise<CollabTokenResult> => {
+    const { actor, userId } = await requireActor(getRequest().headers);
+    // Existence du document et appartenance à l'organisation d'abord.
+    const { entry } = await getDocumentByFileId(actor, data.fileId);
+
+    const role = await effectiveRole(actor, data.fileId);
+    if (!role) {
+      throw new DocsError("forbidden", "Permission insuffisante pour collaborer sur ce document.");
+    }
+    const canWrite = roleSatisfies(role, "write");
+
+    const secret = getServerEnv().SESSION_SECRET;
+    if (!secret) {
+      throw new Error("SESSION_SECRET est requis pour signer les jetons de collaboration.");
+    }
+
+    const [viewer] = await getDb()
+      .select({ name: schema.user.name })
+      .from(schema.user)
+      .where(eq(schema.user.id, userId))
+      .limit(1);
+
+    const token = signCollabToken(
+      {
+        fileId: entry.id,
+        userId,
+        name: viewer?.name ?? "Utilisateur",
+        canWrite,
+        exp: Date.now() + COLLAB_TOKEN_TTL_MS,
+      },
+      secret,
+    );
+
+    return { url: getServerEnv().COLLAB_URL ?? null, token };
   });

@@ -3,7 +3,7 @@ import { closeDb, schema as coreSchema, getDb } from "@workspace/database";
 import { DriveError, shareEntry } from "@workspace/drive";
 import type { Actor } from "@workspace/permissions";
 import { getStorage } from "@workspace/storage";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   createPresentation,
@@ -20,7 +20,7 @@ import {
   uploadSlideImage,
 } from "../src/index.ts";
 
-const { user, organization } = coreSchema;
+const { user, organization, auditEvents } = coreSchema;
 
 let counter = 0;
 const tag = (prefix: string) => `${prefix}${++counter}_${randomUUID().slice(0, 8)}`;
@@ -117,6 +117,14 @@ async function expectSlidesError(
   const slidesError = failure as SlidesError;
   expect(slidesError.code).toBe(code);
   return slidesError;
+}
+
+/** Événements d'audit de l'organisation (filtre optionnel par action). */
+async function auditEventsFor(orgId: string, action?: string) {
+  const where = action
+    ? and(eq(auditEvents.orgId, orgId), eq(auditEvents.action, action))
+    : eq(auditEvents.orgId, orgId);
+  return getDb().select().from(auditEvents).where(where);
 }
 
 describe("slides — cycle de vie", () => {
@@ -588,5 +596,94 @@ describe("slides — images", () => {
       getSlideImage(f.actorAlice, b.entry.id, `slides/${b.presentation.id}/absent.webp`),
       "not_found",
     );
+  });
+});
+
+describe("slides — journal d'audit", () => {
+  it("journalise la création (slides.presentation.create)", async () => {
+    const { entry } = await createPresentation(f.actorAlice, { title: "Audit création" });
+
+    const rows = await auditEventsFor(f.orgId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      orgId: f.orgId,
+      actorUserId: f.actorAlice.userId,
+      action: "slides.presentation.create",
+      resourceType: "presentation",
+      resourceId: entry.id,
+      result: "success",
+    });
+  });
+
+  it("journalise l'upload d'image avec sa clé média (slides.image.upload)", async () => {
+    const { entry } = await createPresentation(f.actorAlice, { title: "Audit upload" });
+    const { mediaKey } = await uploadSlideImage(f.actorAlice, entry.id, {
+      contentType: "image/png",
+      body: Buffer.from("png-bytes"),
+    });
+
+    const rows = await auditEventsFor(f.orgId, "slides.image.upload");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      orgId: f.orgId,
+      actorUserId: f.actorAlice.userId,
+      action: "slides.image.upload",
+      resourceType: "presentation",
+      resourceId: entry.id,
+      result: "success",
+      metadata: { mediaKey },
+    });
+  });
+
+  it("journalise le renommage (slides.presentation.rename)", async () => {
+    const { entry } = await createPresentation(f.actorAlice, { title: "Avant" });
+    await renamePresentation(f.actorAlice, entry.id, "Après");
+
+    const rows = await auditEventsFor(f.orgId, "slides.presentation.rename");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      orgId: f.orgId,
+      actorUserId: f.actorAlice.userId,
+      resourceType: "presentation",
+      resourceId: entry.id,
+      result: "success",
+    });
+  });
+
+  it("ne journalise pas les sauvegardes automatiques, même après retrait d'une image", async () => {
+    const { entry, presentation } = await createPresentation(f.actorAlice, {
+      title: "Autosave",
+    });
+    const mediaKey = `slides/${presentation.id}/${randomUUID()}.png`;
+    await getStorage().put({ key: mediaKey, body: Buffer.from("png"), contentType: "image/png" });
+
+    const first = await savePresentation(f.actorAlice, entry.id, {
+      revision: 1,
+      slides: [
+        { title: "A", elements: [element({ kind: "image", text: "", mediaKey })] },
+        { title: "B", elements: [element()] },
+      ],
+    });
+    const [slideA, slideB] = first.slides;
+    if (!slideA || !slideB) throw new Error("diapositives attendues");
+
+    // Réordonne et retire l'image : ni la sauvegarde ni le nettoyage de
+    // l'objet de stockage ne doivent écrire d'événement d'audit.
+    await savePresentation(f.actorAlice, entry.id, {
+      revision: first.revision,
+      slides: [
+        { id: slideB.id, title: slideB.title, notes: null, elements: [] },
+        {
+          id: slideA.id,
+          title: slideA.title,
+          notes: null,
+          elements: [element({ text: "Sans image" })],
+        },
+      ],
+    });
+    expect(await getStorage().get(mediaKey)).toBeNull();
+
+    const rows = await auditEventsFor(f.orgId);
+    expect(rows.map((row) => row.action)).toEqual(["slides.presentation.create"]);
   });
 });

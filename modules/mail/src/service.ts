@@ -1,9 +1,18 @@
-import { createHash, timingSafeEqual } from "node:crypto";
+import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
+import { recordAudit } from "@workspace/audit";
 import { getServerEnv } from "@workspace/config";
 import { schema as core, getDb, withTransaction } from "@workspace/database";
 import type { Actor } from "@workspace/permissions";
-import { and, asc, desc, eq, ilike, isNull, or, sql } from "drizzle-orm";
-import { type MailMailboxRow, type MailMessageRow, mailMailboxes, mailMessages } from "./schema.ts";
+import { getStorage } from "@workspace/storage";
+import { and, asc, desc, eq, ilike, inArray, isNull, or, sql } from "drizzle-orm";
+import {
+  type MailAttachmentRow,
+  type MailMailboxRow,
+  type MailMessageRow,
+  mailAttachments,
+  mailMailboxes,
+  mailMessages,
+} from "./schema.ts";
 
 export type MailErrorCode = "not_found" | "forbidden" | "validation" | "conflict";
 
@@ -39,11 +48,22 @@ export type MessageSummary = {
   sendError: string | null;
   createdAt: string;
   sentAt: string | null;
+  /** Nombre de pièces jointes — le détail expose la liste complète. */
+  attachmentCount: number;
+};
+
+/** Métadonnées d'une pièce jointe exposées à l'UI (jamais la clé de stockage). */
+export type AttachmentMeta = {
+  id: string;
+  filename: string;
+  contentType: string;
+  sizeBytes: number;
 };
 
 export type MessageDetail = MessageSummary & {
   body: string;
   ccAddresses: string[];
+  attachments: AttachmentMeta[];
 };
 
 /** Fil de discussion résumé : regroupement des messages d'une même clé. */
@@ -73,6 +93,13 @@ export const MAX_SUBJECT_LENGTH = 500;
 export const MAX_BODY_LENGTH = 100_000;
 /** Corps maximal d'un message entrant (webhook MX) : 1 Mio. */
 export const MAX_INBOUND_BODY_LENGTH = 1024 * 1024;
+/** Pièces jointes : 5 fichiers de 10 Mio au maximum (sortant et lecture). */
+export const MAX_ATTACHMENTS = 5;
+export const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
+/** Pièce jointe entrante (webhook MX) : 5 Mio décodés au maximum chacune. */
+export const MAX_INBOUND_ATTACHMENT_BYTES = 5 * 1024 * 1024;
+export const MAX_ATTACHMENT_FILENAME_LENGTH = 255;
+export const MAX_CONTENT_TYPE_LENGTH = 200;
 
 const MAX_RECIPIENTS = 20;
 const MAX_SEARCH_QUERY_LENGTH = 100;
@@ -124,6 +151,104 @@ function assertBodyLength(value: string, max: number, message: string): string {
     throw new MailError("validation", message);
   }
   return value;
+}
+
+// ---------------------------------------------------------------------------
+// Pièces jointes — validation commune (sortant, entrant, lecture)
+// ---------------------------------------------------------------------------
+
+function assertAttachmentFilename(value: unknown): string {
+  if (typeof value !== "string") {
+    throw new MailError("validation", "Nom de fichier invalide.");
+  }
+  const filename = value.trim();
+  if (filename.length === 0 || filename.length > MAX_ATTACHMENT_FILENAME_LENGTH) {
+    throw new MailError(
+      "validation",
+      `Nom de fichier invalide (1 à ${MAX_ATTACHMENT_FILENAME_LENGTH} caractères).`,
+    );
+  }
+  if (/[/\\]/.test(filename) || filename.includes("\0")) {
+    throw new MailError(
+      "validation",
+      "Le nom du fichier ne peut pas contenir de séparateur de chemin.",
+    );
+  }
+  return filename;
+}
+
+function assertContentType(value: unknown): string {
+  if (typeof value !== "string") {
+    throw new MailError("validation", "Type de contenu invalide.");
+  }
+  const contentType = value.trim();
+  if (contentType.length === 0 || contentType.length > MAX_CONTENT_TYPE_LENGTH) {
+    throw new MailError(
+      "validation",
+      `Type de contenu invalide (1 à ${MAX_CONTENT_TYPE_LENGTH} caractères).`,
+    );
+  }
+  return contentType;
+}
+
+/** Jeton provisoire renvoyé par `uploadMailAttachment` puis transmis à `sendMail`. */
+export type AttachmentToken = {
+  storageKey: string;
+  filename: string;
+  contentType: string;
+  sizeBytes: number;
+};
+
+/**
+ * Valide les jetons d'upload avant rattachement : bornés à 5, chacun préfixé
+ * par `mail/<orgId>/` — un jeton d'une autre organisation ne passe jamais.
+ */
+function assertAttachmentTokens(actor: Actor, attachments: AttachmentToken[]): AttachmentToken[] {
+  if (attachments.length > MAX_ATTACHMENTS) {
+    throw new MailError("validation", `${MAX_ATTACHMENTS} pièces jointes au maximum.`);
+  }
+  const prefix = `mail/${actor.orgId}/`;
+  return attachments.map((attachment) => {
+    if (!attachment.storageKey.startsWith(prefix)) {
+      throw new MailError("validation", "Clé de pièce jointe invalide.");
+    }
+    if (
+      !Number.isInteger(attachment.sizeBytes) ||
+      attachment.sizeBytes < 0 ||
+      attachment.sizeBytes > MAX_ATTACHMENT_BYTES
+    ) {
+      throw new MailError("validation", "Taille de pièce jointe invalide.");
+    }
+    return {
+      storageKey: attachment.storageKey,
+      filename: assertAttachmentFilename(attachment.filename),
+      contentType: assertContentType(attachment.contentType),
+      sizeBytes: attachment.sizeBytes,
+    };
+  });
+}
+
+/** Décode une pièce jointe entrante (base64 strict) et borne sa taille. */
+function decodeAttachmentBase64(value: unknown): Buffer {
+  if (typeof value !== "string") {
+    throw new MailError("validation", "Pièce jointe : contenu base64 invalide.");
+  }
+  const normalized = value.replace(/\s+/g, "");
+  if (
+    normalized.length === 0 ||
+    normalized.length % 4 !== 0 ||
+    !/^[A-Za-z0-9+/]+={0,2}$/.test(normalized)
+  ) {
+    throw new MailError("validation", "Pièce jointe : contenu base64 invalide.");
+  }
+  const body = Buffer.from(normalized, "base64");
+  if (body.length > MAX_INBOUND_ATTACHMENT_BYTES) {
+    throw new MailError(
+      "validation",
+      `Pièce jointe trop volumineuse (${MAX_INBOUND_ATTACHMENT_BYTES / (1024 * 1024)} Mo maximum).`,
+    );
+  }
+  return body;
 }
 
 /**
@@ -262,6 +387,22 @@ async function requireOwnedMessage(actor: Actor, messageId: string) {
   return { mailbox, message };
 }
 
+/** Pièce jointe d'un message de la boîte de l'acteur — jamais celle d'un autre. */
+async function requireOwnedAttachment(
+  actor: Actor,
+  attachmentId: string,
+): Promise<MailAttachmentRow> {
+  const mailbox = await requireMailbox(actor);
+  const [row] = await db()
+    .select({ attachment: mailAttachments })
+    .from(mailAttachments)
+    .innerJoin(mailMessages, eq(mailMessages.id, mailAttachments.messageId))
+    .where(and(eq(mailAttachments.id, attachmentId), eq(mailMessages.mailboxId, mailbox.id)))
+    .limit(1);
+  if (!row) throw new MailError("not_found", "Pièce jointe introuvable.");
+  return row.attachment;
+}
+
 type MessageSummaryRow = Pick<
   MailMessageRow,
   | "id"
@@ -275,7 +416,7 @@ type MessageSummaryRow = Pick<
   | "sendError"
   | "createdAt"
   | "sentAt"
->;
+> & { attachmentCount: number };
 
 function toSummary(row: MessageSummaryRow, snippet: string): MessageSummary {
   return {
@@ -291,15 +432,39 @@ function toSummary(row: MessageSummaryRow, snippet: string): MessageSummary {
     sendError: row.sendError,
     createdAt: row.createdAt.toISOString(),
     sentAt: row.sentAt?.toISOString() ?? null,
+    attachmentCount: row.attachmentCount,
   };
 }
 
-function toDetail(row: MailMessageRow): MessageDetail {
+function toDetail(row: MailMessageRow, attachments: AttachmentMeta[]): MessageDetail {
   return {
-    ...toSummary(row, row.body),
+    ...toSummary({ ...row, attachmentCount: attachments.length }, row.body),
     body: row.body,
     ccAddresses: row.ccAddresses,
+    attachments,
   };
+}
+
+/** Métadonnées des pièces jointes de plusieurs messages (une seule requête). */
+async function attachmentsByMessage(messageIds: string[]): Promise<Map<string, AttachmentMeta[]>> {
+  const result = new Map<string, AttachmentMeta[]>();
+  if (messageIds.length === 0) return result;
+  const rows = await db()
+    .select()
+    .from(mailAttachments)
+    .where(inArray(mailAttachments.messageId, messageIds))
+    .orderBy(asc(mailAttachments.createdAt), asc(mailAttachments.id));
+  for (const row of rows) {
+    const list = result.get(row.messageId) ?? [];
+    list.push({
+      id: row.id,
+      filename: row.filename,
+      contentType: row.contentType,
+      sizeBytes: row.sizeBytes,
+    });
+    result.set(row.messageId, list);
+  }
+  return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -366,6 +531,10 @@ const summarySelection = {
   createdAt: mailMessages.createdAt,
   sentAt: mailMessages.sentAt,
   snippet: sql<string>`left(${mailMessages.body}, 200)`,
+  // Sous-requête corrélée : l'identifiant du message doit être qualifié
+  // explicitement, sinon PostgreSQL le résout dans la portée de la
+  // sous-requête (`mail_attachments.id`).
+  attachmentCount: sql<number>`(select count(*)::int from ${mailAttachments} where ${mailAttachments.messageId} = ${sql.identifier("mail_messages")}.${sql.identifier("id")})`,
 };
 
 /**
@@ -448,7 +617,10 @@ export async function listThreadMessages(
   messageId: string,
 ): Promise<MessageDetail[]> {
   const { mailbox, message } = await requireOwnedMessage(actor, messageId);
-  if (message.threadKey === null) return [toDetail(message)];
+  if (message.threadKey === null) {
+    const attachments = await attachmentsByMessage([message.id]);
+    return [toDetail(message, attachments.get(message.id) ?? [])];
+  }
 
   const rows = await db()
     .select()
@@ -461,7 +633,8 @@ export async function listThreadMessages(
       ),
     )
     .orderBy(asc(mailMessages.createdAt), asc(mailMessages.id));
-  return rows.map(toDetail);
+  const attachments = await attachmentsByMessage(rows.map((row) => row.id));
+  return rows.map((row) => toDetail(row, attachments.get(row.id) ?? []));
 }
 
 export async function getMessage(actor: Actor, messageId: string): Promise<MessageDetail> {
@@ -473,7 +646,8 @@ export async function getMessage(actor: Actor, messageId: string): Promise<Messa
       .where(eq(mailMessages.id, messageId));
     message.readAt = new Date();
   }
-  return toDetail(message);
+  const attachments = await attachmentsByMessage([message.id]);
+  return toDetail(message, attachments.get(message.id) ?? []);
 }
 
 export async function toggleStar(actor: Actor, messageId: string): Promise<{ starred: boolean }> {
@@ -493,9 +667,59 @@ export async function markRead(actor: Actor, messageId: string): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// Pièces jointes
+// ---------------------------------------------------------------------------
+
+/**
+ * Téléverse une pièce jointe et renvoie un jeton provisoire (non encore lié à
+ * un message) : `sendMail` le rattache au message envoyé. Les métadonnées
+ * (nom, type, taille) sont portées par le jeton ; le binaire vit dans le
+ * stockage sous `mail/<orgId>/<uuid>`.
+ */
+export async function uploadMailAttachment(
+  actor: Actor,
+  input: { filename: string; contentType: string; body: Buffer },
+): Promise<AttachmentToken> {
+  const filename = assertAttachmentFilename(input.filename);
+  const contentType = assertContentType(input.contentType);
+  if (input.body.length > MAX_ATTACHMENT_BYTES) {
+    throw new MailError(
+      "validation",
+      `Pièce jointe trop volumineuse (${MAX_ATTACHMENT_BYTES / (1024 * 1024)} Mo maximum).`,
+    );
+  }
+  const storageKey = `mail/${actor.orgId}/${randomUUID()}`;
+  await getStorage().put({ key: storageKey, body: input.body, contentType });
+  return { storageKey, filename, contentType, sizeBytes: input.body.length };
+}
+
+export type AttachmentDownload = {
+  filename: string;
+  contentType: string;
+  body: Buffer;
+};
+
+/** Téléchargement d'une pièce jointe — réservé à la boîte propriétaire du message. */
+export async function getAttachment(
+  actor: Actor,
+  attachmentId: string,
+): Promise<AttachmentDownload> {
+  const attachment = await requireOwnedAttachment(actor, attachmentId);
+  const body = await getStorage().get(attachment.storageKey);
+  if (!body) throw new MailError("not_found", "Pièce jointe introuvable.");
+  return { filename: attachment.filename, contentType: attachment.contentType, body };
+}
+
+// ---------------------------------------------------------------------------
 // Brouillons et envoi
 // ---------------------------------------------------------------------------
 
+/**
+ * Brouillons : aucune entrée d'audit (volontaire) — écriture fréquente,
+ * aucun effet externe tant que le message n'est pas envoyé ; le journal
+ * d'audit ne retient que les actions engageantes (envoi, corbeille,
+ * suppression, ingestion).
+ */
 export async function saveDraft(
   actor: Actor,
   input: { id?: string; to: string[]; cc: string[]; subject: string; body: string },
@@ -556,7 +780,15 @@ export async function saveDraft(
  */
 export async function sendMail(
   actor: Actor,
-  input: { id?: string; to: string[]; cc: string[]; subject: string; body: string },
+  input: {
+    id?: string;
+    to: string[];
+    cc: string[];
+    subject: string;
+    body: string;
+    /** Jetons d'upload (uploadMailAttachment) à rattacher au message envoyé. */
+    attachments?: AttachmentToken[];
+  },
 ): Promise<{ id: string; sendError: string | null }> {
   const mailbox = await ensureMailbox(actor);
   const to = assertEmails(input.to, "Destinataire");
@@ -571,6 +803,7 @@ export async function sendMail(
     MAX_BODY_LENGTH,
     "Le corps du message ne peut pas dépasser 100 000 caractères.",
   );
+  const attachments = assertAttachmentTokens(actor, input.attachments ?? []);
 
   // Le brouillon est résolu AVANT toute écriture : un identifiant invalide ne
   // doit jamais produire de ligne dans « Envoyés ».
@@ -601,6 +834,19 @@ export async function sendMail(
       })
       .returning({ id: mailMessages.id });
     if (!sent) throw new MailError("validation", "Envoi impossible.");
+    // Les pièces jointes sont rattachées dans la même transaction que le
+    // message : pas de message envoyé sans ses pièces, pas de pièces orphelines.
+    if (attachments.length > 0) {
+      await tx.insert(mailAttachments).values(
+        attachments.map((attachment) => ({
+          messageId: sent.id,
+          storageKey: attachment.storageKey,
+          filename: attachment.filename,
+          contentType: attachment.contentType,
+          sizeBytes: attachment.sizeBytes,
+        })),
+      );
+    }
     if (draftId) {
       await tx.delete(mailMessages).where(eq(mailMessages.id, draftId));
     }
@@ -637,6 +883,16 @@ export async function sendMail(
   if (sendError) {
     await db().update(mailMessages).set({ sendError }).where(eq(mailMessages.id, sentId));
   }
+
+  await recordAudit({
+    orgId: actor.orgId,
+    actorUserId: actor.userId,
+    action: "mail.message.send",
+    resourceType: "mail_message",
+    resourceId: sentId,
+    result: "success",
+    metadata: { to: to.length },
+  });
   return { id: sentId, sendError };
 }
 
@@ -651,6 +907,14 @@ export async function trashMessage(actor: Actor, messageId: string): Promise<voi
     .update(mailMessages)
     .set({ folder: "trash", trashedFrom: message.folder })
     .where(eq(mailMessages.id, messageId));
+  await recordAudit({
+    orgId: actor.orgId,
+    actorUserId: actor.userId,
+    action: "mail.message.trash",
+    resourceType: "mail_message",
+    resourceId: messageId,
+    result: "success",
+  });
 }
 
 export async function restoreMessage(actor: Actor, messageId: string): Promise<void> {
@@ -672,6 +936,14 @@ export async function deleteMessage(actor: Actor, messageId: string): Promise<vo
     throw new MailError("validation", "Le message doit d'abord être mis à la corbeille.");
   }
   await db().delete(mailMessages).where(eq(mailMessages.id, messageId));
+  await recordAudit({
+    orgId: actor.orgId,
+    actorUserId: actor.userId,
+    action: "mail.message.delete",
+    resourceType: "mail_message",
+    resourceId: messageId,
+    result: "success",
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -686,6 +958,12 @@ export type InboundPayload = {
   body?: string;
   /** Identifiant du message chez le relais — clé d'idempotence. */
   externalId?: string;
+  /**
+   * Pièces jointes encodées en base64 (≤ 5, ≤ 5 Mio décodés chacune) :
+   * stockées puis rattachées au message entrant. Les éléments sont validés à
+   * l'exécution (entrée webhook non fiable).
+   */
+  attachments?: unknown[];
 };
 
 /** Comparaison en temps constant : digests SHA-256 de longueur fixe. */
@@ -728,6 +1006,28 @@ export async function createInboundMessage(
   );
   const externalId = payload.externalId?.trim() ?? "";
 
+  // Validation complète des pièces jointes AVANT toute écriture : un contenu
+  // invalide ne doit jamais laisser de message ni de blob derrière lui.
+  const inboundAttachments = payload.attachments ?? [];
+  if (!Array.isArray(inboundAttachments)) {
+    throw new MailError("validation", "Pièces jointes invalides.");
+  }
+  if (inboundAttachments.length > MAX_ATTACHMENTS) {
+    throw new MailError("validation", `${MAX_ATTACHMENTS} pièces jointes au maximum.`);
+  }
+  const preparedAttachments = inboundAttachments.map((raw) => {
+    const attachment = (raw ?? {}) as {
+      filename?: unknown;
+      contentType?: unknown;
+      contentBase64?: unknown;
+    };
+    return {
+      filename: assertAttachmentFilename(attachment.filename),
+      contentType: assertContentType(attachment.contentType),
+      body: decodeAttachmentBase64(attachment.contentBase64),
+    };
+  });
+
   const [created] = await db()
     .insert(mailMessages)
     .values({
@@ -744,16 +1044,59 @@ export async function createInboundMessage(
     })
     .onConflictDoNothing()
     .returning({ id: mailMessages.id });
-  if (created) return { id: created.id };
 
-  // Insertion ignorée : un message portant le même externalId existe déjà.
-  if (externalId.length > 0) {
+  let messageId: string | null = created?.id ?? null;
+
+  if (!messageId && externalId.length > 0) {
+    // Insertion ignorée : un message portant le même externalId existe déjà.
     const [existing] = await db()
       .select({ id: mailMessages.id })
       .from(mailMessages)
       .where(eq(mailMessages.externalId, externalId))
       .limit(1);
-    if (existing) return { id: existing.id };
+    messageId = existing?.id ?? null;
   }
-  throw new MailError("validation", "Ingestion impossible.");
+  if (!messageId) throw new MailError("validation", "Ingestion impossible.");
+
+  if (created && preparedAttachments.length > 0) {
+    // Nettoyage des blobs déjà écrits si la liaison échoue (pas d'orphelins).
+    const storedKeys: string[] = [];
+    try {
+      for (const attachment of preparedAttachments) {
+        const storageKey = `mail/${mailbox.orgId}/${randomUUID()}`;
+        await getStorage().put({
+          key: storageKey,
+          body: attachment.body,
+          contentType: attachment.contentType,
+        });
+        storedKeys.push(storageKey);
+        await db().insert(mailAttachments).values({
+          messageId,
+          storageKey,
+          filename: attachment.filename,
+          contentType: attachment.contentType,
+          sizeBytes: attachment.body.length,
+        });
+      }
+    } catch (error) {
+      await Promise.all(
+        storedKeys.map((key) =>
+          getStorage()
+            .delete(key)
+            .catch(() => undefined),
+        ),
+      );
+      throw error;
+    }
+  }
+
+  await recordAudit({
+    orgId: mailbox.orgId,
+    actorUserId: null,
+    action: "mail.message.inbound",
+    resourceType: "mail_message",
+    resourceId: messageId,
+    result: "success",
+  });
+  return { id: messageId };
 }

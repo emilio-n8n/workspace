@@ -53,6 +53,10 @@ export const driveFiles = pgTable(
     uniqueIndex("drive_files_name_uidx")
       .on(table.orgId, sql`coalesce((${table.parentId})::text, 'root')`, table.name)
       .where(sql`${table.status} = 'active'`),
+    // Recherche plein texte française (`websearch_to_tsquery('french', …)`) :
+    // index d'expression GIN. Créé par la migration manuelle 0002_fts.sql —
+    // le snapshot `meta/` l'ignore, ne pas régénérer via `db:generate`.
+    index("drive_files_name_fts_idx").using("gin", sql`to_tsvector('french', name)`),
     // NB : l'index trigram de recherche (`drive_files_name_trgm_idx`, gin_trgm_ops)
     // ne peut pas être exprimé ici ; il est créé par la migration 0001 (manuel).
   ],

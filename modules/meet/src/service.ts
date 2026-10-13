@@ -1,4 +1,5 @@
 import { createHmac, randomBytes } from "node:crypto";
+import { recordAudit } from "@workspace/audit";
 import { getServerEnv } from "@workspace/config";
 import { schema as core, getDb } from "@workspace/database";
 import type { Actor } from "@workspace/permissions";
@@ -87,6 +88,16 @@ export async function createRoom(actor: Actor, name: string): Promise<RoomView> 
     .values({ orgId: actor.orgId, slug, name: clean, createdBy: actor.userId })
     .returning();
   if (!created) throw new MeetError("validation", "Création de la salle impossible.");
+
+  await recordAudit({
+    orgId: actor.orgId,
+    actorUserId: actor.userId,
+    action: "meet.room.create",
+    resourceType: "room",
+    resourceId: created.slug,
+    result: "success",
+  });
+
   return {
     slug: created.slug,
     name: created.name,
@@ -137,6 +148,15 @@ export async function deleteRoom(actor: Actor, slug: string): Promise<void> {
     throw new MeetError("forbidden", "Seul le créateur peut supprimer cette salle.");
   }
   await db().delete(meetRooms).where(eq(meetRooms.id, row.id));
+
+  await recordAudit({
+    orgId: actor.orgId,
+    actorUserId: actor.userId,
+    action: "meet.room.delete",
+    resourceType: "room",
+    resourceId: row.slug,
+    result: "success",
+  });
 }
 
 /** Jeton de connexion : `configured: false` si aucun serveur média (ADR-0011). */

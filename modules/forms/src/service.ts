@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { recordAudit } from "@workspace/audit";
 import { getDb, withTransaction } from "@workspace/database";
 import {
   createLinkedFile,
@@ -228,6 +229,14 @@ export async function createForm(
         })
         .returning();
       if (!form) throw new FormsError("conflict", "Création du formulaire impossible.");
+      await recordAudit({
+        orgId: actor.orgId,
+        actorUserId: actor.userId,
+        action: "forms.form.create",
+        resourceType: "form",
+        resourceId: form.fileId,
+        result: "success",
+      });
       return { entry, form };
     } catch (error) {
       if (!isSlugConflict(error)) throw error;
@@ -326,6 +335,16 @@ export async function saveForm(
     await driveRename(actor, fileId, title).catch(() => undefined);
   }
   await touchEntry(actor, fileId).catch(() => undefined);
+
+  await recordAudit({
+    orgId: actor.orgId,
+    actorUserId: actor.userId,
+    action: "forms.form.save",
+    resourceType: "form",
+    resourceId: form.fileId,
+    result: "success",
+    metadata: { status: status ?? form.status },
+  });
 
   return getFormByFileId(actor, fileId);
 }
@@ -449,6 +468,11 @@ function validateAnswers(
   return result;
 }
 
+/**
+ * Soumission d'une réponse par le public. Volontairement NON journalisée dans
+ * l'audit : point d'entrée anonyme à fort volume (jusqu'à 10 000 réponses par
+ * formulaire), l'audit est réservé aux mutations notables des éditeurs.
+ */
 export async function submitResponse(
   slug: string,
   answers: Record<string, string | string[]>,

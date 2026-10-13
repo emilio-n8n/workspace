@@ -1,3 +1,4 @@
+import { recordAudit } from "@workspace/audit";
 import { schema as core, getDb, withTransaction } from "@workspace/database";
 import type { Actor } from "@workspace/permissions";
 import { and, asc, eq, gt, inArray, isNull, lt, ne, or, sql } from "drizzle-orm";
@@ -424,6 +425,14 @@ export async function createCalendar(
     throw error;
   }
   if (!created) throw new CalendarError("validation", "Création de l'agenda impossible.");
+  await recordAudit({
+    orgId: actor.orgId,
+    actorUserId: actor.userId,
+    action: "calendar.calendar.create",
+    resourceType: "calendar",
+    resourceId: created.id,
+    result: "success",
+  });
   return {
     id: created.id,
     name: created.name,
@@ -731,6 +740,15 @@ export async function createEvent(actor: Actor, input: EventInput): Promise<Even
     return created.id;
   });
 
+  await recordAudit({
+    orgId: actor.orgId,
+    actorUserId: actor.userId,
+    action: "calendar.event.create",
+    resourceType: "calendar_event",
+    resourceId: eventId,
+    result: "success",
+  });
+
   return getEvent(actor, eventId);
 }
 
@@ -787,6 +805,15 @@ export async function updateEvent(
     .returning({ id: calendarEvents.id });
   if (!updated) throw new CalendarError("not_found", "Événement introuvable.");
 
+  await recordAudit({
+    orgId: actor.orgId,
+    actorUserId: actor.userId,
+    action: "calendar.event.update",
+    resourceType: "calendar_event",
+    resourceId: eventId,
+    result: "success",
+  });
+
   return getEvent(actor, eventId);
 }
 
@@ -800,6 +827,15 @@ export async function deleteEvent(actor: Actor, eventId: string): Promise<void> 
     throw new CalendarError("forbidden", "Permission insuffisante pour supprimer cet événement.");
   }
   await db().delete(calendarEvents).where(eq(calendarEvents.id, eventId));
+
+  await recordAudit({
+    orgId: actor.orgId,
+    actorUserId: actor.userId,
+    action: "calendar.event.delete",
+    resourceType: "calendar_event",
+    resourceId: eventId,
+    result: "success",
+  });
 }
 
 /** Réponse d'un invité (accepter / refuser). */

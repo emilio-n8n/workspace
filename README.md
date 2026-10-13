@@ -46,6 +46,7 @@ pnpm install
 cp .env.example .env        # renseigner DATABASE_URL / SESSION_SECRET
 pnpm db:migrate             # schéma cœur + les 13 modules, dans un ordre déterministe
 pnpm dev                    # démarre les 14 applications (3000-3013)
+pnpm dev:collab             # (optionnel) collaboration Docs temps réel — serveur Yjs, port 3100
 ```
 
 Vérifications :

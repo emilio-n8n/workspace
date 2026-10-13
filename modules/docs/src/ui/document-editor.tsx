@@ -1,7 +1,10 @@
+import { Collaboration } from "@tiptap/extension-collaboration";
+import { CollaborationCaret } from "@tiptap/extension-collaboration-caret";
 import { EditorContent, type JSONContent, useEditor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import { Alert, Button, cn } from "@workspace/ui";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { type CollabSession, createCollabSession } from "../collab-client.ts";
 import { saveDocumentFn } from "../server.ts";
 
 type Props = {
@@ -12,12 +15,22 @@ type Props = {
   initialRevision?: string;
   /** Recharge le document côté hôte ; à défaut, la page est rechargée. */
   onReload?: () => void;
+  /**
+   * Collaboration temps réel (serveur Yjs) : absent ou `null`, l'éditeur est
+   * strictement local — comportement historique inchangé.
+   */
+  collab?: { url: string; room: string; token: string; userName: string } | null;
 };
 
 type SaveStatus = "idle" | "saving" | "saved" | "error" | "conflict";
 type SaveMode = "replace-latest" | "append";
 
 const AUTOSAVE_DELAY_MS = 1200;
+
+/** Fragment Yjs synchronisé (voir `Collaboration.configure({ field })`). */
+const COLLAB_FIELD = "content";
+/** Couleur du curseur distant (hexadécimal à 6 chiffres : seule forme acceptée). */
+const COLLAB_CURSOR_COLOR = "#2f5d54";
 
 /** Extrait le message d'une erreur, y compris sérialisée par le serveur. */
 function errorMessage(error: unknown): string {
@@ -38,15 +51,62 @@ const isConflictError = (error: unknown): boolean =>
 /**
  * Éditeur de documents (Tiptap 3 — ProseMirror).
  * - autosave continu (`replace-latest`) ;
- * - « Enregistrer une version » crée un instantané explicite (`append`).
+ * - « Enregistrer une version » crée un instantané explicite (`append`) ;
+ * - collaboration temps réel optionnelle (`collab`, serveur Yjs) — sans
+ *   serveur configuré, le chemin reste strictement local.
  */
-export function DocumentEditor({
+export function DocumentEditor(props: Props) {
+  const collab = props.collab ?? null;
+  if (!collab) return <EditorSurface {...props} />;
+  return <CollabGate {...props} collab={collab} />;
+}
+
+type CollabGateProps = Props & { collab: NonNullable<Props["collab"]> };
+
+/**
+ * Ouvre la session de collaboration (une fois par salle et par jeton) et la
+ * détruit au démontage, puis monte l'éditeur collaboratif. Si la session ne
+ * peut pas être ouverte, repli silencieux sur l'éditeur local.
+ */
+function CollabGate({ collab, ...props }: CollabGateProps) {
+  const [session, setSession] = useState<CollabSession | null>(null);
+  const [unavailable, setUnavailable] = useState(false);
+
+  useEffect(() => {
+    let created: CollabSession;
+    try {
+      created = createCollabSession({ url: collab.url, room: collab.room, token: collab.token });
+    } catch {
+      // Serveur injoignable au montage : repli local silencieux.
+      setUnavailable(true);
+      return;
+    }
+    setSession(created);
+    return () => created.destroy();
+  }, [collab.url, collab.room, collab.token]);
+
+  if (!session && !unavailable) {
+    return <p className="px-6 py-8 text-sm text-muted-foreground">Chargement de l'éditeur…</p>;
+  }
+
+  return <EditorSurface {...props} session={session} />;
+}
+
+type SurfaceProps = Props & {
+  /** Session de collaboration active ; `null` ou absent = éditeur local. */
+  session?: CollabSession | null;
+};
+
+/** Cœur de l'éditeur : autosave, conflits, et collaboration quand fournie. */
+function EditorSurface({
   fileId,
   initialContent,
   canEdit,
   initialRevision,
   onReload,
-}: Props) {
+  collab,
+  session = null,
+}: SurfaceProps) {
   const [status, setStatus] = useState<SaveStatus>("idle");
   const [dirty, setDirty] = useState(false);
   const [lastSavedAt, setLastSavedAt] = useState<string | null>(null);
@@ -59,6 +119,9 @@ export function DocumentEditor({
   const revisionRef = useRef<string | undefined>(initialRevision);
   /** Après un conflit, on n'écrase plus rien : rechargez la page. */
   const conflictRef = useRef(false);
+
+  /** Étiquette du curseur distant — purement cosmétique. */
+  const collabUserName = collab?.userName ?? "Vous";
 
   /**
    * Enregistre `content`. Si un enregistrement est déjà en vol, le contenu le
@@ -131,8 +194,21 @@ export function DocumentEditor({
   );
 
   const editor = useEditor({
-    extensions: [StarterKit],
-    content: initialContent as JSONContent,
+    extensions: session
+      ? [
+          // La collaboration gère son propre historique : celui de StarterKit
+          // est désactivé pour éviter deux gestionnaires concurrents.
+          StarterKit.configure({ undoRedo: false }),
+          Collaboration.configure({ document: session.doc, field: COLLAB_FIELD }),
+          CollaborationCaret.configure({
+            provider: session.provider,
+            user: { name: collabUserName, color: COLLAB_CURSOR_COLOR },
+          }),
+        ]
+      : [StarterKit],
+    // En collaboration, Yjs fait foi : ne jamais injecter `content` d'emblée
+    // (il serait fusionné à la salle), l'amorçage se fait après `sync`.
+    content: session ? undefined : (initialContent as JSONContent),
     editable: canEdit,
     immediatelyRender: false,
     editorProps: {
@@ -155,6 +231,24 @@ export function DocumentEditor({
       }, AUTOSAVE_DELAY_MS);
     },
   });
+
+  // Amorçage : le premier client d'une salle vide promeut le contenu durable en
+  // base partagée. Jamais en lecture seule (le serveur refuserait l'écriture).
+  useEffect(() => {
+    if (!session || !editor || !canEdit) return;
+    if (initialContent === null || initialContent === undefined) return;
+
+    const fragment = session.doc.getXmlFragment(COLLAB_FIELD);
+    const seedIfEmpty = () => {
+      if (fragment.length > 0) return;
+      editor.commands.setContent(initialContent as JSONContent);
+    };
+
+    // La synchronisation a pu aboutir avant même la pose de l'écouteur.
+    if (session.provider.synced) seedIfEmpty();
+    session.provider.on("sync", seedIfEmpty);
+    return () => session.provider.off("sync", seedIfEmpty);
+  }, [session, editor, canEdit, initialContent]);
 
   // Fermeture de l'onglet : avertissement tant que des modifications ne sont pas enregistrées.
   useEffect(() => {
@@ -317,6 +411,11 @@ export function DocumentEditor({
         </ToolbarButton>
 
         <div className="ml-auto flex items-center gap-2">
+          {session ? (
+            <span role="status" className="text-xs text-muted-foreground">
+              Collaboration active
+            </span>
+          ) : null}
           <span
             className={cn(
               "text-xs text-muted-foreground",

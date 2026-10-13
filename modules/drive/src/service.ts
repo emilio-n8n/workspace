@@ -1,4 +1,5 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { recordAudit } from "@workspace/audit";
 import { getAppUrls, getServerEnv } from "@workspace/config";
 import { schema as coreSchema, getDb, withTransaction } from "@workspace/database";
 import { createNotification } from "@workspace/notifications";
@@ -309,6 +310,9 @@ async function collectSubtree(orgId: string, rootId: string): Promise<string[]> 
 // Dossiers et fichiers
 // ---------------------------------------------------------------------------
 
+// Mutations notables uniquement : téléchargements et autosaves ne sont pas
+// journalisés (voir docs) — un événement par lecture noierait le journal.
+
 export async function createFolder(
   actor: Actor,
   input: { parentId?: string | null; name: string },
@@ -323,6 +327,16 @@ export async function createFolder(
       .values({ orgId: actor.orgId, ownerId: actor.userId, parentId, kind: "folder", name })
       .returning();
     if (!row) throw new DriveError("conflict", "Création impossible.");
+
+    await recordAudit({
+      orgId: actor.orgId,
+      actorUserId: actor.userId,
+      action: "drive.folder.create",
+      resourceType: "file",
+      resourceId: row.id,
+      result: "success",
+    });
+
     return row;
   } catch (error) {
     if (isUniqueViolation(error)) {
@@ -470,7 +484,67 @@ export async function listSharedWithMe(
     }));
 }
 
-/** Recherche littérale par nom parmi les fichiers accessibles (agents, UI). */
+/** Longueur minimale de requête pour basculer sur la recherche plein texte. */
+const FTS_MIN_QUERY_LENGTH = 3;
+/** Nombre maximal de candidats remontés par la recherche (FTS ou ILIKE). */
+const SEARCH_CANDIDATE_LIMIT = 100;
+
+/**
+ * Candidats plein texte (configuration `french`) : identifiants ordonnés par
+ * pertinence — nom exact, puis préfixe, puis `ts_rank`, à égalité par récence.
+ * L'index GIN `drive_files_name_fts_idx` (migration manuelle `0002_fts.sql`)
+ * sert ce filtre ; une panne de l'index n'empêche pas la requête.
+ */
+async function searchCandidatesFts(actor: Actor, query: string): Promise<DriveEntry[]> {
+  const { rows } = await db().execute<{ id: string }>(sql`
+    SELECT id
+    FROM drive_files
+    WHERE org_id = ${actor.orgId}
+      AND status = 'active'
+      AND to_tsvector('french', name) @@ websearch_to_tsquery('french', ${query})
+    ORDER BY
+      (lower(name) = lower(${query})) DESC,
+      (lower(name) LIKE lower(${escapeLike(query)}) || '%') DESC,
+      ts_rank(to_tsvector('french', name), websearch_to_tsquery('french', ${query})) DESC,
+      updated_at DESC
+    LIMIT ${SEARCH_CANDIDATE_LIMIT}
+  `);
+  if (rows.length === 0) return [];
+
+  // Recharge les lignes en un lot puis restitue l'ordre du classement FTS.
+  const ids = rows.map((row) => row.id);
+  const entries = await db().select().from(driveFiles).where(inArray(driveFiles.id, ids));
+  const byId = new Map(entries.map((entry) => [entry.id, entry]));
+  return ids.flatMap((id) => {
+    const entry = byId.get(id);
+    return entry ? [entry] : [];
+  });
+}
+
+/** Candidats par sous-chaîne (`ILIKE`) — chemin historique, requêtes < 3 caractères. */
+async function searchCandidatesIlike(actor: Actor, query: string): Promise<DriveEntry[]> {
+  return db()
+    .select()
+    .from(driveFiles)
+    .where(
+      and(
+        eq(driveFiles.orgId, actor.orgId),
+        eq(driveFiles.status, "active"),
+        ilike(driveFiles.name, `%${escapeLike(query)}%`),
+      ),
+    )
+    .orderBy(desc(driveFiles.updatedAt))
+    .limit(SEARCH_CANDIDATE_LIMIT);
+}
+
+/**
+ * Recherche d'éléments accessibles — fichiers ET dossiers (agents, UI) :
+ * plein texte français classé
+ * dès 3 caractères, repli sur la sous-chaîne `ILIKE` quand le plein texte ne
+ * remonte rien (requêtes courtes, mots vides, fautes de tokenisation).
+ * La visibilité (propriétaire, grants hérités) est appliquée après coup au lot
+ * de candidats, comme pour les listes.
+ */
 export async function searchEntries(
   actor: Actor,
   input: { query: string; limit?: number },
@@ -480,26 +554,20 @@ export async function searchEntries(
 
   const limit = Math.min(Math.max(input.limit ?? 25, 1), 100);
 
-  const rows = await db()
-    .select()
-    .from(driveFiles)
-    .where(
-      and(
-        eq(driveFiles.orgId, actor.orgId),
-        eq(driveFiles.status, "active"),
-        eq(driveFiles.kind, "file"),
-        ilike(driveFiles.name, `%${escapeLike(query)}%`),
-      ),
-    )
-    .orderBy(desc(driveFiles.updatedAt))
-    .limit(100);
+  let candidates: DriveEntry[] = [];
+  if (query.length >= FTS_MIN_QUERY_LENGTH) {
+    candidates = await searchCandidatesFts(actor, query);
+  }
+  if (candidates.length === 0) {
+    candidates = await searchCandidatesIlike(actor, query);
+  }
 
   const roles = await resolveRolesForEntries(
     actor,
-    rows.map((row) => ({ id: row.id, ownerId: row.ownerId })),
+    candidates.map((row) => ({ id: row.id, ownerId: row.ownerId })),
   );
 
-  return rows.filter((row) => roleSatisfies(roles.get(row.id), "read")).slice(0, limit);
+  return candidates.filter((row) => roleSatisfies(roles.get(row.id), "read")).slice(0, limit);
 }
 
 /**
@@ -603,12 +671,23 @@ export async function uploadFile(
   await assertWritableParent(actor, parentId);
   await assertStorageQuota(actor, input.body.length);
 
-  return createFileEntry(actor, {
+  const created = await createFileEntry(actor, {
     parentId,
     name,
     contentType: input.contentType,
     body: input.body,
   });
+
+  await recordAudit({
+    orgId: actor.orgId,
+    actorUserId: actor.userId,
+    action: "drive.file.upload",
+    resourceType: "file",
+    resourceId: created.entry.id,
+    result: "success",
+  });
+
+  return created;
 }
 
 /**
@@ -640,6 +719,16 @@ export async function createTextFile(
   await assertStorageQuota(actor, body.length);
 
   const { entry } = await createFileEntry(actor, { parentId, name, contentType: mimeType, body });
+
+  await recordAudit({
+    orgId: actor.orgId,
+    actorUserId: actor.userId,
+    action: "drive.file.create",
+    resourceType: "file",
+    resourceId: entry.id,
+    result: "success",
+  });
+
   return entry;
 }
 
@@ -773,6 +862,16 @@ export async function rename(actor: Actor, entryId: string, name: string): Promi
       .where(eq(driveFiles.id, entryId))
       .returning();
     if (!row) throw new DriveError("not_found", "Élément introuvable.");
+
+    await recordAudit({
+      orgId: actor.orgId,
+      actorUserId: actor.userId,
+      action: "drive.entry.rename",
+      resourceType: "file",
+      resourceId: row.id,
+      result: "success",
+    });
+
     return row;
   } catch (error) {
     if (isUniqueViolation(error)) {
@@ -789,6 +888,15 @@ export async function trash(actor: Actor, entryId: string): Promise<void> {
     .update(driveFiles)
     .set({ status: "trashed", trashedAt: new Date() })
     .where(and(eq(driveFiles.orgId, actor.orgId), inArray(driveFiles.id, ids)));
+
+  await recordAudit({
+    orgId: actor.orgId,
+    actorUserId: actor.userId,
+    action: "drive.entry.trash",
+    resourceType: "file",
+    resourceId: entryId,
+    result: "success",
+  });
 }
 
 export async function restore(actor: Actor, entryId: string): Promise<void> {
@@ -798,6 +906,15 @@ export async function restore(actor: Actor, entryId: string): Promise<void> {
     .update(driveFiles)
     .set({ status: "active", trashedAt: null })
     .where(and(eq(driveFiles.orgId, actor.orgId), inArray(driveFiles.id, ids)));
+
+  await recordAudit({
+    orgId: actor.orgId,
+    actorUserId: actor.userId,
+    action: "drive.entry.restore",
+    resourceType: "file",
+    resourceId: entryId,
+    result: "success",
+  });
 }
 
 /** Résumé d'une purge : lignes supprimées, blobs nettoyés et erreurs de nettoyage (best effort). */
@@ -877,6 +994,15 @@ export async function purge(actor: Actor, entryId: string): Promise<PurgeSummary
       blobErrors.push({ key, message: error instanceof Error ? error.message : String(error) });
     }
   }
+
+  await recordAudit({
+    orgId: actor.orgId,
+    actorUserId: actor.userId,
+    action: "drive.entry.purge",
+    resourceType: "file",
+    resourceId: entryId,
+    result: "success",
+  });
 
   return { deletedEntries: entryIds.length, deletedBlobs, blobErrors };
 }
@@ -1080,6 +1206,16 @@ export async function shareEntry(
     }).catch(() => undefined);
   }
 
+  await recordAudit({
+    orgId: actor.orgId,
+    actorUserId: actor.userId,
+    action: "drive.entry.share",
+    resourceType: "file",
+    resourceId: entryId,
+    result: "success",
+    metadata: { role: input.role },
+  });
+
   return grant;
 }
 
@@ -1089,7 +1225,18 @@ export async function unshareEntry(
   grantId: string,
 ): Promise<boolean> {
   await assertDrive(actor, "share", entryId);
-  return revokeGrant({ type: "file", id: entryId, orgId: actor.orgId }, grantId);
+  const removed = await revokeGrant({ type: "file", id: entryId, orgId: actor.orgId }, grantId);
+
+  await recordAudit({
+    orgId: actor.orgId,
+    actorUserId: actor.userId,
+    action: "drive.entry.unshare",
+    resourceType: "file",
+    resourceId: entryId,
+    result: "success",
+  });
+
+  return removed;
 }
 
 export async function listEntryGrants(actor: Actor, entryId: string): Promise<ResourceGrantRow[]> {
@@ -1148,6 +1295,16 @@ export async function createShareLink(
     .returning({ id: driveShareLinks.id });
 
   if (!row) throw new DriveError("conflict", "Création du lien impossible.");
+
+  await recordAudit({
+    orgId: actor.orgId,
+    actorUserId: actor.userId,
+    action: "drive.link.create",
+    resourceType: "file",
+    resourceId: entry.id,
+    result: "success",
+  });
+
   return { id: row.id, token };
 }
 
@@ -1166,6 +1323,16 @@ export async function revokeShareLink(actor: Actor, linkId: string): Promise<boo
     .set({ revokedAt: new Date() })
     .where(and(eq(driveShareLinks.id, linkId), isNull(driveShareLinks.revokedAt)))
     .returning({ id: driveShareLinks.id });
+
+  await recordAudit({
+    orgId: actor.orgId,
+    actorUserId: actor.userId,
+    action: "drive.link.revoke",
+    resourceType: "file",
+    resourceId: link.fileId,
+    result: "success",
+  });
+
   return rows.length > 0;
 }
 

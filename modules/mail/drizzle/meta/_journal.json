@@ -36,6 +36,13 @@
       "when": 1791834975987,
       "tag": "0004_friendly_komodo",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1791899272010,
+      "tag": "0005_dear_madame_hydra",
+      "breakpoints": true
     }
   ]
 }

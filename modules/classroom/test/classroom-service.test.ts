@@ -18,7 +18,7 @@ import {
   submitAssignment,
 } from "../src/index.ts";
 
-const { user, organization } = coreSchema;
+const { user, organization, auditEvents } = coreSchema;
 
 let counter = 0;
 const tag = (prefix: string) => `${prefix}${++counter}_${randomUUID().slice(0, 8)}`;
@@ -298,5 +298,107 @@ describe("classroom — devoirs et copies", () => {
     await deleteAssignment(f.actorAlice, assignment.id);
     const detail = await getCourse(f.actorAlice, course.id);
     expect(detail.assignments).toHaveLength(0);
+
+    // La suppression est journalisée (création + suppression).
+    const rows = await getDb().select().from(auditEvents).where(eq(auditEvents.orgId, f.orgId));
+    const deletions = rows.filter((row) => row.action === "classroom.assignment.delete");
+    expect(deletions).toHaveLength(1);
+    expect(deletions[0]).toMatchObject({
+      orgId: f.orgId,
+      actorUserId: f.actorAlice.userId,
+      resourceType: "assignment",
+      resourceId: assignment.id,
+      result: "success",
+    });
+  });
+});
+
+describe("classroom — audit", () => {
+  it("journalise la création du cours et l'adhésion par code", async () => {
+    const course = await createCourse(f.actorAlice, { name: "Audit" });
+    const detail = await getCourse(f.actorAlice, course.id);
+    const code = detail.joinCode;
+    if (!code) throw new Error("code manquant");
+    await joinByCode(f.actorBruno, code);
+    // Adhésion idempotente : la seconde tentative n'est pas une mutation.
+    await joinByCode(f.actorBruno, code);
+
+    const rows = await getDb().select().from(auditEvents).where(eq(auditEvents.orgId, f.orgId));
+    expect(rows).toHaveLength(2);
+
+    const created = rows.find((row) => row.action === "classroom.course.create");
+    expect(created).toMatchObject({
+      orgId: f.orgId,
+      actorUserId: f.actorAlice.userId,
+      resourceType: "course",
+      resourceId: course.id,
+      result: "success",
+    });
+
+    const joined = rows.find((row) => row.action === "classroom.course.join");
+    expect(joined).toMatchObject({
+      orgId: f.orgId,
+      actorUserId: f.actorBruno.userId,
+      resourceType: "course",
+      resourceId: course.id,
+      result: "success",
+    });
+  });
+
+  it("journalise la remise et la notation d'une copie (métadonnée : note)", async () => {
+    const course = await createCourse(f.actorAlice, { name: "Journal" });
+    const detail = await getCourse(f.actorAlice, course.id);
+    const code = detail.joinCode;
+    if (!code) throw new Error("code manquant");
+    await joinByCode(f.actorBruno, code);
+    const assignment = await createAssignment(f.actorAlice, course.id, { title: "Exercice" });
+    await submitAssignment(f.actorBruno, assignment.id, "Ma copie");
+    const [submission] = await listSubmissions(f.actorAlice, assignment.id);
+    if (!submission) throw new Error("copie manquante");
+    await gradeSubmission(f.actorAlice, submission.id, { grade: 17, feedback: "Bien" });
+
+    const rows = await getDb().select().from(auditEvents).where(eq(auditEvents.orgId, f.orgId));
+
+    const submitted = rows.find((row) => row.action === "classroom.submission.submit");
+    expect(submitted).toMatchObject({
+      orgId: f.orgId,
+      actorUserId: f.actorBruno.userId,
+      resourceType: "assignment",
+      resourceId: assignment.id,
+      result: "success",
+    });
+
+    const graded = rows.find((row) => row.action === "classroom.submission.grade");
+    expect(graded).toMatchObject({
+      orgId: f.orgId,
+      actorUserId: f.actorAlice.userId,
+      resourceType: "submission",
+      resourceId: submission.id,
+      result: "success",
+      metadata: { grade: 17 },
+    });
+  });
+
+  it("n'audite pas les lectures (listSubmissions, listCourses)", async () => {
+    const course = await createCourse(f.actorAlice, { name: "Lecture seule" });
+    const detail = await getCourse(f.actorAlice, course.id);
+    const code = detail.joinCode;
+    if (!code) throw new Error("code manquant");
+    await joinByCode(f.actorBruno, code);
+    const assignment = await createAssignment(f.actorAlice, course.id, { title: "Devoir" });
+    await submitAssignment(f.actorBruno, assignment.id, "Copie");
+
+    const countRows = async () =>
+      (await getDb().select().from(auditEvents).where(eq(auditEvents.orgId, f.orgId))).length;
+    const before = await countRows();
+    // Les quatre mutations préparatoires (cours, adhésion, devoir, copie) sont
+    // les seules lignes attendues.
+    expect(before).toBe(4);
+
+    await listSubmissions(f.actorAlice, assignment.id);
+    await listCourses(f.actorBruno);
+    await getCourse(f.actorBruno, course.id);
+
+    expect(await countRows()).toBe(before);
   });
 });

@@ -1,5 +1,6 @@
 import { Alert, Button, ConfirmDialog, cn, Dialog, Input, Label } from "@workspace/ui";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   type ElementView,
   getPresentationFn,
@@ -85,6 +86,7 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
   const [loading, setLoading] = useState(true);
   const [presenting, setPresenting] = useState(false);
   const [presentIndex, setPresentIndex] = useState(0);
+  const [printToken, setPrintToken] = useState(0);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [imageOpen, setImageOpen] = useState(false);
   const [imageBusy, setImageBusy] = useState(false);
@@ -399,6 +401,18 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [presenting, slides.length]);
 
+  // Impression : le clic monte la racine #slides-print-root (portal vers
+  // <body> pour échapper aux conteneurs défilants de l'application), puis
+  // window.print() ouvre le dialogue. afterprint démonte la racine ; les
+  // navigateurs qui ne l'émettent pas sont couverts par le clic suivant.
+  useEffect(() => {
+    if (printToken === 0) return;
+    const clear = () => setPrintToken(0);
+    window.addEventListener("afterprint", clear, { once: true });
+    window.print();
+    return () => window.removeEventListener("afterprint", clear);
+  }, [printToken]);
+
   const current = slides[selectedSlide] ?? null;
   const selectedElement =
     current?.elements.find((element) => element.key === selectedElementKey) ?? null;
@@ -501,7 +515,7 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
 
   return (
     <div className="flex flex-col gap-3">
-      <header className="flex flex-wrap items-center gap-2">
+      <header className="flex flex-wrap items-center gap-2 print-hide">
         <a href="/" className="text-sm text-muted-foreground hover:text-foreground">
           ← Présentations
         </a>
@@ -535,6 +549,14 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
             size="sm"
             variant="outline"
             disabled={slides.length === 0}
+            onClick={() => setPrintToken((token) => token + 1)}
+          >
+            Imprimer
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={slides.length === 0}
             onClick={() => {
               setPresentIndex(selectedSlide);
               setPresenting(true);
@@ -551,7 +573,7 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
         <p className="text-sm text-muted-foreground">Chargement…</p>
       ) : current ? (
         <div className="flex flex-col gap-3 lg:flex-row">
-          <ol className="flex shrink-0 flex-row gap-2 overflow-x-auto lg:w-44 lg:flex-col lg:overflow-y-auto">
+          <ol className="flex shrink-0 flex-row gap-2 overflow-x-auto lg:w-44 lg:flex-col lg:overflow-y-auto print-hide">
             {slides.map((slide, index) => (
               <li key={slide.key}>
                 <button
@@ -579,7 +601,7 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
           </ol>
 
           <div className="flex min-w-0 flex-1 flex-col gap-2">
-            <div className="flex flex-wrap items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2 print-hide">
               {canEdit ? (
                 <>
                   <Button size="sm" variant="outline" onClick={() => addElement("text")}>
@@ -639,7 +661,7 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
             {renderSlide(current, canEdit)}
           </div>
 
-          <aside className="flex w-full shrink-0 flex-col gap-3 rounded-xl border border-border bg-card p-3 lg:w-60">
+          <aside className="flex w-full shrink-0 flex-col gap-3 rounded-xl border border-border bg-card p-3 lg:w-60 print-hide">
             <div className="flex flex-col gap-1">
               <Label htmlFor="slide-title">Titre de la diapositive</Label>
               <Input
@@ -826,6 +848,21 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
           </div>
         </div>
       ) : null}
+
+      {/* Racine d'impression : toutes les diapositives, une page chacune.
+          Portal vers <body> pour échapper aux conteneurs défilants. */}
+      {printToken > 0
+        ? createPortal(
+            <div id="slides-print-root">
+              {slides.map((slide) => (
+                <div key={slide.key} className="print-slide">
+                  {renderSlide(slide, false)}
+                </div>
+              ))}
+            </div>,
+            document.body,
+          )
+        : null}
     </div>
   );
 }

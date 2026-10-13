@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { closeDb, schema as coreSchema, getDb } from "@workspace/database";
 import { type Actor, createGrant, revokeGrant } from "@workspace/permissions";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   createList,
@@ -20,7 +20,7 @@ import {
   updateTask,
 } from "../src/index.ts";
 
-const { user, organization } = coreSchema;
+const { user, organization, auditEvents } = coreSchema;
 
 let counter = 0;
 const tag = (prefix: string) => `${prefix}${++counter}_${randomUUID().slice(0, 8)}`;
@@ -78,9 +78,20 @@ async function createFixtures(): Promise<Fixtures> {
 
 async function cleanup(f: Fixtures): Promise<void> {
   const db = getDb();
+  await db.delete(auditEvents).where(eq(auditEvents.orgId, f.orgId));
+  await db.delete(auditEvents).where(eq(auditEvents.orgId, f.otherOrgId));
   await db.delete(organization).where(eq(organization.id, f.orgId));
   await db.delete(organization).where(eq(organization.id, f.otherOrgId));
   for (const id of [f.alice, f.bruno, f.chloe]) await db.delete(user).where(eq(user.id, id));
+}
+
+/** Nombre de lignes d'audit rattachées à une organisation. */
+async function countAuditRows(orgId: string): Promise<number> {
+  const [row] = await getDb()
+    .select({ value: sql<number>`count(*)`.mapWith(Number) })
+    .from(auditEvents)
+    .where(eq(auditEvents.orgId, orgId));
+  return row?.value ?? 0;
 }
 
 let f: Fixtures;
@@ -471,5 +482,58 @@ describe("tasks — « Mes tâches » transverses", () => {
 
     // Bruno ne voit aucune des listes d'Alice : agrégat vide, jamais d'erreur.
     expect(await listMyTasks(f.actorBruno)).toEqual([]);
+  });
+});
+
+describe("tasks — audit", () => {
+  it("journalise listes, tâches et partage", async () => {
+    const list = await createList(f.actorAlice, { name: "Audit" });
+    const task = await createTask(f.actorAlice, { listId: list.id, title: "Audit tâche" });
+    const grant = await shareList(f.actorAlice, list.id, {
+      subject: { kind: "user", id: f.bruno },
+      role: "viewer",
+    });
+    if (!grant) throw new Error("Partage non créé.");
+    await unshareList(f.actorAlice, list.id, grant.id);
+    await deleteTask(f.actorAlice, task.id);
+    await deleteList(f.actorAlice, list.id);
+
+    const rows = await getDb().select().from(auditEvents).where(eq(auditEvents.orgId, f.orgId));
+    const byAction = new Map(rows.map((row) => [row.action, row]));
+
+    for (const action of ["tasks.list.create", "tasks.list.delete"]) {
+      expect(byAction.get(action)).toMatchObject({
+        actorUserId: f.actorAlice.userId,
+        resourceType: "task_list",
+        resourceId: list.id,
+        result: "success",
+      });
+    }
+    for (const action of ["tasks.list.share", "tasks.list.unshare"]) {
+      expect(byAction.get(action)).toMatchObject({
+        actorUserId: f.actorAlice.userId,
+        resourceType: "task_list",
+        resourceId: list.id,
+        result: "success",
+      });
+    }
+    for (const action of ["tasks.task.create", "tasks.task.delete"]) {
+      expect(byAction.get(action)).toMatchObject({
+        actorUserId: f.actorAlice.userId,
+        resourceType: "task",
+        resourceId: task.id,
+        result: "success",
+      });
+    }
+  });
+
+  it("ne journalise pas les modifications de tâche (cases à cocher)", async () => {
+    const list = await createList(f.actorAlice, { name: "Sans audit" });
+    const task = await createTask(f.actorAlice, { listId: list.id, title: "Bascule" });
+
+    const before = await countAuditRows(f.orgId);
+    await updateTask(f.actorAlice, task.id, { status: "done" });
+    await updateTask(f.actorAlice, task.id, { status: "todo", title: "Rebasculée" });
+    expect(await countAuditRows(f.orgId)).toBe(before);
   });
 });

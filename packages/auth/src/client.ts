@@ -1,6 +1,6 @@
 import { organizationClient } from "better-auth/client/plugins";
 import { createAuthClient } from "better-auth/react";
-import { isWorkspaceScope, WORKSPACE_SCOPES, type WorkspaceScope } from "./scopes";
+import { isWorkspaceScope, WORKSPACE_SCOPES, type WorkspaceScope } from "./scopes.ts";
 
 /**
  * Client better-auth du navigateur uniquement (jamais importé côté serveur).

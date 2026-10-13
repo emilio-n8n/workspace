@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { closeDb, schema as coreSchema, getDb } from "@workspace/database";
 import type { Actor } from "@workspace/permissions";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   CalendarError,
@@ -16,7 +16,7 @@ import {
   updateEvent,
 } from "../src/index.ts";
 
-const { user, organization, member } = coreSchema;
+const { user, organization, member, auditEvents } = coreSchema;
 
 let counter = 0;
 const tag = (prefix: string) => `${prefix}${++counter}_${randomUUID().slice(0, 8)}`;
@@ -92,11 +92,22 @@ async function createFixtures(): Promise<Fixtures> {
 
 async function cleanup(f: Fixtures): Promise<void> {
   const db = getDb();
+  await db.delete(auditEvents).where(eq(auditEvents.orgId, f.orgId));
+  await db.delete(auditEvents).where(eq(auditEvents.orgId, f.otherOrgId));
   await db.delete(organization).where(eq(organization.id, f.orgId));
   await db.delete(organization).where(eq(organization.id, f.otherOrgId));
   for (const id of [f.alice, f.bruno, f.actorChloe.userId]) {
     await db.delete(user).where(eq(user.id, id));
   }
+}
+
+/** Nombre de lignes d'audit rattachées à une organisation. */
+async function countAuditRows(orgId: string): Promise<number> {
+  const [row] = await getDb()
+    .select({ value: sql<number>`count(*)`.mapWith(Number) })
+    .from(auditEvents)
+    .where(eq(auditEvents.orgId, orgId));
+  return row?.value ?? 0;
 }
 
 let f: Fixtures;
@@ -532,5 +543,50 @@ describe("calendar — récurrences", () => {
     expect(collapsed.recurrenceUntil).toBeNull();
     const after = await listEvents(f.actorAlice, { from: FROM, to: TO });
     expect(after.filter((event) => event.id === recurring.id)).toHaveLength(1);
+  });
+});
+
+describe("calendar — audit", () => {
+  it("journalise l'agenda et le cycle de vie de l'événement", async () => {
+    const calendar = await createCalendar(f.actorAlice, { name: "Audit" });
+    const event = await createEvent(f.actorAlice, {
+      ...eventInput("Audit"),
+      calendarId: calendar.id,
+    });
+    await updateEvent(f.actorAlice, event.id, { title: "Audit modifié" });
+    await deleteEvent(f.actorAlice, event.id);
+
+    const rows = await getDb().select().from(auditEvents).where(eq(auditEvents.orgId, f.orgId));
+    const byAction = new Map(rows.map((row) => [row.action, row]));
+
+    expect(byAction.get("calendar.calendar.create")).toMatchObject({
+      actorUserId: f.actorAlice.userId,
+      resourceType: "calendar",
+      resourceId: calendar.id,
+      result: "success",
+    });
+    for (const action of [
+      "calendar.event.create",
+      "calendar.event.update",
+      "calendar.event.delete",
+    ]) {
+      expect(byAction.get(action)).toMatchObject({
+        actorUserId: f.actorAlice.userId,
+        resourceType: "calendar_event",
+        resourceId: event.id,
+        result: "success",
+      });
+    }
+  });
+
+  it("ne journalise pas la réponse d'un invité (non notable)", async () => {
+    const created = await createEvent(f.actorAlice, {
+      ...eventInput("Réponse invitée"),
+      attendees: [f.emailBruno],
+    });
+
+    const before = await countAuditRows(f.orgId);
+    await setAttendance(f.actorBruno, created.id, "accepted");
+    expect(await countAuditRows(f.orgId)).toBe(before);
   });
 });

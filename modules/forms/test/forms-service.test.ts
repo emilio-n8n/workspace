@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { closeDb, schema as coreSchema, getDb } from "@workspace/database";
 import type { Actor } from "@workspace/permissions";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   createForm,
@@ -16,7 +16,7 @@ import {
   submitResponse,
 } from "../src/index.ts";
 
-const { user, organization } = coreSchema;
+const { user, organization, auditEvents } = coreSchema;
 
 let counter = 0;
 const tag = (prefix: string) => `${prefix}${++counter}_${randomUUID().slice(0, 8)}`;
@@ -68,11 +68,22 @@ async function createFixtures(): Promise<Fixtures> {
 
 async function cleanup(f: Fixtures): Promise<void> {
   const db = getDb();
+  await db.delete(auditEvents).where(eq(auditEvents.orgId, f.orgId));
+  await db.delete(auditEvents).where(eq(auditEvents.orgId, f.otherOrgId));
   await db.delete(organization).where(eq(organization.id, f.orgId));
   await db.delete(organization).where(eq(organization.id, f.otherOrgId));
   await db.delete(user).where(eq(user.id, f.actorAlice.userId));
   await db.delete(user).where(eq(user.id, f.actorBruno.userId));
   await db.delete(user).where(eq(user.id, f.actorChloe.userId));
+}
+
+/** Nombre de lignes d'audit rattachées à une organisation. */
+async function countAuditRows(orgId: string): Promise<number> {
+  const [row] = await getDb()
+    .select({ value: sql<number>`count(*)`.mapWith(Number) })
+    .from(auditEvents)
+    .where(eq(auditEvents.orgId, orgId));
+  return row?.value ?? 0;
 }
 
 let f: Fixtures;
@@ -386,5 +397,49 @@ describe("forms — collecte publique", () => {
     const csv = await exportResponsesCsv(f.actorAlice, detail.fileId);
     expect(csv.body).toContain("'=Total");
     expect(csv.body).toContain(`"'=HYPERLINK(""http://example.org"",""clic"")"`);
+  });
+});
+
+describe("forms — audit", () => {
+  it("journalise la création et la sauvegarde du formulaire", async () => {
+    const { entry } = await createForm(f.actorAlice, { title: "Audit" });
+    await saveForm(f.actorAlice, entry.id, {
+      status: "open",
+      questions: [{ kind: "short_text", label: "Question" }],
+    });
+
+    const rows = await getDb().select().from(auditEvents).where(eq(auditEvents.orgId, f.orgId));
+
+    const created = rows.find((row) => row.action === "forms.form.create");
+    expect(created).toMatchObject({
+      orgId: f.orgId,
+      actorUserId: f.actorAlice.userId,
+      resourceType: "form",
+      resourceId: entry.id,
+      result: "success",
+    });
+
+    const saved = rows.find((row) => row.action === "forms.form.save");
+    expect(saved).toMatchObject({
+      actorUserId: f.actorAlice.userId,
+      resourceType: "form",
+      resourceId: entry.id,
+      result: "success",
+    });
+    expect(saved?.metadata).toEqual({ status: "open" });
+  });
+
+  it("n'ajoute aucune ligne d'audit pour une réponse publique", async () => {
+    const { form, detail } = await createTestForm();
+    const [name, choice, scale] = detail.questions;
+    if (!name || !choice || !scale) throw new Error("questions manquantes");
+
+    const before = await countAuditRows(f.orgId);
+    await submitResponse(form.slug, {
+      [name.id]: "Alice",
+      [choice.id]: "Bleu",
+      [scale.id]: "4",
+    });
+    expect(await countAuditRows(f.orgId)).toBe(before);
   });
 });

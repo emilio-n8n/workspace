@@ -1,10 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { closeDb, schema as coreSchema, getDb } from "@workspace/database";
 import type { Actor } from "@workspace/permissions";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   addTab,
+  type CellStyle,
   createSpreadsheet,
   csvCell,
   deleteTab,
@@ -12,14 +13,17 @@ import {
   getSpreadsheet,
   importCsv,
   listSpreadsheets,
+  MAX_STYLE_CELLS,
   MAX_TABS,
+  renameSpreadsheet,
   renameTab,
   SHEETS_MIME,
   SheetsError,
   saveCells,
+  setCellStyle,
 } from "../src/index.ts";
 
-const { user, organization } = coreSchema;
+const { user, organization, auditEvents } = coreSchema;
 
 let counter = 0;
 const tag = (prefix: string) => `${prefix}${++counter}_${randomUUID().slice(0, 8)}`;
@@ -412,12 +416,12 @@ describe("sheets — import CSV", () => {
 
     const refreshed = await getSpreadsheet(f.actorAlice, entry.id);
     expect(refreshed.cells).toEqual([
-      { tabId, row: 0, col: 0, value: "Nom" },
-      { tabId, row: 0, col: 1, value: "Prénom" },
-      { tabId, row: 1, col: 0, value: "Dupont, Jean" },
-      { tabId, row: 1, col: 1, value: "Jean" },
-      { tabId, row: 2, col: 0, value: "valeur" },
-      { tabId, row: 2, col: 1, value: "3" },
+      { tabId, row: 0, col: 0, value: "Nom", style: null },
+      { tabId, row: 0, col: 1, value: "Prénom", style: null },
+      { tabId, row: 1, col: 0, value: "Dupont, Jean", style: null },
+      { tabId, row: 1, col: 1, value: "Jean", style: null },
+      { tabId, row: 2, col: 0, value: "valeur", style: null },
+      { tabId, row: 2, col: 1, value: "3", style: null },
     ]);
   });
 
@@ -510,6 +514,245 @@ describe("sheets — import CSV", () => {
     );
 
     const refreshed = await getSpreadsheet(f.actorAlice, entry.id);
+    expect(refreshed.cells).toHaveLength(0);
+  });
+});
+
+describe("sheets — audit", () => {
+  it("journalise la création, les onglets et le renommage", async () => {
+    const { entry } = await createSpreadsheet(f.actorAlice, { title: "Traçabilité" });
+    const tabs = await addTab(f.actorAlice, entry.id, "Annexe");
+    const addedTabId = tabs[1]?.id;
+    if (!addedTabId) throw new Error("onglet manquant");
+
+    await renameTab(f.actorAlice, addedTabId, "Annexe 2026");
+    await renameSpreadsheet(f.actorAlice, entry.id, "Traçabilité v2");
+    await deleteTab(f.actorAlice, addedTabId);
+
+    const rows = (
+      await getDb().select().from(auditEvents).where(eq(auditEvents.orgId, f.orgId))
+    ).filter((row) => row.action.startsWith("sheets."));
+    const byAction = new Map(rows.map((row) => [row.action, row]));
+    expect([...byAction.keys()].sort()).toEqual([
+      "sheets.spreadsheet.create",
+      "sheets.spreadsheet.rename",
+      "sheets.tab.add",
+      "sheets.tab.delete",
+      "sheets.tab.rename",
+    ]);
+    expect(byAction.get("sheets.spreadsheet.create")).toMatchObject({
+      actorUserId: f.actorAlice.userId,
+      resourceType: "spreadsheet",
+      resourceId: entry.id,
+      result: "success",
+    });
+    expect(byAction.get("sheets.tab.add")).toMatchObject({
+      resourceType: "tab",
+      resourceId: addedTabId,
+      result: "success",
+    });
+    expect(byAction.get("sheets.tab.rename")?.metadata).toEqual({
+      fileId: entry.id,
+      name: "Annexe 2026",
+    });
+    expect(byAction.get("sheets.tab.delete")).toMatchObject({ resourceId: addedTabId });
+    expect(byAction.get("sheets.spreadsheet.rename")?.metadata).toEqual({
+      title: "Traçabilité v2",
+    });
+  });
+
+  it("journalise l'import CSV avec le nombre de cellules", async () => {
+    const { entry } = await createSpreadsheet(f.actorAlice, { title: "Import tracé" });
+    const detail = await getSpreadsheet(f.actorAlice, entry.id);
+    const tabId = detail.tabs[0]?.id;
+    if (!tabId) throw new Error("onglet manquant");
+
+    await importCsv(f.actorAlice, entry.id, { tabId, text: "a,b\nc,d\ne,f" });
+
+    const rows = await getDb()
+      .select()
+      .from(auditEvents)
+      .where(and(eq(auditEvents.orgId, f.orgId), eq(auditEvents.action, "sheets.csv.import")));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      actorUserId: f.actorAlice.userId,
+      resourceType: "spreadsheet",
+      resourceId: entry.id,
+      result: "success",
+      metadata: { imported: 6 },
+    });
+  });
+
+  it("ne journalise pas la sauvegarde de cellules (autosave)", async () => {
+    const { entry } = await createSpreadsheet(f.actorAlice, { title: "Sans trace" });
+    const detail = await getSpreadsheet(f.actorAlice, entry.id);
+    const tabId = detail.tabs[0]?.id;
+    if (!tabId) throw new Error("onglet manquant");
+
+    const countAudits = async () =>
+      (await getDb().select().from(auditEvents).where(eq(auditEvents.orgId, f.orgId))).filter(
+        (row) => row.action.startsWith("sheets."),
+      ).length;
+
+    const before = await countAudits();
+    await saveCells(f.actorAlice, entry.id, {
+      tabId,
+      updates: [
+        { row: 0, col: 0, value: "1" },
+        { row: 0, col: 1, value: "2" },
+      ],
+    });
+    expect(await countAudits()).toBe(before);
+    // Seule la création (côté Sheets) alimente le journal pour cette feuille.
+    expect(before).toBe(1);
+  });
+});
+
+describe("sheets — mise en forme (v1)", () => {
+  it("applique et relit un style, valeur comprise", async () => {
+    const { entry } = await createSpreadsheet(f.actorAlice, { title: "Style" });
+    const detail = await getSpreadsheet(f.actorAlice, entry.id);
+    const tabId = detail.tabs[0]?.id;
+    if (!tabId) throw new Error("onglet manquant");
+
+    await saveCells(f.actorAlice, entry.id, {
+      tabId,
+      updates: [{ row: 0, col: 0, value: "Titre" }],
+    });
+    const result = await setCellStyle(f.actorAlice, entry.id, {
+      tabId,
+      cells: [{ row: 0, col: 0 }],
+      style: { bold: true, italic: true, align: "center", background: "accent" },
+    });
+    expect(result.styled).toBe(1);
+
+    const refreshed = await getSpreadsheet(f.actorAlice, entry.id);
+    expect(refreshed.cells).toEqual([
+      {
+        tabId,
+        row: 0,
+        col: 0,
+        value: "Titre",
+        style: { bold: true, italic: true, align: "center", background: "accent" },
+      },
+    ]);
+  });
+
+  it("refuse les styles invalides et les lots hors limites", async () => {
+    const { entry } = await createSpreadsheet(f.actorAlice, { title: "Style refusé" });
+    const detail = await getSpreadsheet(f.actorAlice, entry.id);
+    const tabId = detail.tabs[0]?.id;
+    if (!tabId) throw new Error("onglet manquant");
+    const cell = { row: 0, col: 0 };
+
+    const attempt = async (style: unknown) =>
+      setCellStyle(f.actorAlice, entry.id, { tabId, cells: [cell], style: style as CellStyle });
+
+    await expect(attempt({ bold: true, color: "red" })).rejects.toThrow(SheetsError);
+    await expect(attempt({ align: "middle" })).rejects.toThrow(SheetsError);
+    await expect(attempt({ background: "chartreuse" })).rejects.toThrow(SheetsError);
+    await expect(attempt({ bold: false })).rejects.toThrow(SheetsError);
+    await expect(attempt("gras")).rejects.toThrow(SheetsError);
+
+    // 501 cellules distinctes : le plafond de 500 s'applique.
+    const tooMany = Array.from({ length: MAX_STYLE_CELLS + 1 }, (_, index) => ({
+      row: Math.floor(index / 10),
+      col: index % 10,
+    }));
+    await expect(
+      setCellStyle(f.actorAlice, entry.id, { tabId, cells: tooMany, style: { bold: true } }),
+    ).rejects.toThrow(/Mise en forme limitée à 500 cellules\./);
+
+    // Aucun style n'a été écrit par les appels refusés.
+    const refreshed = await getSpreadsheet(f.actorAlice, entry.id);
+    expect(refreshed.cells).toHaveLength(0);
+  });
+
+  it("applique un lot de plusieurs cellules sans toucher aux valeurs", async () => {
+    const { entry } = await createSpreadsheet(f.actorAlice, { title: "Style lot" });
+    const detail = await getSpreadsheet(f.actorAlice, entry.id);
+    const tabId = detail.tabs[0]?.id;
+    if (!tabId) throw new Error("onglet manquant");
+
+    const cells = Array.from({ length: 12 }, (_, index) => ({
+      row: index % 3,
+      col: index % 4,
+    }));
+    const result = await setCellStyle(f.actorAlice, entry.id, {
+      tabId,
+      cells,
+      style: { background: "attention" },
+    });
+    expect(result.styled).toBe(12);
+
+    const refreshed = await getSpreadsheet(f.actorAlice, entry.id);
+    expect(refreshed.cells).toHaveLength(12);
+    expect(refreshed.cells.every((cell) => cell.style?.background === "attention")).toBe(true);
+
+    // Une valeur écrite ensuite conserve le style de la cellule.
+    await saveCells(f.actorAlice, entry.id, {
+      tabId,
+      updates: [{ row: 0, col: 0, value: "7" }],
+    });
+    const after = await getSpreadsheet(f.actorAlice, entry.id);
+    expect(after.cells.find((cell) => cell.row === 0 && cell.col === 0)).toMatchObject({
+      value: "7",
+      style: { background: "attention" },
+    });
+  });
+
+  it("efface le style avec null sans toucher à la valeur", async () => {
+    const { entry } = await createSpreadsheet(f.actorAlice, { title: "Style effacé" });
+    const detail = await getSpreadsheet(f.actorAlice, entry.id);
+    const tabId = detail.tabs[0]?.id;
+    if (!tabId) throw new Error("onglet manquant");
+
+    await saveCells(f.actorAlice, entry.id, {
+      tabId,
+      updates: [{ row: 1, col: 1, value: "valeur" }],
+    });
+    await setCellStyle(f.actorAlice, entry.id, {
+      tabId,
+      cells: [{ row: 1, col: 1 }],
+      style: { bold: true, background: "muted" },
+    });
+    await setCellStyle(f.actorAlice, entry.id, {
+      tabId,
+      cells: [{ row: 1, col: 1 }],
+      style: null,
+    });
+
+    const refreshed = await getSpreadsheet(f.actorAlice, entry.id);
+    expect(refreshed.cells).toEqual([{ tabId, row: 1, col: 1, value: "valeur", style: null }]);
+  });
+
+  it("refuse un membre sans droit d'écriture et un onglet étranger", async () => {
+    const first = await createSpreadsheet(f.actorAlice, { title: "Style A" });
+    const second = await createSpreadsheet(f.actorAlice, { title: "Style B" });
+    const firstDetail = await getSpreadsheet(f.actorAlice, first.entry.id);
+    const firstTab = firstDetail.tabs[0]?.id;
+    if (!firstTab) throw new Error("onglet manquant");
+    const secondDetail = await getSpreadsheet(f.actorAlice, second.entry.id);
+    const secondTab = secondDetail.tabs[0]?.id;
+    if (!secondTab) throw new Error("onglet manquant");
+
+    await expect(
+      setCellStyle(f.actorBruno, first.entry.id, {
+        tabId: firstTab,
+        cells: [{ row: 0, col: 0 }],
+        style: { bold: true },
+      }),
+    ).rejects.toThrow(SheetsError);
+
+    await expect(
+      setCellStyle(f.actorAlice, first.entry.id, {
+        tabId: secondTab,
+        cells: [{ row: 0, col: 0 }],
+        style: { bold: true },
+      }),
+    ).rejects.toThrow(SheetsError);
+
+    const refreshed = await getSpreadsheet(f.actorAlice, first.entry.id);
     expect(refreshed.cells).toHaveLength(0);
   });
 });

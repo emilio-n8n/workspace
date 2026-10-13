@@ -1,11 +1,17 @@
 import { randomUUID } from "node:crypto";
+import { classroomAssignments, classroomCourses, classroomSubmissions } from "@workspace/classroom";
 import { closeDb, schema as coreSchema, getDb } from "@workspace/database";
+import { docsComments, docsDocuments } from "@workspace/docs";
+import { driveFiles } from "@workspace/drive";
 import type { Actor } from "@workspace/permissions";
-import { eq } from "drizzle-orm";
+import { taskLists, tasks } from "@workspace/tasks";
+import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   AdminError,
   addMemberByEmail,
+  eraseUserAccount,
+  exportUserData,
   getOverview,
   getPolicies,
   listActiveSessions,
@@ -20,7 +26,7 @@ import {
   updateQuota,
 } from "../src/index.ts";
 
-const { user, session, organization, member, auditEvents, orgSettings } = coreSchema;
+const { user, session, organization, member, auditEvents, orgSettings, apiTokens } = coreSchema;
 
 let counter = 0;
 const tag = (prefix: string) => `${prefix}${++counter}_${randomUUID().slice(0, 8)}`;
@@ -110,6 +116,98 @@ async function addSession(
       userAgent: overrides.userAgent ?? "Mozilla/5.0 (Test)",
     });
   return { id };
+}
+
+/** Insère un jeton d'API avec un haché factice reconnaissable. */
+async function addApiToken(
+  userId: string,
+  orgId: string,
+): Promise<{ prefix: string; tokenHash: string }> {
+  const tokenHash = `hash-${randomUUID()}`;
+  const prefix = tag("wk_");
+  await getDb()
+    .insert(apiTokens)
+    .values({
+      orgId,
+      userId,
+      name: tag("Jeton "),
+      prefix,
+      tokenHash,
+      scopes: ["drive:read", "docs:read"],
+    });
+  return { prefix, tokenHash };
+}
+
+/** Insère un fichier Drive possédé par l'utilisateur et retourne son id. */
+async function addDriveFile(ownerId: string, orgId: string): Promise<string> {
+  const [row] = await getDb()
+    .insert(driveFiles)
+    .values({ orgId, ownerId, kind: "file", name: tag("Fichier "), sizeBytes: 4096 })
+    .returning({ id: driveFiles.id });
+  if (!row) throw new Error("Fichier de test manquant.");
+  return row.id;
+}
+
+async function addDocument(params: {
+  orgId: string;
+  fileId: string;
+  createdBy: string;
+  title: string;
+}): Promise<string> {
+  const [row] = await getDb()
+    .insert(docsDocuments)
+    .values(params)
+    .returning({ id: docsDocuments.id });
+  if (!row) throw new Error("Document de test manquant.");
+  return row.id;
+}
+
+async function addAssignedTask(params: {
+  orgId: string;
+  ownerId: string;
+  assigneeId: string;
+}): Promise<void> {
+  const [list] = await getDb()
+    .insert(taskLists)
+    .values({ orgId: params.orgId, ownerId: params.ownerId, name: tag("Liste ") })
+    .returning({ id: taskLists.id });
+  if (!list) throw new Error("Liste de test manquante.");
+  await getDb()
+    .insert(tasks)
+    .values({
+      orgId: params.orgId,
+      listId: list.id,
+      createdBy: params.ownerId,
+      assigneeId: params.assigneeId,
+      title: tag("Tâche "),
+    });
+}
+
+async function addSubmission(params: {
+  orgId: string;
+  ownerId: string;
+  studentId: string;
+}): Promise<void> {
+  const [course] = await getDb()
+    .insert(classroomCourses)
+    .values({
+      orgId: params.orgId,
+      name: tag("Cours "),
+      joinCode: tag("code"),
+      ownerId: params.ownerId,
+    })
+    .returning({ id: classroomCourses.id });
+  if (!course) throw new Error("Cours de test manquant.");
+  const [assignment] = await getDb()
+    .insert(classroomAssignments)
+    .values({ courseId: course.id, title: tag("Devoir ") })
+    .returning({ id: classroomAssignments.id });
+  if (!assignment) throw new Error("Devoir de test manquant.");
+  await getDb().insert(classroomSubmissions).values({
+    assignmentId: assignment.id,
+    studentId: params.studentId,
+    content: "Copie de test",
+  });
 }
 
 let f: Fixtures;
@@ -311,5 +409,180 @@ describe("admin — politiques", () => {
     await updatePolicies(f.actorOwner, { versionRetentionDays: 7 });
     await updatePolicies(f.actorOwner, { versionRetentionDays: 3650 });
     expect((await getPolicies(f.actorOwner)).versionRetentionDays).toBe(3650);
+  });
+});
+
+describe("admin — centre de conformité (RGPD)", () => {
+  it("exporte les données d'un membre sans divulguer les secrets", async () => {
+    const token = await addApiToken(f.simpleUser, f.orgId);
+    await addSession(f.simpleUser, {
+      ipAddress: "198.51.100.9",
+      userAgent: "Conformité/1.0",
+    });
+    const fileId = await addDriveFile(f.simpleUser, f.orgId);
+    const documentId = await addDocument({
+      orgId: f.orgId,
+      fileId,
+      createdBy: f.simpleUser,
+      title: "Notes de test",
+    });
+    await getDb().insert(docsComments).values({
+      documentId,
+      authorId: f.simpleUser,
+      body: "Commentaire de test",
+    });
+    await addAssignedTask({ orgId: f.orgId, ownerId: f.owner, assigneeId: f.simpleUser });
+    await addSubmission({ orgId: f.orgId, ownerId: f.owner, studentId: f.simpleUser });
+
+    const { filename, json } = await exportUserData(f.actorOwner, f.simpleUser);
+
+    const today = new Date().toISOString().slice(0, 10);
+    expect(filename).toBe(`donnees-${f.simpleUser}@example.org-${today}.json`);
+    const bundle = JSON.parse(json) as Record<string, unknown>;
+    expect(Object.keys(bundle).sort()).toEqual(
+      [
+        "apiTokens",
+        "auditEvents",
+        "counts",
+        "documents",
+        "driveFiles",
+        "exportedAt",
+        "memberships",
+        "sessions",
+        "user",
+      ].sort(),
+    );
+    expect(bundle.user).toMatchObject({ id: f.simpleUser, name: "Simple" });
+    expect(bundle.memberships).toEqual([
+      { organizationId: f.orgId, role: "member", createdAt: expect.any(String) },
+    ]);
+    expect(bundle.sessions).toEqual([
+      { createdAt: expect.any(String), ipAddress: "198.51.100.9", userAgent: "Conformité/1.0" },
+    ]);
+    expect(bundle.apiTokens).toEqual([
+      {
+        name: expect.any(String),
+        prefix: token.prefix,
+        scopes: ["drive:read", "docs:read"],
+        createdAt: expect.any(String),
+        lastUsedAt: null,
+        revokedAt: null,
+      },
+    ]);
+    expect(bundle.driveFiles).toEqual([
+      {
+        name: expect.any(String),
+        sizeBytes: 4096,
+        createdAt: expect.any(String),
+        trashed: false,
+      },
+    ]);
+    expect(bundle.documents).toEqual([{ title: "Notes de test", updatedAt: expect.any(String) }]);
+    expect(bundle.counts).toEqual({ comments: 1, tasksAssigned: 1, submissions: 1 });
+    expect(bundle.auditEvents).toEqual([]);
+
+    // Ni haché de jeton, ni jeton de session ne traversent la frontière.
+    expect(json).not.toContain(token.tokenHash);
+    expect(json).not.toContain("tokenHash");
+    expect(json).not.toContain("token_hash");
+  });
+
+  it("pseudonymise le compte, supprime sessions et jetons et conserve les contenus", async () => {
+    const db = getDb();
+    await addApiToken(f.simpleUser, f.orgId);
+    await addSession(f.simpleUser);
+    const fileId = await addDriveFile(f.simpleUser, f.orgId);
+    const documentId = await addDocument({
+      orgId: f.orgId,
+      fileId,
+      createdBy: f.simpleUser,
+      title: "Document à conserver",
+    });
+
+    await expect(
+      eraseUserAccount(f.actorOwner, f.simpleUser, { confirm: "EFFACER" }),
+    ).resolves.toEqual({ ok: true });
+
+    const [row] = await db.select().from(user).where(eq(user.id, f.simpleUser));
+    expect(row?.name).toBe("Compte effacé");
+    expect(row?.email).toMatch(/^efface-[0-9a-f-]{36}@invalid\.local$/);
+    expect(row?.emailVerified).toBe(false);
+
+    // Les identifiants de connexion sont supprimés définitivement.
+    expect(await db.select().from(session).where(eq(session.userId, f.simpleUser))).toHaveLength(0);
+    expect(
+      await db.select().from(apiTokens).where(eq(apiTokens.userId, f.simpleUser)),
+    ).toHaveLength(0);
+
+    // L'appartenance et les contenus restent : pseudonymisation, pas suppression.
+    expect(
+      await db
+        .select()
+        .from(member)
+        .where(and(eq(member.organizationId, f.orgId), eq(member.userId, f.simpleUser))),
+    ).toHaveLength(1);
+    expect(await db.select().from(driveFiles).where(eq(driveFiles.id, fileId))).toHaveLength(1);
+    expect(
+      await db.select().from(docsDocuments).where(eq(docsDocuments.id, documentId)),
+    ).toHaveLength(1);
+  });
+
+  it("refuse l'effacement du propriétaire, de soi-même ou sans confirmation", async () => {
+    const db = getDb();
+
+    await expect(eraseUserAccount(f.actorOwner, f.simpleUser, { confirm: "oui" })).rejects.toThrow(
+      /Confirmation/,
+    );
+    const [unchanged] = await db.select().from(user).where(eq(user.id, f.simpleUser));
+    expect(unchanged?.name).toBe("Simple");
+    expect(unchanged?.email).toBe(`${f.simpleUser}@example.org`);
+
+    await expect(eraseUserAccount(f.actorOwner, f.owner, { confirm: "EFFACER" })).rejects.toThrow(
+      /propriétaire/,
+    );
+    await expect(
+      eraseUserAccount(f.actorAdmin, f.adminUser, { confirm: "EFFACER" }),
+    ).rejects.toThrow(/propre compte/);
+
+    // Un administrateur ne peut pas effacer un autre administrateur.
+    await updateMemberRole(f.actorOwner, f.simpleUser, "admin");
+    await expect(
+      eraseUserAccount(f.actorAdmin, f.simpleUser, { confirm: "EFFACER" }),
+    ).rejects.toThrow(/Seul le propriétaire/);
+  });
+
+  it("réserve export et effacement aux administrateurs, dans leur organisation", async () => {
+    await expect(exportUserData(f.actorSimple, f.simpleUser)).rejects.toThrow(AdminError);
+    await expect(
+      eraseUserAccount(f.actorSimple, f.simpleUser, { confirm: "EFFACER" }),
+    ).rejects.toThrow(AdminError);
+
+    // Cible hors organisation : introuvable, même pour un administrateur.
+    await expect(exportUserData(f.actorAdmin, f.outsider)).rejects.toThrow(AdminError);
+    await expect(
+      eraseUserAccount(f.actorAdmin, f.outsider, { confirm: "EFFACER" }),
+    ).rejects.toThrow(AdminError);
+
+    // Contrôle positif : un administrateur exporte un membre de son organisation.
+    await expect(exportUserData(f.actorAdmin, f.simpleUser)).resolves.toMatchObject({
+      filename: expect.stringMatching(/^donnees-.*\.json$/),
+    });
+  });
+
+  it("journalise l'export et l'effacement dans le journal d'audit", async () => {
+    await exportUserData(f.actorOwner, f.simpleUser);
+    await eraseUserAccount(f.actorOwner, f.simpleUser, { confirm: "EFFACER" });
+
+    const entries = await listAudit(f.actorOwner, 50);
+    for (const action of ["admin.compliance.export", "admin.compliance.erase"]) {
+      const entry = entries.find((row) => row.action === action);
+      expect(entry).toMatchObject({
+        actorUserId: f.owner,
+        resourceType: "user",
+        resourceId: f.simpleUser,
+        result: "success",
+        metadata: { targetUserId: f.simpleUser },
+      });
+    }
   });
 });

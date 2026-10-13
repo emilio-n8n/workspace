@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { recordAudit } from "@workspace/audit";
 import { getDb, withTransaction } from "@workspace/database";
 import {
   createLinkedFile,
@@ -332,6 +333,15 @@ export async function createPresentation(
     return created;
   });
 
+  await recordAudit({
+    orgId: actor.orgId,
+    actorUserId: actor.userId,
+    action: "slides.presentation.create",
+    resourceType: "presentation",
+    resourceId: entry.id,
+    result: "success",
+  });
+
   return { entry, presentation };
 }
 
@@ -352,6 +362,11 @@ export async function getPresentation(actor: Actor, fileId: string): Promise<Pre
  * Les identifiants fournis ne sont honorés que s'ils appartiennent déjà à
  * cette présentation ; sinon de nouvelles lignes sont insérées. Une révision
  * périmée déclenche un conflit, sans aucune écriture.
+ *
+ * Volontairement NON journalisée dans l'audit : l'éditeur sauvegarde
+ * automatiquement plusieurs fois par minute ; un événement par sauvegarde
+ * noierait le journal. Le nettoyage best-effort des images retirées ci-dessous
+ * (objet de stockage supprimé) n'écrit pas d'événement non plus.
  */
 export async function savePresentation(
   actor: Actor,
@@ -542,6 +557,16 @@ export async function uploadSlideImage(
   const { getStorage } = await import("@workspace/storage");
   await getStorage().put({ key: mediaKey, body: input.body, contentType });
 
+  await recordAudit({
+    orgId: actor.orgId,
+    actorUserId: actor.userId,
+    action: "slides.image.upload",
+    resourceType: "presentation",
+    resourceId: fileId,
+    result: "success",
+    metadata: { mediaKey },
+  });
+
   return { mediaKey };
 }
 
@@ -583,7 +608,18 @@ export async function renamePresentation(
 ): Promise<DriveEntry> {
   const clean = assertTitle(title);
   await requirePresentation(actor, fileId);
-  return driveRename(actor, fileId, clean);
+  const entry = await driveRename(actor, fileId, clean);
+
+  await recordAudit({
+    orgId: actor.orgId,
+    actorUserId: actor.userId,
+    action: "slides.presentation.rename",
+    resourceType: "presentation",
+    resourceId: fileId,
+    result: "success",
+  });
+
+  return entry;
 }
 
 /** Présentations visibles (fichiers Drive liés). */

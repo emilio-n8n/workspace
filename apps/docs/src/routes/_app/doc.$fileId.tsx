@@ -3,6 +3,7 @@ import type { CommentView } from "@workspace/docs";
 import {
   addCommentFn,
   deleteCommentFn,
+  getCollabTokenFn,
   getDocumentFn,
   listCommentsFn,
   listDocumentVersionsFn,
@@ -63,6 +64,11 @@ function DocumentPage() {
   >(null);
   const [versionsLoading, setVersionsLoading] = useState(false);
   const [versionsError, setVersionsError] = useState<string | null>(null);
+  /**
+   * Collaboration temps réel : `null` = aucune session (serveur non configuré,
+   * jeton refusé, réseau…). Résolu une seule fois au chargement, puis statique.
+   */
+  const [collab, setCollab] = useState<{ url: string; token: string } | null>(null);
 
   // Panneau « Commentaires » : fils, résolution, suppression.
   const [commentsOpen, setCommentsOpen] = useState(false);
@@ -77,9 +83,16 @@ function DocumentPage() {
   useEffect(() => {
     let cancelled = false;
     void (async () => {
+      // Jeton de collaboration demandé en parallèle du document ; toute erreur
+      // (serveur non configuré, droits, réseau) laisse simplement l'éditeur local.
+      const collabToken = getCollabTokenFn({ data: { fileId } }).catch(() => null);
       try {
-        const loaded = await getDocumentFn({ data: { fileId } });
+        const [loaded, token] = await Promise.all([
+          getDocumentFn({ data: { fileId } }),
+          collabToken,
+        ]);
         if (cancelled) return;
+        setCollab(token?.url ? { url: token.url, token: token.token } : null);
         setDoc(loaded);
         setTitle(loaded.title);
       } catch {
@@ -245,6 +258,8 @@ function DocumentPage() {
 
         {!doc.canEdit ? <Badge variant="outline">Lecture seule</Badge> : null}
         <Badge variant="default">v{doc.currentVersion}</Badge>
+        {/* Statique après chargement : la collaboration est résolue avec le document. */}
+        <Badge variant={collab ? "accent" : "outline"}>{collab ? "Temps réel" : "Local"}</Badge>
 
         <div className="ml-auto flex items-center gap-2">
           <Button
@@ -319,6 +334,13 @@ function DocumentPage() {
             initialRevision={doc.revision}
             initialContent={doc.content}
             canEdit={doc.canEdit}
+            // Étiquette du curseur — purement cosmétique : la page ne charge pas
+            // le nom de session ; « Vous » n'apparaît que chez les autres.
+            collab={
+              collab
+                ? { url: collab.url, room: fileId, token: collab.token, userName: "Vous" }
+                : null
+            }
           />
         </div>
 

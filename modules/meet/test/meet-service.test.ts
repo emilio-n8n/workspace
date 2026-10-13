@@ -13,7 +13,7 @@ import {
   signLiveKitToken,
 } from "../src/index.ts";
 
-const { user, organization } = coreSchema;
+const { user, organization, auditEvents } = coreSchema;
 
 let counter = 0;
 const tag = (prefix: string) => `${prefix}${++counter}_${randomUUID().slice(0, 8)}`;
@@ -131,5 +131,40 @@ describe("meet — jetons", () => {
     expect(payload.sub).toBe("usr_1");
     expect(payload.video.room).toBe("workspace-demo");
     expect(payload.exp - payload.iat).toBe(60);
+  });
+});
+
+describe("meet — audit", () => {
+  it("journalise la création d'une salle", async () => {
+    const room = await createRoom(f.actorAlice, "Salle auditée");
+    const rows = await getDb().select().from(auditEvents).where(eq(auditEvents.orgId, f.orgId));
+
+    expect(rows).toHaveLength(1);
+    const [row] = rows;
+    expect(row).toMatchObject({
+      orgId: f.orgId,
+      actorUserId: f.actorAlice.userId,
+      action: "meet.room.create",
+      resourceType: "room",
+      resourceId: room.slug,
+      result: "success",
+    });
+  });
+
+  it("journalise la suppression d'une salle (créateur seulement)", async () => {
+    const room = await createRoom(f.actorAlice, "Éphémère");
+    await deleteRoom(f.actorAlice, room.slug);
+
+    const rows = await getDb().select().from(auditEvents).where(eq(auditEvents.orgId, f.orgId));
+    const deletions = rows.filter((row) => row.action === "meet.room.delete");
+    expect(deletions).toHaveLength(1);
+    expect(deletions[0]).toMatchObject({
+      orgId: f.orgId,
+      actorUserId: f.actorAlice.userId,
+      action: "meet.room.delete",
+      resourceType: "room",
+      resourceId: room.slug,
+      result: "success",
+    });
   });
 });

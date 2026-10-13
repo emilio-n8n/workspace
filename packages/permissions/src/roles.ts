@@ -1,4 +1,4 @@
-import type { Action, GrantRole } from "./types";
+import type { Action, GrantRole } from "./types.ts";
 
 /**
  * Matrice niveaux : un rôle satisfait une action si son niveau est suffisant.

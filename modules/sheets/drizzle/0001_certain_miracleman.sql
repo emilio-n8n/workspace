@@ -1,0 +1,1 @@
+ALTER TABLE "sheet_cells" ADD COLUMN "style" jsonb;

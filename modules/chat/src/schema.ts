@@ -1,6 +1,6 @@
 import { schema as core } from "@workspace/database";
 import { sql } from "drizzle-orm";
-import { index, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import { index, integer, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 
 /**
  * Schéma du module Chat — voir docs/modules/chat.md.
@@ -71,5 +71,27 @@ export const chatMessages = pgTable(
   (table) => [index("chat_messages_channel_created_idx").on(table.channelId, table.createdAt)],
 );
 
+/**
+ * Pièces jointes : métadonnées en base, binaire dans @workspace/storage
+ * (clé `chat/<orgId>/<uuid>`). La suppression du message entraîne celle des
+ * métadonnées ; le blob reste dans le stockage (nettoyage hors ligne).
+ */
+export const chatAttachments = pgTable(
+  "chat_attachments",
+  {
+    id: uuid("id").primaryKey().default(sql`uuidv7()`),
+    messageId: uuid("message_id")
+      .notNull()
+      .references(() => chatMessages.id, { onDelete: "cascade" }),
+    filename: text("filename").notNull(),
+    contentType: text("content_type").notNull(),
+    sizeBytes: integer("size_bytes").notNull(),
+    storageKey: text("storage_key").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [index("chat_attachments_message_idx").on(table.messageId)],
+);
+
 export type ChatChannelRow = typeof chatChannels.$inferSelect;
 export type ChatMessageRow = typeof chatMessages.$inferSelect;
+export type ChatAttachmentRow = typeof chatAttachments.$inferSelect;

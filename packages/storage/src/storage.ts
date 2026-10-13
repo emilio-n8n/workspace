@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 import { getServerEnv } from "@workspace/config";
 import type { StorageAdapter } from "./adapter.ts";
 import { LocalFsStorage } from "./local.ts";
-import { S3Storage } from "./s3";
+import { S3Storage } from "./s3.ts";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 

@@ -9,8 +9,9 @@ import {
   Toasts,
   useToasts,
 } from "@workspace/ui";
-import { type FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import { type ChangeEvent, type FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import {
+  type AttachmentToken,
   type ChannelView,
   createChannelFn,
   listChannelsFn,
@@ -21,7 +22,12 @@ import {
   type OrgMemberView,
   sendMessageFn,
   startDmFn,
+  uploadChatAttachmentFn,
 } from "../server.ts";
+
+/** Bornes du compositeur, alignées sur le serveur : 5 fichiers de 10 Mo. */
+const COMPOSER_MAX_ATTACHMENTS = 5;
+const COMPOSER_MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 
 function fmtTime(iso: string): string {
   const date = new Date(iso);
@@ -30,6 +36,50 @@ function fmtTime(iso: string): string {
     return date.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
   }
   return date.toLocaleDateString("fr-FR", { day: "numeric", month: "short" });
+}
+
+function fmtSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} o`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} Ko`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} Mo`;
+}
+
+/** Lit un fichier local en base64 (sans préfixe data:) pour le serveur. */
+function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error(`Lecture de « ${file.name} » impossible.`));
+    reader.onload = () => {
+      const result = typeof reader.result === "string" ? reader.result : "";
+      const comma = result.indexOf(",");
+      if (comma < 0) {
+        reject(new Error(`Lecture de « ${file.name} » impossible.`));
+        return;
+      }
+      resolve(result.slice(comma + 1));
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+/** Pièces jointes d'un message — liens de téléchargement (route dédiée). */
+function AttachmentLinks({ attachments }: { attachments: MessageView["attachments"] }) {
+  if (attachments.length === 0) return null;
+  return (
+    <ul className="flex flex-col gap-0.5">
+      {attachments.map((attachment) => (
+        <li key={attachment.id}>
+          <a
+            href={`/api/chat/attachments/${attachment.id}`}
+            className="text-xs underline underline-offset-2"
+          >
+            📎 {attachment.filename}{" "}
+            <span className="opacity-70">({fmtSize(attachment.sizeBytes)})</span>
+          </a>
+        </li>
+      ))}
+    </ul>
+  );
 }
 
 /** Lots d'un événement SSE `messages` : données JSON non fiables, jamais de throw. */
@@ -53,8 +103,12 @@ export function ChatView() {
   const [activeId, setActiveId] = useState<string | null>(null);
   const [messages, setMessages] = useState<MessageView[]>([]);
   const [input, setInput] = useState("");
+  /** Jetons d'upload en attente de rattachement à l'envoi. */
+  const [attachments, setAttachments] = useState<AttachmentToken[]>([]);
+  const [uploading, setUploading] = useState(false);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [channelDialog, setChannelDialog] = useState(false);
   const [dmDialog, setDmDialog] = useState(false);
   const [channelName, setChannelName] = useState("");
@@ -175,6 +229,13 @@ export function ChatView() {
     };
   }, [activeId, refreshChannels, refreshMessages, useSse]);
 
+  // Changement de conversation : un jeton téléversé ne suit jamais un autre
+  // canal — il est oublié (le blob reste, orphelin, nettoyé hors ligne).
+  // biome-ignore lint/correctness/useExhaustiveDependencies: remise à zéro à chaque changement de canal.
+  useEffect(() => {
+    setAttachments([]);
+  }, [activeId]);
+
   // biome-ignore lint/correctness/useExhaustiveDependencies: défilement vers le bas à chaque nouveau message.
   useEffect(() => {
     const container = scrollRef.current;
@@ -187,14 +248,79 @@ export function ChatView() {
     if (body.length === 0 || !activeId) return;
     setBusy(true);
     try {
-      const sent = await sendMessageFn({ data: { channelId: activeId, body } });
+      const sent = await sendMessageFn({
+        data: {
+          channelId: activeId,
+          body,
+          attachments: attachments.length > 0 ? attachments : undefined,
+        },
+      });
       setInput("");
+      setAttachments([]);
       setMessages((current) => [...current, sent]);
     } catch (caught) {
       push("danger", caught instanceof Error ? caught.message : "Envoi impossible.");
     } finally {
       setBusy(false);
     }
+  }
+
+  /**
+   * Téléverse les fichiers choisis un par un (jetons provisoires), avec les
+   * bornes du serveur appliquées côté client : 5 fichiers, 10 Mo chacun.
+   */
+  async function onPickAttachments(event: ChangeEvent<HTMLInputElement>) {
+    const files = [...(event.target.files ?? [])];
+    event.target.value = "";
+    if (files.length === 0) return;
+
+    const remaining = COMPOSER_MAX_ATTACHMENTS - attachments.length;
+    if (remaining <= 0) {
+      push("danger", `${COMPOSER_MAX_ATTACHMENTS} pièces jointes au maximum.`);
+      return;
+    }
+    if (files.length > remaining) {
+      push(
+        "danger",
+        `${COMPOSER_MAX_ATTACHMENTS} pièces jointes au maximum (${remaining} emplacement${remaining > 1 ? "s" : ""} restant${remaining > 1 ? "s" : ""}).`,
+      );
+    }
+
+    setUploading(true);
+    try {
+      let updated = attachments;
+      for (const file of files.slice(0, remaining)) {
+        if (file.size > COMPOSER_MAX_ATTACHMENT_BYTES) {
+          push("danger", `« ${file.name} » dépasse 10 Mo.`);
+          continue;
+        }
+        try {
+          const contentBase64 = await fileToBase64(file);
+          const token = await uploadChatAttachmentFn({
+            data: {
+              filename: file.name,
+              contentType: file.type || "application/octet-stream",
+              contentBase64,
+            },
+          });
+          updated = [...updated, token];
+          setAttachments(updated);
+        } catch (caught) {
+          push(
+            "danger",
+            caught instanceof Error
+              ? caught.message
+              : `Téléversement de « ${file.name} » impossible.`,
+          );
+        }
+      }
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  function removeAttachment(storageKey: string) {
+    setAttachments((current) => current.filter((token) => token.storageKey !== storageKey));
   }
 
   async function onCreateChannel(event: FormEvent<HTMLFormElement>) {
@@ -344,16 +470,17 @@ export function ChatView() {
                     <span className="text-[11px] text-muted-foreground">
                       {message.authorName} · {fmtTime(message.createdAt)}
                     </span>
-                    <span
+                    <div
                       className={cn(
-                        "max-w-[75%] whitespace-pre-wrap break-words rounded-xl px-3 py-2 text-sm",
+                        "flex max-w-[75%] flex-col gap-1 rounded-xl px-3 py-2 text-sm",
                         message.mine
                           ? "bg-primary text-primary-foreground"
                           : "bg-muted text-foreground",
                       )}
                     >
-                      {message.body}
-                    </span>
+                      <span className="whitespace-pre-wrap break-words">{message.body}</span>
+                      <AttachmentLinks attachments={message.attachments} />
+                    </div>
                   </div>
                 ))
               )}
@@ -362,27 +489,77 @@ export function ChatView() {
             <form
               onSubmit={onSend}
               method="post"
-              className="flex items-end gap-2 border-t border-border p-3"
+              className="flex flex-col gap-2 border-t border-border p-3"
             >
-              <textarea
-                aria-label="Message"
-                value={input}
-                onChange={(event) => setInput(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key !== "Enter" || event.shiftKey) return;
-                  // Composition IME (accents, langues CJK) : Entrée valide la composition.
-                  if (event.nativeEvent.isComposing) return;
-                  event.preventDefault();
-                  event.currentTarget.form?.requestSubmit();
-                }}
-                rows={1}
-                maxLength={4000}
-                placeholder="Écrire un message… (Entrée pour envoyer)"
-                className="max-h-32 min-h-9 flex-1 resize-y rounded-md border border-input bg-background px-3 py-2 text-sm"
-              />
-              <Button type="submit" loading={busy} disabled={input.trim().length === 0}>
-                Envoyer
-              </Button>
+              {attachments.length > 0 ? (
+                <ul aria-label="Pièces jointes en attente" className="flex flex-wrap gap-1">
+                  {attachments.map((attachment) => (
+                    <li
+                      key={attachment.storageKey}
+                      className="flex items-center gap-2 rounded-md border border-border bg-muted/40 px-2 py-1 text-xs"
+                    >
+                      <span className="max-w-52 truncate" title={attachment.filename}>
+                        {attachment.filename}
+                      </span>
+                      <span className="shrink-0 text-muted-foreground">
+                        {fmtSize(attachment.sizeBytes)}
+                      </span>
+                      <button
+                        type="button"
+                        aria-label={`Retirer ${attachment.filename}`}
+                        onClick={() => removeAttachment(attachment.storageKey)}
+                        className="shrink-0 text-muted-foreground transition-colors hover:text-destructive"
+                      >
+                        ✕
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+              <div className="flex items-end gap-2">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  aria-label="Pièces jointes"
+                  title="Pièces jointes (5 max, 10 Mo chacune)"
+                  disabled={uploading || busy}
+                  onClick={() => fileInputRef.current?.click()}
+                >
+                  📎
+                </Button>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  multiple
+                  aria-label="Pièces jointes"
+                  className="hidden"
+                  onChange={(event) => void onPickAttachments(event)}
+                />
+                <textarea
+                  aria-label="Message"
+                  value={input}
+                  onChange={(event) => setInput(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key !== "Enter" || event.shiftKey) return;
+                    // Composition IME (accents, langues CJK) : Entrée valide la composition.
+                    if (event.nativeEvent.isComposing) return;
+                    event.preventDefault();
+                    event.currentTarget.form?.requestSubmit();
+                  }}
+                  rows={1}
+                  maxLength={4000}
+                  placeholder="Écrire un message… (Entrée pour envoyer)"
+                  className="max-h-32 min-h-9 flex-1 resize-y rounded-md border border-input bg-background px-3 py-2 text-sm"
+                />
+                <Button
+                  type="submit"
+                  loading={busy}
+                  disabled={input.trim().length === 0 || uploading}
+                >
+                  Envoyer
+                </Button>
+              </div>
             </form>
           </>
         ) : (

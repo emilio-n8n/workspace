@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { closeDb, schema as coreSchema, getDb } from "@workspace/database";
 import type { Actor } from "@workspace/permissions";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   addPage,
@@ -10,12 +10,13 @@ import {
   getPage,
   getSite,
   listSites,
+  renameSite,
   SITES_MIME,
   SitesError,
   savePage,
 } from "../src/index.ts";
 
-const { user, organization } = coreSchema;
+const { user, organization, auditEvents } = coreSchema;
 
 let counter = 0;
 const tag = (prefix: string) => `${prefix}${++counter}_${randomUUID().slice(0, 8)}`;
@@ -67,11 +68,22 @@ async function createFixtures(): Promise<Fixtures> {
 
 async function cleanup(f: Fixtures): Promise<void> {
   const db = getDb();
+  await db.delete(auditEvents).where(eq(auditEvents.orgId, f.orgId));
+  await db.delete(auditEvents).where(eq(auditEvents.orgId, f.otherOrgId));
   await db.delete(organization).where(eq(organization.id, f.orgId));
   await db.delete(organization).where(eq(organization.id, f.otherOrgId));
   await db.delete(user).where(eq(user.id, f.actorAlice.userId));
   await db.delete(user).where(eq(user.id, f.actorBruno.userId));
   await db.delete(user).where(eq(user.id, f.actorChloe.userId));
+}
+
+/** Nombre de lignes d'audit rattachées à une organisation. */
+async function countAuditRows(orgId: string): Promise<number> {
+  const [row] = await getDb()
+    .select({ value: sql<number>`count(*)`.mapWith(Number) })
+    .from(auditEvents)
+    .where(eq(auditEvents.orgId, orgId));
+  return row?.value ?? 0;
 }
 
 let f: Fixtures;
@@ -192,5 +204,64 @@ describe("sites — cycle de vie", () => {
     ).rejects.toThrow(SitesError);
     await expect(addPage(f.actorBruno, entry.id, { title: "Triche" })).rejects.toThrow(SitesError);
     await expect(deletePage(f.actorBruno, entry.id, page.id)).rejects.toThrow(SitesError);
+  });
+});
+
+describe("sites — audit", () => {
+  it("journalise la création du site et les opérations de page", async () => {
+    const { entry } = await createSite(f.actorAlice, { title: "Audit" });
+    const site = await getSite(f.actorAlice, entry.id);
+    const home = site.pages[0];
+    if (!home) throw new Error("page manquante");
+
+    const added = await addPage(f.actorAlice, entry.id, { title: "Journal" });
+    await savePage(f.actorAlice, entry.id, added.pageId, {
+      title: "Journal",
+      content: "# Journal\n",
+    });
+    await deletePage(f.actorAlice, entry.id, added.pageId);
+
+    const rows = await getDb().select().from(auditEvents).where(eq(auditEvents.orgId, f.orgId));
+    const byAction = new Map(rows.map((row) => [row.action, row]));
+
+    expect(byAction.get("sites.site.create")).toMatchObject({
+      actorUserId: f.actorAlice.userId,
+      resourceType: "site",
+      resourceId: entry.id,
+      result: "success",
+    });
+    for (const action of ["sites.page.add", "sites.page.save", "sites.page.delete"]) {
+      const row = byAction.get(action);
+      expect(row).toMatchObject({
+        actorUserId: f.actorAlice.userId,
+        resourceType: "site",
+        resourceId: entry.id,
+        result: "success",
+      });
+      expect(row?.metadata).toEqual({ pageId: added.pageId });
+    }
+    // La suppression de la page d'accueil est impossible : une seule page reste.
+    expect((await getSite(f.actorAlice, entry.id)).pages).toHaveLength(1);
+  });
+
+  it("ne journalise ni la consultation ni le renommage (non notable)", async () => {
+    const { entry } = await createSite(f.actorAlice, { title: "Sans audit" });
+
+    // Consultation : jamais journalisée, le compte global de l'organisation
+    // reste inchangé.
+    const before = await countAuditRows(f.orgId);
+    await getSite(f.actorAlice, entry.id);
+    await listSites(f.actorAlice);
+    expect(await countAuditRows(f.orgId)).toBe(before);
+
+    // Renommage : délégué à Drive, qui journalise `drive.entry.rename` de son
+    // côté ; Sites n'ajoute aucune ligne `sites.*` (mutation non notable).
+    const siteAuditRows = async () =>
+      (await getDb().select().from(auditEvents).where(eq(auditEvents.orgId, f.orgId))).filter(
+        (row) => row.action.startsWith("sites."),
+      );
+    const beforeRename = (await siteAuditRows()).length;
+    await renameSite(f.actorAlice, entry.id, "Renommé");
+    expect((await siteAuditRows()).length).toBe(beforeRename);
   });
 });

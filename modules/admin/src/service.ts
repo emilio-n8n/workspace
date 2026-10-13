@@ -1,8 +1,11 @@
 import { recordAudit } from "@workspace/audit";
+import { classroomAssignments, classroomCourses, classroomSubmissions } from "@workspace/classroom";
 import { schema as core, getDb } from "@workspace/database";
+import { docsComments, docsDocuments } from "@workspace/docs";
 import { driveFiles } from "@workspace/drive";
 import type { Actor } from "@workspace/permissions";
-import { and, asc, desc, eq, gt, ne, sql } from "drizzle-orm";
+import { tasks } from "@workspace/tasks";
+import { and, asc, desc, eq, gt, ne, or, sql } from "drizzle-orm";
 
 export type AdminErrorCode = "not_found" | "forbidden" | "validation" | "conflict";
 
@@ -36,6 +39,8 @@ export type ActiveSession = {
 
 export type OrgOverview = {
   org: { id: string; name: string; slug: string };
+  /** Acteur courant — permet à l'écran de masquer les actions sur soi-même. */
+  actorUserId: string;
   memberCount: number;
   fileCount: number;
   usedBytes: number;
@@ -399,6 +404,7 @@ export async function getOverview(actor: Actor): Promise<OrgOverview> {
 
   return {
     org,
+    actorUserId: actor.userId,
     memberCount: members?.value ?? 0,
     fileCount: files?.count ?? 0,
     usedBytes: files?.bytes ?? 0,
@@ -533,4 +539,254 @@ export async function updatePolicies(
     result: "success",
     metadata: patch,
   });
+}
+
+// ---------------------------------------------------------------------------
+// Centre de conformité (RGPD)
+// ---------------------------------------------------------------------------
+
+/** Nom affiché une fois le compte pseudonymisé. */
+const ERASED_USER_NAME = "Compte effacé";
+/** Mot à recopier pour confirmer un effacement de compte. */
+const ERASE_CONFIRMATION = "EFFACER";
+
+/**
+ * Contenu de l'export RGPD d'un membre. Les secrets d'authentification
+ * (hachés de jetons d'API, jetons de session) n'y figurent jamais : seules
+ * des métadonnées identifiantes et du contenu utile sont exportés.
+ */
+export type UserDataExportBundle = {
+  exportedAt: string;
+  user: { id: string; name: string; email: string; createdAt: string };
+  memberships: Array<{ organizationId: string; role: string; createdAt: string }>;
+  sessions: Array<{ createdAt: string; ipAddress: string | null; userAgent: string | null }>;
+  apiTokens: Array<{
+    name: string;
+    prefix: string;
+    scopes: string[];
+    createdAt: string;
+    lastUsedAt: string | null;
+    revokedAt: string | null;
+  }>;
+  auditEvents: Array<{ action: string; result: string; createdAt: string }>;
+  driveFiles: Array<{
+    name: string;
+    sizeBytes: number | null;
+    createdAt: string;
+    trashed: boolean;
+  }>;
+  documents: Array<{ title: string; updatedAt: string }>;
+  counts: { comments: number; tasksAssigned: number; submissions: number };
+};
+
+/**
+ * Export RGPD des données d'un membre de l'organisation (lecture seule,
+ * requêtes directes sur les schémas cœur et modules). Le périmètre est
+ * l'organisation active de l'acteur : appartenances, jetons d'API, fichiers,
+ * documents et comptages sont filtrés sur `actor.orgId`. Les sessions, elles,
+ * n'ont pas de colonne d'organisation — elles suivent l'utilisateur — et le
+ * journal d'audit est limité aux 100 derniers événements dont la personne est
+ * l'acteur ou la ressource.
+ *
+ * Les hachés de jetons (`token_hash`) et les jetons de session ne sont JAMAIS
+ * exportés ; seuls nom, préfixe, portées et dates le sont.
+ */
+export async function exportUserData(
+  actor: Actor,
+  userId: string,
+): Promise<{ filename: string; json: string }> {
+  await requireAdmin(actor);
+  await requireMember(actor, userId);
+  const db = getDb();
+
+  const [target] = await db
+    .select({
+      id: core.user.id,
+      name: core.user.name,
+      email: core.user.email,
+      createdAt: core.user.createdAt,
+    })
+    .from(core.user)
+    .where(eq(core.user.id, userId))
+    .limit(1);
+  if (!target) throw new AdminError("not_found", "Compte introuvable.");
+
+  const [memberships, sessions, tokens, events, files, documents, comments, assigned, submissions] =
+    await Promise.all([
+      db
+        .select({
+          organizationId: core.member.organizationId,
+          role: core.member.role,
+          createdAt: core.member.createdAt,
+        })
+        .from(core.member)
+        .where(and(eq(core.member.organizationId, actor.orgId), eq(core.member.userId, userId))),
+      db
+        .select({
+          createdAt: core.session.createdAt,
+          ipAddress: core.session.ipAddress,
+          userAgent: core.session.userAgent,
+        })
+        .from(core.session)
+        .where(eq(core.session.userId, userId))
+        .orderBy(desc(core.session.createdAt)),
+      db
+        .select({
+          name: core.apiTokens.name,
+          prefix: core.apiTokens.prefix,
+          scopes: core.apiTokens.scopes,
+          createdAt: core.apiTokens.createdAt,
+          lastUsedAt: core.apiTokens.lastUsedAt,
+          revokedAt: core.apiTokens.revokedAt,
+        })
+        .from(core.apiTokens)
+        .where(and(eq(core.apiTokens.orgId, actor.orgId), eq(core.apiTokens.userId, userId))),
+      db
+        .select({
+          action: core.auditEvents.action,
+          result: core.auditEvents.result,
+          createdAt: core.auditEvents.createdAt,
+        })
+        .from(core.auditEvents)
+        .where(
+          and(
+            eq(core.auditEvents.orgId, actor.orgId),
+            or(eq(core.auditEvents.actorUserId, userId), eq(core.auditEvents.resourceId, userId)),
+          ),
+        )
+        .orderBy(desc(core.auditEvents.createdAt))
+        .limit(100),
+      db
+        .select({
+          name: driveFiles.name,
+          sizeBytes: driveFiles.sizeBytes,
+          createdAt: driveFiles.createdAt,
+          status: driveFiles.status,
+        })
+        .from(driveFiles)
+        .where(and(eq(driveFiles.orgId, actor.orgId), eq(driveFiles.ownerId, userId))),
+      db
+        .select({ title: docsDocuments.title, updatedAt: docsDocuments.updatedAt })
+        .from(docsDocuments)
+        .where(and(eq(docsDocuments.orgId, actor.orgId), eq(docsDocuments.createdBy, userId))),
+      db
+        .select({ value: sql<number>`count(*)`.mapWith(Number) })
+        .from(docsComments)
+        .innerJoin(docsDocuments, eq(docsDocuments.id, docsComments.documentId))
+        .where(and(eq(docsDocuments.orgId, actor.orgId), eq(docsComments.authorId, userId))),
+      db
+        .select({ value: sql<number>`count(*)`.mapWith(Number) })
+        .from(tasks)
+        .where(and(eq(tasks.orgId, actor.orgId), eq(tasks.assigneeId, userId))),
+      db
+        .select({ value: sql<number>`count(*)`.mapWith(Number) })
+        .from(classroomSubmissions)
+        .innerJoin(
+          classroomAssignments,
+          eq(classroomAssignments.id, classroomSubmissions.assignmentId),
+        )
+        .innerJoin(classroomCourses, eq(classroomCourses.id, classroomAssignments.courseId))
+        .where(
+          and(eq(classroomCourses.orgId, actor.orgId), eq(classroomSubmissions.studentId, userId)),
+        ),
+    ]);
+
+  const bundle: UserDataExportBundle = {
+    exportedAt: new Date().toISOString(),
+    user: { ...target, createdAt: target.createdAt.toISOString() },
+    memberships: memberships.map((row) => ({ ...row, createdAt: row.createdAt.toISOString() })),
+    sessions: sessions.map((row) => ({ ...row, createdAt: row.createdAt.toISOString() })),
+    apiTokens: tokens.map((row) => ({
+      ...row,
+      createdAt: row.createdAt.toISOString(),
+      lastUsedAt: row.lastUsedAt?.toISOString() ?? null,
+      revokedAt: row.revokedAt?.toISOString() ?? null,
+    })),
+    auditEvents: events.map((row) => ({ ...row, createdAt: row.createdAt.toISOString() })),
+    driveFiles: files.map((row) => ({
+      name: row.name,
+      sizeBytes: row.sizeBytes,
+      createdAt: row.createdAt.toISOString(),
+      trashed: row.status === "trashed",
+    })),
+    documents: documents.map((row) => ({ ...row, updatedAt: row.updatedAt.toISOString() })),
+    counts: {
+      comments: comments[0]?.value ?? 0,
+      tasksAssigned: assigned[0]?.value ?? 0,
+      submissions: submissions[0]?.value ?? 0,
+    },
+  };
+
+  const filename = `donnees-${target.email}-${bundle.exportedAt.slice(0, 10)}.json`;
+  await recordAudit({
+    orgId: actor.orgId,
+    actorUserId: actor.userId,
+    action: "admin.compliance.export",
+    resourceType: "user",
+    resourceId: userId,
+    result: "success",
+    metadata: { targetUserId: userId },
+  });
+  return { filename, json: JSON.stringify(bundle, null, 2) };
+}
+
+/**
+ * Efface le compte d'un membre par **pseudonymisation**, pas par suppression :
+ * la ligne utilisateur garde son identifiant — les contenus restent donc
+ * attachés à son auteur — mais le nom affiché, l'adresse et la vérification
+ * e-mail sont remplacés. Les identifiants de connexion (sessions, jetons
+ * d'API) sont, eux, supprimés définitivement : ce sont des secrets.
+ *
+ * Ce choix de pseudonymisation plutôt que d'une cascade préserve la propriété
+ * des contenus par l'organisation : fichiers, documents, commentaires, tâches
+ * et copies restent en place, seule l'identité de la personne disparaît.
+ *
+ * Mêmes protections que le retrait de membre : ni le propriétaire, ni soi-même,
+ * ni (pour un simple administrateur) un autre administrateur.
+ */
+export async function eraseUserAccount(
+  actor: Actor,
+  userId: string,
+  input: { confirm: string },
+): Promise<{ ok: true }> {
+  const self = await requireAdmin(actor);
+  if (input.confirm !== ERASE_CONFIRMATION) {
+    throw new AdminError(
+      "validation",
+      `Confirmation requise : tapez « ${ERASE_CONFIRMATION} » pour effacer le compte.`,
+    );
+  }
+  const target = await requireMember(actor, userId);
+  if (target.role === "owner") {
+    throw new AdminError("forbidden", "Le propriétaire ne peut pas être effacé.");
+  }
+  if (userId === actor.userId) {
+    throw new AdminError("validation", "Vous ne pouvez pas effacer votre propre compte.");
+  }
+  if (target.role === "admin" && self.role !== "owner") {
+    throw new AdminError("forbidden", "Seul le propriétaire peut effacer un administrateur.");
+  }
+
+  const db = getDb();
+  await db
+    .update(core.user)
+    .set({
+      name: ERASED_USER_NAME,
+      email: `efface-${crypto.randomUUID()}@invalid.local`,
+      emailVerified: false,
+    })
+    .where(eq(core.user.id, userId));
+  await db.delete(core.session).where(eq(core.session.userId, userId));
+  await db.delete(core.apiTokens).where(eq(core.apiTokens.userId, userId));
+
+  await recordAudit({
+    orgId: actor.orgId,
+    actorUserId: actor.userId,
+    action: "admin.compliance.erase",
+    resourceType: "user",
+    resourceId: userId,
+    result: "success",
+    metadata: { targetUserId: userId },
+  });
+  return { ok: true };
 }
