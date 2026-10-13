@@ -295,6 +295,63 @@ describe("forms — collecte publique", () => {
     expect(responses[0]?.answers[scale.id]).toBe("3");
   });
 
+  it("n'accepte qu'une date du calendrier et une réponse « Oui » ou « Non »", async () => {
+    const { entry, form } = await createForm(f.actorAlice, { title: "Rendez-vous" });
+    const detail = await saveForm(f.actorAlice, entry.id, {
+      status: "open",
+      questions: [
+        { kind: "date", label: "Date de naissance", required: true },
+        { kind: "yes_no", label: "Abonné à la lettre", required: true },
+      ],
+    });
+    const [naissance, abonnement] = detail.questions;
+    if (!naissance || !abonnement) throw new Error("questions manquantes");
+
+    // Les deux questions sont obligatoires.
+    await expect(submitResponse(form.slug, {})).rejects.toThrow(/obligatoire/);
+
+    // 2026 n'est pas bissextile : le 29 février est refusé explicitement.
+    await expect(
+      submitResponse(form.slug, {
+        [naissance.id]: "2026-02-29",
+        [abonnement.id]: "Oui",
+      }),
+    ).rejects.toThrow(/date valide au format JJ\/MM\/AAAA/);
+
+    await expect(
+      submitResponse(form.slug, {
+        [naissance.id]: "29/02/2026",
+        [abonnement.id]: "Oui",
+      }),
+    ).rejects.toThrow(/date valide/);
+
+    await expect(
+      submitResponse(form.slug, {
+        [naissance.id]: "2026-02-28",
+        [abonnement.id]: "Peut-être",
+      }),
+    ).rejects.toThrow(/« Oui » ou « Non »/);
+
+    await submitResponse(form.slug, {
+      [naissance.id]: "2026-02-28",
+      [abonnement.id]: "Non",
+    });
+
+    const { responses } = await listResponses(f.actorAlice, entry.id);
+    expect(responses).toHaveLength(1);
+    expect(responses[0]?.answers[naissance.id]).toBe("2026-02-28");
+    expect(responses[0]?.answers[abonnement.id]).toBe("Non");
+  });
+
+  it("ignore les options laissées sur un type sans choix", async () => {
+    const { entry } = await createForm(f.actorAlice, { title: "Options oubliées" });
+    const detail = await saveForm(f.actorAlice, entry.id, {
+      status: "open",
+      questions: [{ kind: "date", label: "Échéance", options: ["Rouge", "Bleu"] }],
+    });
+    expect(detail.questions[0]?.options).toEqual([]);
+  });
+
   it("déduplique les cases à cocher en conservant l'ordre de première occurrence", async () => {
     const { entry, form } = await createForm(f.actorAlice, { title: "Sports" });
     const detail = await saveForm(f.actorAlice, entry.id, {

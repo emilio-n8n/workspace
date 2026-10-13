@@ -1,5 +1,6 @@
 import { Alert, Button, cn } from "@workspace/ui";
 import { type FormEvent, useEffect, useState } from "react";
+import { SCALE_VALUES, YES_NO_OPTIONS } from "../questions.ts";
 import { getPublicFormFn, type PublicForm as PublicFormData, submitResponseFn } from "../server.ts";
 
 /**
@@ -176,13 +177,13 @@ export function PublicForm({ slug }: { slug: string }) {
             {question.kind === "scale" ? (
               <div className="flex flex-col gap-1">
                 <div className="flex items-center gap-2">
-                  {[1, 2, 3, 4, 5].map((value) => (
+                  {SCALE_VALUES.map((value) => (
                     <label
                       key={value}
                       className={cn(
                         "grid size-9 cursor-pointer place-items-center rounded-full text-sm",
                         "has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-ring has-[:focus-visible]:ring-offset-1 has-[:focus-visible]:ring-offset-background",
-                        answers[question.id] === String(value)
+                        answers[question.id] === value
                           ? "bg-primary text-primary-foreground"
                           : "border border-input hover:bg-muted",
                       )}
@@ -192,9 +193,9 @@ export function PublicForm({ slug }: { slug: string }) {
                         name={question.id}
                         required={question.required}
                         className="sr-only"
-                        checked={answers[question.id] === String(value)}
+                        checked={answers[question.id] === value}
                         onChange={() =>
-                          setAnswers((current) => ({ ...current, [question.id]: String(value) }))
+                          setAnswers((current) => ({ ...current, [question.id]: value }))
                         }
                       />
                       {value}
@@ -205,6 +206,41 @@ export function PublicForm({ slug }: { slug: string }) {
                   <span>1 = pas satisfait</span>
                   <span>5 = très satisfait</span>
                 </div>
+              </div>
+            ) : null}
+
+            {question.kind === "date" ? (
+              <div className="flex flex-col gap-1">
+                <input
+                  type="date"
+                  aria-label={question.label}
+                  required={question.required}
+                  value={(answers[question.id] as string) ?? ""}
+                  onChange={(event) =>
+                    setAnswers((current) => ({ ...current, [question.id]: event.target.value }))
+                  }
+                  className="h-9 rounded-md border border-input bg-background px-3 text-sm"
+                />
+                <span className="text-xs text-muted-foreground">Format : JJ/MM/AAAA.</span>
+              </div>
+            ) : null}
+
+            {question.kind === "yes_no" ? (
+              <div className="flex flex-wrap items-center gap-4">
+                {YES_NO_OPTIONS.map((value) => (
+                  <label key={value} className="flex items-center gap-2 text-sm">
+                    <input
+                      type="radio"
+                      name={question.id}
+                      required={question.required}
+                      checked={answers[question.id] === value}
+                      onChange={() =>
+                        setAnswers((current) => ({ ...current, [question.id]: value }))
+                      }
+                    />
+                    {value}
+                  </label>
+                ))}
               </div>
             ) : null}
           </fieldset>

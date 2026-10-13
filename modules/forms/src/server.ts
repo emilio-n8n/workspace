@@ -5,6 +5,7 @@ import { createRateLimiter } from "@workspace/ratelimit";
 import { z } from "zod";
 import {
   createForm,
+  FORM_KINDS,
   getFormByFileId,
   getPublicForm,
   listForms,
@@ -17,7 +18,7 @@ export type { FormDetail, FormSummary, PublicForm, QuestionView, ResponseView } 
 
 const questionSchema = z.object({
   id: z.string().uuid().optional(),
-  kind: z.enum(["short_text", "long_text", "choice", "checkbox", "scale"]),
+  kind: z.enum(FORM_KINDS),
   label: z.string().trim().min(1).max(500),
   required: z.boolean().optional(),
   options: z.array(z.string().max(200)).max(50).optional(),

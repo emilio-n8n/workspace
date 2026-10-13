@@ -12,6 +12,7 @@ import {
 } from "@workspace/drive";
 import { type Actor, roleSatisfies } from "@workspace/permissions";
 import { and, asc, desc, eq, inArray, lt, sql } from "drizzle-orm";
+import { FORM_KINDS, type FormKind, kindHasOptions, validateAnswers } from "./questions.ts";
 import {
   type FormQuestionRow,
   type FormRow,
@@ -23,13 +24,13 @@ import {
 /** Type MIME du pointeur Drive d'un formulaire Workspace. */
 export const FORMS_MIME = "application/vnd.workspace.forms+json";
 
-export const FORM_KINDS = ["short_text", "long_text", "choice", "checkbox", "scale"] as const;
-export type FormKind = (typeof FORM_KINDS)[number];
-
 export const FORM_STATUSES = ["draft", "open", "closed"] as const;
 export type FormStatus = (typeof FORM_STATUSES)[number];
 
 const MAX_RESPONSES = 10_000;
+
+/** Nombre maximal de questions dans un formulaire. */
+export const MAX_QUESTIONS = 100;
 
 export type FormsErrorCode = "not_found" | "forbidden" | "validation" | "conflict";
 
@@ -98,8 +99,8 @@ function assertStatus(status: string): FormStatus {
 }
 
 function assertQuestions(input: QuestionInput[]): QuestionInput[] {
-  if (input.length > 100) {
-    throw new FormsError("validation", "100 questions au maximum.");
+  if (input.length > MAX_QUESTIONS) {
+    throw new FormsError("validation", `${MAX_QUESTIONS} questions au maximum.`);
   }
   return input.map((question) => {
     if (!FORM_KINDS.includes(question.kind)) {
@@ -109,10 +110,14 @@ function assertQuestions(input: QuestionInput[]): QuestionInput[] {
     if (label.length < 1 || label.length > 500) {
       throw new FormsError("validation", "Chaque question doit avoir un intitulé (500 max).");
     }
-    const needsOptions = question.kind === "choice" || question.kind === "checkbox";
-    const options = (question.options ?? [])
-      .map((option) => option.trim())
-      .filter((option) => option.length > 0);
+    const needsOptions = kindHasOptions(question.kind);
+    // Les types sans liste de choix (texte, échelle, date, oui/non) n'en ont
+    // aucun : des options oubliées n'invalident pas la question.
+    const options = needsOptions
+      ? (question.options ?? [])
+          .map((option) => option.trim())
+          .filter((option) => option.length > 0)
+      : [];
     if (needsOptions && options.length < 2) {
       throw new FormsError("validation", `« ${label} » doit proposer au moins 2 options.`);
     }
@@ -403,69 +408,21 @@ export async function getPublicForm(slug: string): Promise<PublicForm> {
   };
 }
 
-function validateAnswers(
+/**
+ * Valide les réponses reçues, question par question, dans l'ordre du
+ * formulaire. Les règles vivent dans `questions.ts` (testables sans base) et
+ * remontent ici sous forme de `FormsError`.
+ */
+function checkAnswers(
   questions: QuestionView[],
   answers: Record<string, string | string[]>,
 ): Record<string, string | string[]> {
-  const result: Record<string, string | string[]> = {};
-  for (const question of questions) {
-    const raw = answers[question.id];
-    if (question.kind === "checkbox") {
-      const rawValues = Array.isArray(raw)
-        ? raw.map((value) => String(value).trim())
-        : typeof raw === "string"
-          ? [raw.trim()]
-          : [];
-      // Déduplication en conservant l'ordre de première occurrence.
-      const values: string[] = [];
-      for (const value of rawValues) {
-        if (value.length === 0 || values.includes(value)) continue;
-        values.push(value);
-      }
-      for (const value of values) {
-        if (!question.options.includes(value)) {
-          throw new FormsError("validation", `Réponse invalide pour « ${question.label} ».`);
-        }
-      }
-      if (question.required && values.length === 0) {
-        throw new FormsError("validation", `« ${question.label} » est obligatoire.`);
-      }
-      if (values.length > 0) result[question.id] = values;
-      continue;
-    }
-
-    const rawValue = typeof raw === "string" ? raw : "";
-    if (question.kind === "scale") {
-      // Échelle stricte : un seul chiffre de 1 à 5, sans décimale, exposant,
-      // espace ni zéro superflu (« 0x3 », « 1e0 », « 3.0 », « 3 » entouré
-      // d'espaces sont refusés).
-      if (rawValue.length === 0) {
-        if (question.required) {
-          throw new FormsError("validation", `« ${question.label} » est obligatoire.`);
-        }
-        continue;
-      }
-      if (!/^[1-5]$/.test(rawValue)) {
-        throw new FormsError("validation", `Réponse invalide pour « ${question.label} ».`);
-      }
-      result[question.id] = rawValue;
-      continue;
-    }
-
-    const value = rawValue.trim();
-    if (question.required && value.length === 0) {
-      throw new FormsError("validation", `« ${question.label} » est obligatoire.`);
-    }
-    if (value.length === 0) continue;
-    if (value.length > 5000) {
-      throw new FormsError("validation", `Réponse trop longue pour « ${question.label} ».`);
-    }
-    if (question.kind === "choice" && !question.options.includes(value)) {
-      throw new FormsError("validation", `Réponse invalide pour « ${question.label} ».`);
-    }
-    result[question.id] = value;
+  try {
+    return validateAnswers(questions, answers);
+  } catch (error) {
+    if (error instanceof Error) throw new FormsError("validation", error.message);
+    throw error;
   }
-  return result;
 }
 
 /**
@@ -490,7 +447,7 @@ export async function submitResponse(
     throw new FormsError("validation", "Ce formulaire n'a pas encore de question.");
   }
 
-  const clean = validateAnswers(questions, answers);
+  const clean = checkAnswers(questions, answers);
 
   // Insertion conditionnelle en une seule requête : statut ouvert et limite de
   // réponses sont vérifiés atomiquement, sans fenêtre entre le comptage et

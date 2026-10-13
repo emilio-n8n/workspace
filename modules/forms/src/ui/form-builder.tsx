@@ -3,13 +3,25 @@ import {
   Badge,
   Button,
   buttonVariants,
+  EmptyState,
+  IconClipboard,
   Input,
+  Kbd,
   Label,
   SegmentedTabs,
-  Toasts,
-  useToasts,
 } from "@workspace/ui";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  duplicateQuestion,
+  FORM_KINDS,
+  type FormKind,
+  insertQuestion,
+  KIND_HINTS,
+  KIND_LABELS,
+  kindHasOptions,
+  moveQuestion,
+  removeQuestion,
+} from "../questions.ts";
 import {
   type FormDetail,
   getFormFn,
@@ -18,14 +30,7 @@ import {
   type ResponseView,
   saveFormFn,
 } from "../server.ts";
-
-const KIND_LABELS: Record<string, string> = {
-  short_text: "Texte court",
-  long_text: "Texte long",
-  choice: "Choix unique",
-  checkbox: "Cases à cocher",
-  scale: "Échelle 1 à 5",
-};
+import { FormsToasts, useFormsToasts } from "./toasts.tsx";
 
 const STATUS_OPTIONS = [
   { value: "draft", label: "Brouillon (non publié)" },
@@ -37,7 +42,7 @@ type QuestionDraft = {
   key: string;
   /** Identifiant serveur conservé pour ne pas orpheliner les réponses. */
   id?: string;
-  kind: QuestionView["kind"];
+  kind: FormKind;
   label: string;
   required: boolean;
   options: string[];
@@ -54,13 +59,13 @@ function toDraft(question: QuestionView): QuestionDraft {
   };
 }
 
-function newDraft(kind: QuestionView["kind"]): QuestionDraft {
+function newDraft(kind: FormKind): QuestionDraft {
   return {
     key: crypto.randomUUID(),
     kind,
     label: "",
     required: false,
-    options: kind === "choice" || kind === "checkbox" ? ["", ""] : [],
+    options: kindHasOptions(kind) ? ["", ""] : [],
   };
 }
 
@@ -82,7 +87,10 @@ export function FormBuilder({ fileId }: { fileId: string }) {
   } | null>(null);
   const [responsesError, setResponsesError] = useState<string | null>(null);
   const [responsesBusy, setResponsesBusy] = useState(false);
-  const { toasts, push, dismiss } = useToasts();
+  const [focusKey, setFocusKey] = useState<string | null>(null);
+  const [announcement, setAnnouncement] = useState("");
+  const { toasts, push, pushUndo, dismiss } = useFormsToasts();
+  const listRef = useRef<HTMLUListElement>(null);
 
   const load = useCallback(async () => {
     try {
@@ -128,6 +136,65 @@ export function FormBuilder({ fileId }: { fileId: string }) {
     setSaved(false);
   }
 
+  /** Déplace une question d'un cran, boutons ou clavier (Alt + flèche). */
+  function move(index: number, direction: -1 | 1) {
+    const next = moveQuestion(questions, index, direction);
+    if (!next) return;
+    update(() => setQuestions(next));
+    const target = next[index + direction];
+    // Le nouvel ordre se voit à l'écran ; un lecteur d'écran doit l'entendre.
+    // Message court, rendu dans une zone `role="status"`.
+    setAnnouncement(
+      target
+        ? `Question ${index + 1} déplacée en position ${index + direction + 1}.`
+        : "Ordre des questions inchangé.",
+    );
+  }
+
+  /** Duplique une question : nouvelle question, les réponses restent à l'originale. */
+  function duplicate(index: number) {
+    const next = duplicateQuestion(questions, index, (source) => ({
+      ...source,
+      id: undefined,
+      // La copie n'est pas encore enregistrée : elle n'a pas d'identifiant.
+      label: source.label.trim().length > 0 ? `${source.label.trim()} (copie)` : "",
+      key: crypto.randomUUID(),
+    }));
+    if (!next) return;
+    update(() => setQuestions(next));
+    const copy = next[index + 1];
+    if (copy) setFocusKey(copy.key);
+    push("success", "Question dupliquée.");
+  }
+
+  /**
+   * Supprime une question, avec annulation possible pendant 8 s. La question
+   * est retirée de la liste (donc de l'enregistrement) mais conservée en
+   * mémoire à sa position : « Annuler » la remet exactement où elle était.
+   */
+  function remove(index: number) {
+    const removal = removeQuestion(questions, index);
+    if (!removal) return;
+    update(() => setQuestions(removal.questions));
+    pushUndo("Question supprimée.", () => {
+      update(() =>
+        setQuestions((current) => insertQuestion(current, removal.index, removal.removed)),
+      );
+      setFocusKey(removal.removed.key);
+      setAnnouncement(`Question ${removal.index + 1} restaurée.`);
+    });
+  }
+
+  function patch(index: number, changes: Partial<QuestionDraft>) {
+    update(() => {
+      setQuestions((current) =>
+        current.map((question, position) =>
+          position === index ? { ...question, ...changes } : question,
+        ),
+      );
+    });
+  }
+
   async function onSave() {
     setBusy(true);
     setError(null);
@@ -159,25 +226,26 @@ export function FormBuilder({ fileId }: { fileId: string }) {
     }
   }
 
-  function move(index: number, direction: -1 | 1) {
-    const target = index + direction;
-    if (target < 0 || target >= questions.length) return;
-    update(() => {
-      const copy = [...questions];
-      const [item] = copy.splice(index, 1);
-      if (item) copy.splice(target, 0, item);
-      setQuestions(copy);
-    });
-  }
+  /** Met le focus sur l'intitulé d'une question (après duplication ou annulation). */
+  useEffect(() => {
+    if (!focusKey) return;
+    const field = listRef.current?.querySelector<HTMLInputElement>(
+      `input[data-question-key="${focusKey}"]`,
+    );
+    field?.focus();
+    setFocusKey(null);
+  }, [focusKey]);
 
-  function patch(index: number, changes: Partial<QuestionDraft>) {
-    update(() => {
-      setQuestions((current) =>
-        current.map((question, position) =>
-          position === index ? { ...question, ...changes } : question,
-        ),
-      );
-    });
+  /**
+   * Déplacement au clavier depuis n'importe quel champ de la question :
+   * Alt + flèche haut/bas. Les flèches nues gardent leur usage naturel
+   * (déplacement du curseur, changement de valeur d'une liste).
+   */
+  function onQuestionKeyDown(event: React.KeyboardEvent<HTMLLIElement>, index: number) {
+    if (!event.altKey || event.ctrlKey || event.metaKey) return;
+    if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
+    event.preventDefault();
+    move(index, event.key === "ArrowUp" ? -1 : 1);
   }
 
   const publicUrl = detail ? `${window.location.origin}/f/${detail.slug}` : "";
@@ -281,158 +349,175 @@ export function FormBuilder({ fileId }: { fileId: string }) {
 
           {tab === "questions" ? (
             <>
-              <ul className="flex flex-col gap-3">
-                {questions.map((question, index) => (
-                  <li
-                    key={question.key}
-                    className="flex flex-col gap-3 rounded-xl border border-border bg-card p-4"
-                  >
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs font-medium text-muted-foreground">
-                        Question {index + 1}
-                      </span>
-                      <div className="ml-auto flex items-center gap-1">
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          aria-label="Monter la question"
-                          onClick={() => move(index, -1)}
-                        >
-                          ↑
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          aria-label="Descendre la question"
-                          onClick={() => move(index, 1)}
-                        >
-                          ↓
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          className="text-destructive"
-                          aria-label="Supprimer la question"
-                          onClick={() =>
-                            update(() =>
-                              setQuestions(questions.filter((_, position) => position !== index)),
-                            )
-                          }
-                        >
-                          Supprimer
-                        </Button>
+              {questions.length === 0 ? (
+                <EmptyState
+                  icon={<IconClipboard />}
+                  title="Aucune question"
+                  hint="Ajoutez une question ci-dessous : texte, choix, échelle, date ou oui / non."
+                />
+              ) : (
+                <ul ref={listRef} className="flex flex-col gap-3">
+                  {questions.map((question, index) => (
+                    <li
+                      key={question.key}
+                      onKeyDown={(event) => onQuestionKeyDown(event, index)}
+                      className="flex flex-col gap-3 rounded-xl border border-border bg-card p-4"
+                    >
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs font-medium text-muted-foreground">
+                          Question {index + 1} sur {questions.length}
+                        </span>
+                        <div className="ml-auto flex items-center gap-1">
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            aria-label={`Monter la question ${index + 1}`}
+                            disabled={index === 0}
+                            onClick={() => move(index, -1)}
+                          >
+                            ↑
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            aria-label={`Descendre la question ${index + 1}`}
+                            disabled={index === questions.length - 1}
+                            onClick={() => move(index, 1)}
+                          >
+                            ↓
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            aria-label={`Dupliquer la question ${index + 1}`}
+                            onClick={() => duplicate(index)}
+                          >
+                            Dupliquer
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="text-destructive"
+                            aria-label={`Supprimer la question ${index + 1}`}
+                            onClick={() => remove(index)}
+                          >
+                            Supprimer
+                          </Button>
+                        </div>
                       </div>
-                    </div>
-                    <Input
-                      aria-label="Intitulé de la question"
-                      value={question.label}
-                      onChange={(event) => patch(index, { label: event.target.value })}
-                      placeholder="Votre question…"
-                      maxLength={500}
-                    />
-                    <div className="flex flex-wrap items-center gap-3">
-                      <select
-                        aria-label="Type de question"
-                        value={question.kind}
-                        onChange={(event) => {
-                          const kind = event.target.value as QuestionView["kind"];
-                          patch(index, {
-                            kind,
-                            options:
-                              kind === "choice" || kind === "checkbox"
+                      <Input
+                        data-question-key={question.key}
+                        aria-label="Intitulé de la question"
+                        value={question.label}
+                        onChange={(event) => patch(index, { label: event.target.value })}
+                        placeholder="Votre question…"
+                        maxLength={500}
+                      />
+                      <div className="flex flex-wrap items-center gap-3">
+                        <select
+                          aria-label="Type de question"
+                          value={question.kind}
+                          onChange={(event) => {
+                            const kind = event.target.value as FormKind;
+                            patch(index, {
+                              kind,
+                              options: kindHasOptions(kind)
                                 ? question.options.length >= 2
                                   ? question.options
                                   : ["", ""]
                                 : [],
-                          });
-                        }}
-                        className="h-9 rounded-md border border-input bg-background px-2 text-sm"
-                      >
-                        {Object.entries(KIND_LABELS).map(([value, label]) => (
-                          <option key={value} value={value}>
-                            {label}
-                          </option>
-                        ))}
-                      </select>
-                      <label className="flex items-center gap-2 text-sm">
-                        <input
-                          type="checkbox"
-                          checked={question.required}
-                          onChange={(event) => patch(index, { required: event.target.checked })}
-                        />
-                        Obligatoire
-                      </label>
-                    </div>
-                    {(question.kind === "choice" || question.kind === "checkbox") && (
-                      <div className="flex flex-col gap-2">
-                        <Label>Options</Label>
-                        {question.options.map((option, optionIndex) => (
-                          <div
-                            // biome-ignore lint/suspicious/noArrayIndexKey: liste éditable par position, l'index est l'identité de travail (valeurs vides ou dupliquées en cours de saisie).
-                            key={`${question.key}-${optionIndex}`}
-                            className="flex items-center gap-2"
-                          >
-                            <Input
-                              aria-label={`Option ${optionIndex + 1}`}
-                              value={option}
-                              onChange={(event) =>
-                                patch(index, {
-                                  options: question.options.map((value, position) =>
-                                    position === optionIndex ? event.target.value : value,
-                                  ),
-                                })
-                              }
-                              maxLength={200}
-                            />
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              aria-label={`Supprimer l'option ${optionIndex + 1}`}
-                              onClick={() =>
-                                patch(index, {
-                                  options: question.options.filter(
-                                    (_, position) => position !== optionIndex,
-                                  ),
-                                })
-                              }
-                            >
-                              ✕
-                            </Button>
-                          </div>
-                        ))}
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          className="self-start"
-                          onClick={() => patch(index, { options: [...question.options, ""] })}
+                            });
+                          }}
+                          className="h-9 rounded-md border border-input bg-background px-2 text-sm"
                         >
-                          Ajouter une option
-                        </Button>
+                          {FORM_KINDS.map((kind) => (
+                            <option key={kind} value={kind}>
+                              {KIND_LABELS[kind]}
+                            </option>
+                          ))}
+                        </select>
+                        <label className="flex items-center gap-2 text-sm">
+                          <input
+                            type="checkbox"
+                            checked={question.required}
+                            onChange={(event) => patch(index, { required: event.target.checked })}
+                          />
+                          Obligatoire
+                        </label>
                       </div>
-                    )}
-                  </li>
-                ))}
-              </ul>
+                      <p className="text-xs text-muted-foreground">{KIND_HINTS[question.kind]}</p>
+                      {kindHasOptions(question.kind) && (
+                        <div className="flex flex-col gap-2">
+                          <Label>Options</Label>
+                          {question.options.map((option, optionIndex) => (
+                            <div
+                              // biome-ignore lint/suspicious/noArrayIndexKey: liste éditable par position, l'index est l'identité de travail (valeurs vides ou dupliquées en cours de saisie).
+                              key={`${question.key}-${optionIndex}`}
+                              className="flex items-center gap-2"
+                            >
+                              <Input
+                                aria-label={`Option ${optionIndex + 1}`}
+                                value={option}
+                                onChange={(event) =>
+                                  patch(index, {
+                                    options: question.options.map((value, position) =>
+                                      position === optionIndex ? event.target.value : value,
+                                    ),
+                                  })
+                                }
+                                maxLength={200}
+                              />
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                aria-label={`Supprimer l'option ${optionIndex + 1}`}
+                                onClick={() =>
+                                  patch(index, {
+                                    options: question.options.filter(
+                                      (_, position) => position !== optionIndex,
+                                    ),
+                                  })
+                                }
+                              >
+                                ✕
+                              </Button>
+                            </div>
+                          ))}
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="self-start"
+                            onClick={() => patch(index, { options: [...question.options, ""] })}
+                          >
+                            Ajouter une option
+                          </Button>
+                        </div>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              )}
 
               <div className="flex flex-wrap items-center gap-2">
                 <span className="text-xs font-medium uppercase tracking-widest text-muted-foreground">
                   Ajouter :
                 </span>
-                {Object.entries(KIND_LABELS).map(([kind, label]) => (
+                {FORM_KINDS.map((kind) => (
                   <Button
                     key={kind}
                     size="sm"
                     variant="outline"
-                    onClick={() =>
-                      update(() =>
-                        setQuestions([...questions, newDraft(kind as QuestionView["kind"])]),
-                      )
-                    }
+                    onClick={() => update(() => setQuestions([...questions, newDraft(kind)]))}
                   >
-                    {label}
+                    {KIND_LABELS[kind]}
                   </Button>
                 ))}
               </div>
+
+              <p className="text-xs text-muted-foreground">
+                Au clavier, dans une question : <Kbd>Alt</Kbd> + <Kbd>↑</Kbd> ou <Kbd>↓</Kbd> pour
+                la déplacer.
+              </p>
             </>
           ) : (
             <div className="flex flex-col gap-3">
@@ -509,7 +594,13 @@ export function FormBuilder({ fileId }: { fileId: string }) {
         <p className="text-sm text-muted-foreground">Chargement…</p>
       ) : null}
 
-      <Toasts toasts={toasts} dismiss={dismiss} />
+      {announcement ? (
+        <p role="status" className="sr-only">
+          {announcement}
+        </p>
+      ) : null}
+
+      <FormsToasts toasts={toasts} dismiss={dismiss} />
     </div>
   );
 }

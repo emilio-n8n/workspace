@@ -7,7 +7,8 @@ exploiter (lecture, export CSV).
 ## Périmètre (livré)
 - Formulaire = fichier Drive lié (nom, arborescence, permissions héritées).
 - Questions : texte court, texte long, choix unique, cases à cocher,
-  échelle 1-5 ; obligatoire par question ; ordre réorganisable.
+  échelle 1-5, date, oui/non ; obligatoire par question ; ordre
+  réorganisable au clavier (Alt + flèches) comme à la souris.
 - Statuts : brouillon (invisible publiquement), ouvert, fermé.
 - Page publique `/f/<slug>` sans session ; validation stricte des réponses
   (obligatoires, choix autorisés, échelle, tailles maximales).
