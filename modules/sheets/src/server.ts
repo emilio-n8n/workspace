@@ -6,18 +6,24 @@ import {
   addTab,
   CELL_STYLE_BACKGROUNDS,
   createSpreadsheet,
+  deleteColumns,
+  deleteRows,
   deleteTab,
   getSpreadsheet,
   importCsv,
+  insertColumns,
+  insertRows,
   listSpreadsheets,
+  MAX_DIMENSION_SIZES,
   MAX_STYLE_CELLS,
   renameSpreadsheet,
   renameTab,
   saveCells,
   setCellStyle,
+  setDimensionSizes,
 } from "./index.ts";
 
-export type { CellView, SpreadsheetDetail, TabView } from "./index.ts";
+export type { CellView, DimensionSize, SpreadsheetDetail, TabView } from "./index.ts";
 
 export const listSpreadsheetsFn = createServerFn({ method: "GET" }).handler(async () => {
   const { actor } = await requireActor(getRequest().headers);
@@ -105,6 +111,89 @@ export const setCellStyleFn = createServerFn({ method: "POST" })
       cells: data.cells,
       style: data.style,
     });
+  });
+
+export const setDimensionSizesFn = createServerFn({ method: "POST" })
+  .validator((input: unknown) =>
+    z
+      .object({
+        fileId: z.string().uuid(),
+        tabId: z.string().uuid(),
+        sizes: z
+          .array(
+            z.object({
+              axis: z.enum(["col", "row"]),
+              index: z.number().int().min(0),
+              size: z.number().int(),
+            }),
+          )
+          .min(1)
+          .max(MAX_DIMENSION_SIZES),
+      })
+      .parse(input),
+  )
+  .handler(async ({ data }) => {
+    const { actor } = await requireActor(getRequest().headers);
+    return setDimensionSizes(actor, data.fileId, {
+      tabId: data.tabId,
+      sizes: data.sizes,
+    });
+  });
+
+/** Valide une opération structurelle (index et nombre d'éléments). */
+const structureInput = z.object({
+  fileId: z.string().uuid(),
+  tabId: z.string().uuid(),
+  index: z.number().int().min(0),
+  count: z.number().int().min(1).max(100).optional(),
+});
+
+export const insertRowsFn = createServerFn({ method: "POST" })
+  .validator((input: unknown) => structureInput.parse(input))
+  .handler(async ({ data }) => {
+    const { actor } = await requireActor(getRequest().headers);
+    await insertRows(actor, data.fileId, {
+      tabId: data.tabId,
+      index: data.index,
+      count: data.count,
+    });
+    return { ok: true };
+  });
+
+export const insertColumnsFn = createServerFn({ method: "POST" })
+  .validator((input: unknown) => structureInput.parse(input))
+  .handler(async ({ data }) => {
+    const { actor } = await requireActor(getRequest().headers);
+    await insertColumns(actor, data.fileId, {
+      tabId: data.tabId,
+      index: data.index,
+      count: data.count,
+    });
+    return { ok: true };
+  });
+
+export const deleteRowsFn = createServerFn({ method: "POST" })
+  .validator((input: unknown) => structureInput.parse(input))
+  .handler(async ({ data }) => {
+    const { actor } = await requireActor(getRequest().headers);
+    await deleteRows(actor, data.fileId, {
+      tabId: data.tabId,
+      index: data.index,
+      count: data.count,
+    });
+    return { ok: true };
+  });
+
+export const deleteColumnsFn = createServerFn({ method: "POST" })
+  .validator((input: unknown) => structureInput.parse(input))
+  .handler(async ({ data }) => {
+    const { actor } = await requireActor(getRequest().headers);
+    await deleteColumns(actor, data.fileId, {
+      tabId: data.tabId,
+      index: data.index,
+      count: data.count,
+    });
+    return { ok: true };
   });
 
 export const importCsvFn = createServerFn({ method: "POST" })

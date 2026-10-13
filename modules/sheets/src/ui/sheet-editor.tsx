@@ -3,15 +3,26 @@ import {
   type ChangeEvent,
   type CSSProperties,
   type FormEvent,
-  Fragment,
   memo,
+  type KeyboardEvent as ReactKeyboardEvent,
   useCallback,
   useEffect,
   useMemo,
   useRef,
   useState,
 } from "react";
-import { cellKey, evaluateCells, formatValue } from "../formula.ts";
+import { MAX_CELL_CHARS } from "../csv.ts";
+import {
+  applyResize,
+  clampSize,
+  DIMENSION_LIMITS,
+  type DimensionAxis,
+  type DimensionSize,
+  parseSizes,
+  sizeKey,
+  sizeOf,
+} from "../dimensions.ts";
+import { cellKey, evaluateCells, formatValue, parseKey } from "../formula.ts";
 import {
   CELL_STYLE_BACKGROUNDS,
   type CellStyle,
@@ -20,15 +31,30 @@ import {
 } from "../schema.ts";
 import {
   addTabFn,
+  deleteColumnsFn,
+  deleteRowsFn,
   deleteTabFn,
   getSpreadsheetFn,
   importCsvFn,
+  insertColumnsFn,
+  insertRowsFn,
   renameSpreadsheetFn,
   renameTabFn,
   type SpreadsheetDetail,
   saveCellsFn,
   setCellStyleFn,
+  setDimensionSizesFn,
 } from "../server.ts";
+import {
+  type StructureKind,
+  type StructureMode,
+  selectionAfter,
+  structureMessage,
+} from "../structure.ts";
+import { toneOf } from "./cell-tone.ts";
+import { FormulaBar } from "./formula-bar.tsx";
+import { ResizeHandle } from "./resize-handle.tsx";
+import { SheetContextMenu, type SheetMenuItem } from "./sheet-context-menu.tsx";
 
 const COLS = 20;
 const ROWS = 100;
@@ -39,6 +65,8 @@ const COL_LETTERS = Array.from({ length: COLS }, (_, index) =>
 const ROW_KEYS = Array.from({ length: ROWS }, (_, index) => `ligne-${index + 1}`);
 const SAVE_DEBOUNCE_MS = 700;
 const SAVE_RETRY_MS = 3_000;
+/** Les tailles de grille sont enregistrées sans attendre (glisser ponctuel). */
+const SIZE_SAVE_DEBOUNCE_MS = 400;
 
 /** Classes Tailwind statiques des fonds de cellule (jetons de palette → teinte). */
 const STYLE_BACKGROUND_CLASSES: Record<CellStyleBackground, string> = {
@@ -65,6 +93,28 @@ type SaveStatus = "idle" | "saving" | "saved" | "error";
 type MoveDirection = "down" | "right" | "none";
 type CellTone = "number" | "error" | "text";
 
+/** Cible du menu contextuel : une cellule, une colonne ou une ligne. */
+type ContextTarget =
+  | { kind: "cell"; row: number; col: number }
+  | { kind: "row"; index: number }
+  | { kind: "col"; index: number };
+
+/** Tailles de grille d'un onglet, par axe de redimensionnement. */
+type SheetSizes = {
+  col: Map<number, number>;
+  row: Map<number, number>;
+};
+
+/** Retire un attribut d'un style ; `null` si le style devient vide. */
+function withoutKey(style: CellStyle, key: "align" | "background"): CellStyle | null {
+  const next = { ...style };
+  delete next[key];
+  return Object.keys(next).length > 0 ? next : null;
+}
+
+/** Jeu de cartes vide, partagé tant qu'aucune taille n'est choisie. */
+const EMPTY_SIZES: SheetSizes = { col: new Map(), row: new Map() };
+
 type GridCellProps = {
   row: number;
   col: number;
@@ -75,11 +125,11 @@ type GridCellProps = {
   selected: boolean;
   canEdit: boolean;
   editing: boolean;
-  lastRow: boolean;
-  lastCol: boolean;
   onStart: (row: number, col: number) => void;
   onCommit: (row: number, col: number, value: string, move: MoveDirection) => void;
   onCancel: () => void;
+  /** Clic droit ou touche Menu : ouvre le menu contextuel de la cellule. */
+  onRequestMenu: (row: number, col: number, anchor: DOMRect) => void;
 };
 
 /**
@@ -98,11 +148,10 @@ const GridCell = memo(function GridCell({
   selected,
   canEdit,
   editing,
-  lastRow,
-  lastCol,
   onStart,
   onCommit,
   onCancel,
+  onRequestMenu,
 }: GridCellProps) {
   const [draft, setDraft] = useState(raw);
   const skipBlurRef = useRef(false);
@@ -134,11 +183,7 @@ const GridCell = memo(function GridCell({
             onCancel();
           }
         }}
-        className={cn(
-          "bg-background px-2 py-1 text-sm outline-2 outline-ring",
-          !lastRow && "border-b border-border",
-          !lastCol && "border-r border-border",
-        )}
+        className="block w-full bg-background px-2 py-1 text-sm outline-2 outline-ring"
       />
     );
   }
@@ -147,7 +192,22 @@ const GridCell = memo(function GridCell({
     <button
       type="button"
       aria-label={`Cellule ${cellKey(row, col)}`}
+      // La cellule active est signalée sans dépendre d'un rôle ARIA de grille.
+      aria-current={selected ? "true" : undefined}
       onClick={() => onStart(row, col)}
+      onContextMenu={(event) => {
+        // Le menu contextuel est le seul propriétaire du clic droit : on ouvre
+        // à la position du pointeur plutôt que d'afficher le menu natif.
+        event.preventDefault();
+        onRequestMenu(row, col, event.currentTarget.getBoundingClientRect());
+      }}
+      onKeyDown={(event) => {
+        // Équivalent clavier du clic droit : touche Menu ou Maj+F10.
+        if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) {
+          event.preventDefault();
+          onRequestMenu(row, col, event.currentTarget.getBoundingClientRect());
+        }
+      }}
       title={raw || undefined}
       style={{
         fontWeight: cellStyle?.bold ? 700 : undefined,
@@ -155,14 +215,11 @@ const GridCell = memo(function GridCell({
         textAlign: cellStyle?.align,
       }}
       className={cn(
-        "truncate px-2 py-1 text-sm",
-        !lastRow && "border-b border-border",
-        !lastCol && "border-r border-border",
+        "block w-full truncate px-2 py-1 text-sm",
         tone === "number" ? "text-right tabular-nums" : "text-left",
         cellStyle?.background ? STYLE_BACKGROUND_CLASSES[cellStyle.background] : undefined,
         canEdit ? "cursor-cell hover:bg-muted/60" : "cursor-default",
         tone === "error" && "text-destructive",
-        selected && "-outline-offset-2 outline-2 outline-ring",
       )}
     >
       {display}
@@ -198,6 +255,42 @@ export function SheetEditor({ fileId }: { fileId: string }) {
   const activeTabIdRef = useRef<string | null>(null);
   const canEditRef = useRef(false);
   const flushRef = useRef<(tabId: string | null) => Promise<void>>(async () => undefined);
+  // Tailles de colonnes et de lignes, par onglet ; le glisser n'écrit qu'à la fin.
+  const [sizesByTab, setSizesByTab] = useState<Map<string, SheetSizes>>(new Map());
+  const [preview, setPreview] = useState<{
+    axis: DimensionAxis;
+    index: number;
+    size: number;
+  } | null>(null);
+  const pendingSizesRef = useRef(new Map<string, DimensionSize>());
+  const sizeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const sizeFlushRef = useRef<(tabId: string | null) => Promise<void>>(async () => undefined);
+  // Aperçu pendant le glisser : une seule image d'animation par mouvement.
+  const previewFrameRef = useRef<number | null>(null);
+  const previewValueRef = useRef<{ axis: DimensionAxis; index: number; size: number } | null>(null);
+  // Menu contextuel (position d'écran et cible).
+  const [menu, setMenu] = useState<{ x: number; y: number; target: ContextTarget } | null>(null);
+  // Brouillon de la barre de formule, rattaché à sa cellule : un brouillon
+  // d'une autre cellule est ignoré, donc la saisie ne fuit jamais d'une
+  // cellule à la suivante.
+  const [barDraft, setBarDraft] = useState<{ key: string; value: string } | null>(null);
+  const [announcement, setAnnouncement] = useState("");
+  const [structureBusy, setStructureBusy] = useState(false);
+  const gridRef = useRef<HTMLDivElement>(null);
+
+  // Valeurs dérivées du chargement : déclarées avant les rappels qui s'en
+  // servent, pour qu'aucune action ne lise une valeur encore indéfinie.
+  const activeTab = detail?.tabs.find((tab) => tab.id === activeTabId) ?? null;
+  const canEdit = detail?.canEdit ?? false;
+  const selectedKey = selected ? `${selected.row}:${selected.col}` : null;
+  const statusLabel =
+    status === "saving"
+      ? "Enregistrement…"
+      : status === "saved"
+        ? "Enregistré"
+        : status === "error"
+          ? "Erreur de sauvegarde"
+          : "";
 
   useEffect(() => {
     activeTabIdRef.current = activeTabId;
@@ -230,6 +323,7 @@ export function SheetEditor({ fileId }: { fileId: string }) {
       setTitle(data.title);
       setCellsByTab(byTab);
       setStylesByTab(styles);
+      setSizesByTab(parseSizes(data.sizes));
       setActiveTabId((current) =>
         current && data.tabs.some((tab) => tab.id === current)
           ? current
@@ -269,6 +363,9 @@ export function SheetEditor({ fileId }: { fileId: string }) {
     }
     return evaluateCells(raw);
   }, [activeMap]);
+
+  /** Style de la cellule active (v1 : la grille ne met en forme qu'une cellule). */
+  const selectedStyle = selectedKey ? (activeStyles.get(selectedKey) ?? null) : null;
 
   const flush = useCallback(
     async (tabId: string | null) => {
@@ -334,6 +431,109 @@ export function SheetEditor({ fileId }: { fileId: string }) {
     [flush],
   );
 
+  // -------------------------------------------------------------------------
+  // Persistance des tailles de colonnes et de lignes (TASK-001)
+  // -------------------------------------------------------------------------
+
+  const flushSizes = useCallback(
+    async (tabId: string | null) => {
+      if (!tabId || pendingSizesRef.current.size === 0) return;
+      const sizes = [...pendingSizesRef.current.values()];
+      pendingSizesRef.current = new Map();
+      try {
+        await setDimensionSizesFn({ data: { fileId, tabId, sizes } });
+      } catch (caught) {
+        setError(
+          caught instanceof Error ? caught.message : "Enregistrement des tailles impossible.",
+        );
+        // Les tailles non re-modifiées entre-temps repartent en attente.
+        for (const entry of sizes) {
+          const key = sizeKey(entry.axis, entry.index);
+          if (!pendingSizesRef.current.has(key)) pendingSizesRef.current.set(key, entry);
+        }
+      }
+    },
+    [fileId],
+  );
+
+  useEffect(() => {
+    sizeFlushRef.current = flushSizes;
+  }, [flushSizes]);
+
+  // Au démontage : on coule la dernière sauvegarde de tailles.
+  useEffect(() => {
+    return () => {
+      if (sizeTimerRef.current) {
+        clearTimeout(sizeTimerRef.current);
+        sizeTimerRef.current = null;
+      }
+      if (previewFrameRef.current !== null) {
+        cancelAnimationFrame(previewFrameRef.current);
+        previewFrameRef.current = null;
+      }
+      void sizeFlushRef.current(activeTabIdRef.current);
+    };
+  }, []);
+
+  const queueSizeSave = useCallback((tabId: string, entry: DimensionSize) => {
+    pendingSizesRef.current.set(sizeKey(entry.axis, entry.index), entry);
+    if (sizeTimerRef.current) clearTimeout(sizeTimerRef.current);
+    sizeTimerRef.current = setTimeout(() => {
+      sizeTimerRef.current = null;
+      void sizeFlushRef.current(tabId);
+    }, SIZE_SAVE_DEBOUNCE_MS);
+  }, []);
+
+  /** Enregistre une taille choisie au glisser ou au clavier. */
+  const commitSize = useCallback(
+    (axis: DimensionAxis, index: number, size: number) => {
+      const tabId = activeTabIdRef.current;
+      if (!tabId || !canEditRef.current) return;
+      const clamped = clampSize(axis, size);
+      setPreview(null);
+      setSizesByTab((current) => {
+        const existing = current.get(tabId) ?? EMPTY_SIZES;
+        const next = new Map(current);
+        next.set(tabId, {
+          ...existing,
+          [axis]: applyResize(existing[axis], axis, index, clamped),
+        });
+        return next;
+      });
+      queueSizeSave(tabId, { axis, index, size: clamped });
+    },
+    [queueSizeSave],
+  );
+
+  /** Revient à la taille par défaut (double-clic, touche Origine). */
+  const resetSize = useCallback(
+    (axis: DimensionAxis, index: number) => {
+      commitSize(axis, index, DIMENSION_LIMITS[axis].fallback);
+    },
+    [commitSize],
+  );
+
+  // Aperçu du glisser : borné à une image d'animation pour rester fluide.
+  const onPreviewSize = useCallback((axis: DimensionAxis, index: number, size: number) => {
+    previewValueRef.current = { axis, index, size };
+    if (previewFrameRef.current !== null) return;
+    previewFrameRef.current = requestAnimationFrame(() => {
+      previewFrameRef.current = null;
+      setPreview(previewValueRef.current);
+    });
+  }, []);
+
+  const onSettlePreview = useCallback((axis: DimensionAxis, index: number) => {
+    previewValueRef.current = null;
+    if (previewFrameRef.current !== null) {
+      cancelAnimationFrame(previewFrameRef.current);
+      previewFrameRef.current = null;
+    }
+    setPreview((current) =>
+      current && current.axis === axis && current.index === index ? null : current,
+    );
+  }, []);
+
   const commitCell = useCallback(
     (row: number, col: number, value: string) => {
       const tabId = activeTabIdRef.current;
@@ -378,7 +578,7 @@ export function SheetEditor({ fileId }: { fileId: string }) {
   );
 
   /** Met à jour localement le style d'une cellule (même carte que la lecture). */
-  function setCellStyleLocally(tabId: string, key: string, style: CellStyle | null): void {
+  const setCellStyleLocally = useCallback((tabId: string, key: string, style: CellStyle | null) => {
     setStylesByTab((current) => {
       const next = new Map(current);
       const map = new Map(next.get(tabId) ?? []);
@@ -387,7 +587,7 @@ export function SheetEditor({ fileId }: { fileId: string }) {
       next.set(tabId, map);
       return next;
     });
-  }
+  }, []);
 
   /**
    * Applique une mutation au style de la cellule sélectionnée (v1 : une seule
@@ -395,48 +595,51 @@ export function SheetEditor({ fileId }: { fileId: string }) {
    * rejouée à l'identique côté serveur ; en cas d'échec, l'ancien style est
    * restauré.
    */
-  async function applyCellStyle(mutate: (current: CellStyle | null) => CellStyle | null) {
-    const tabId = activeTabId;
-    const target = selected;
-    if (!tabId || !target || !canEdit || styleBusy) return;
-    const key = `${target.row}:${target.col}`;
-    const previous = stylesByTab.get(tabId)?.get(key) ?? null;
-    const next = mutate(previous);
-    setStyleBusy(true);
-    setError(null);
-    setCellStyleLocally(tabId, key, next);
-    try {
-      await setCellStyleFn({
-        data: { fileId, tabId, cells: [{ row: target.row, col: target.col }], style: next },
+  const applyCellStyle = useCallback(
+    async (mutate: (current: CellStyle | null) => CellStyle | null) => {
+      const tabId = activeTabId;
+      const target = selected;
+      if (!tabId || !target || !canEdit || styleBusy) return;
+      const key = `${target.row}:${target.col}`;
+      const previous = stylesByTab.get(tabId)?.get(key) ?? null;
+      const next = mutate(previous);
+      setStyleBusy(true);
+      setError(null);
+      setCellStyleLocally(tabId, key, next);
+      try {
+        await setCellStyleFn({
+          data: { fileId, tabId, cells: [{ row: target.row, col: target.col }], style: next },
+        });
+      } catch (caught) {
+        setCellStyleLocally(tabId, key, previous);
+        setError(caught instanceof Error ? caught.message : "Mise en forme impossible.");
+      } finally {
+        setStyleBusy(false);
+      }
+    },
+    [activeTabId, canEdit, fileId, selected, setCellStyleLocally, styleBusy, stylesByTab],
+  );
+
+  const toggleFlag = useCallback(
+    (flag: "bold" | "italic") => {
+      void applyCellStyle((current) => {
+        const next = { ...(current ?? {}) };
+        if (next[flag]) delete next[flag];
+        else next[flag] = true;
+        return Object.keys(next).length > 0 ? next : null;
       });
-    } catch (caught) {
-      setCellStyleLocally(tabId, key, previous);
-      setError(caught instanceof Error ? caught.message : "Mise en forme impossible.");
-    } finally {
-      setStyleBusy(false);
-    }
-  }
+    },
+    [applyCellStyle],
+  );
 
-  function withoutKey(style: CellStyle, key: "align" | "background"): CellStyle | null {
-    const next = { ...style };
-    delete next[key];
-    return Object.keys(next).length > 0 ? next : null;
-  }
-
-  function toggleFlag(flag: "bold" | "italic"): void {
-    void applyCellStyle((current) => {
-      const next = { ...(current ?? {}) };
-      if (next[flag]) delete next[flag];
-      else next[flag] = true;
-      return Object.keys(next).length > 0 ? next : null;
-    });
-  }
-
-  function toggleAlign(align: CellStyleAlign): void {
-    void applyCellStyle((current) =>
-      current?.align === align ? withoutKey(current, "align") : { ...(current ?? {}), align },
-    );
-  }
+  const toggleAlign = useCallback(
+    (align: CellStyleAlign) => {
+      void applyCellStyle((current) =>
+        current?.align === align ? withoutKey(current, "align") : { ...(current ?? {}), align },
+      );
+    },
+    [applyCellStyle],
+  );
 
   function toggleBackground(background: CellStyleBackground): void {
     void applyCellStyle((current) =>
@@ -528,6 +731,7 @@ export function SheetEditor({ fileId }: { fileId: string }) {
       // Les modifications en attente d'autosave partiraient après l'import et
       // écraseraient ses cellules : on les sauvegarde d'abord.
       await flush(tabId);
+      await flushSizes(tabId);
       await importCsvFn({ data: { fileId, tabId, text: importText } });
       setImportOpen(false);
       setImportText("");
@@ -541,18 +745,311 @@ export function SheetEditor({ fileId }: { fileId: string }) {
     }
   }
 
-  const activeTab = detail?.tabs.find((tab) => tab.id === activeTabId) ?? null;
-  const canEdit = detail?.canEdit ?? false;
-  const selectedKey = selected ? `${selected.row}:${selected.col}` : null;
-  const selectedStyle = selectedKey ? (activeStyles.get(selectedKey) ?? null) : null;
-  const statusLabel =
-    status === "saving"
-      ? "Enregistrement…"
-      : status === "saved"
-        ? "Enregistré"
-        : status === "error"
-          ? "Erreur de sauvegarde"
-          : "";
+  // -------------------------------------------------------------------------
+  // Menu contextuel : insertion, suppression et mise en forme (TASK-002)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Exécute une opération structurelle. La sélection suivante est calculée
+   * avant l'appel (logique pure de `structure.ts`), puis la feuille est
+   * relue : les cellules ont été décalées côté serveur.
+   */
+  const runStructure = useCallback(
+    async (kind: StructureKind, mode: StructureMode, index: number) => {
+      const tabId = activeTabIdRef.current;
+      if (!tabId || !canEditRef.current || structureBusy) return;
+      setError(null);
+      setStructureBusy(true);
+      setSelected((current) => selectionAfter(kind, mode, index, 1, current));
+      setEditing(null);
+      try {
+        // Les cellules en attente seraient écrasées par le décalage.
+        await flush(tabId);
+        await flushSizes(tabId);
+        await (kind === "row"
+          ? mode === "insert"
+            ? insertRowsFn
+            : deleteRowsFn
+          : mode === "insert"
+            ? insertColumnsFn
+            : deleteColumnsFn)({ data: { fileId, tabId, index } });
+        await load();
+        setAnnouncement(structureMessage(kind, mode, 1));
+      } catch (caught) {
+        setError(caught instanceof Error ? caught.message : "Opération impossible.");
+      } finally {
+        setStructureBusy(false);
+      }
+    },
+    [fileId, flush, flushSizes, load, structureBusy],
+  );
+
+  /** Ouvre le menu contextuel sur une cible, en coordonnées d'écran. */
+  const openMenu = useCallback((target: ContextTarget, anchor: { left: number; top: number }) => {
+    if (target.kind === "cell") {
+      setSelected({ row: target.row, col: target.col });
+      setEditing(null);
+    }
+    setMenu({ x: anchor.left, y: anchor.top, target });
+  }, []);
+
+  const closeMenu = useCallback(() => setMenu(null), []);
+
+  /** Intitulé du menu, lu par les lecteurs d'écran. */
+  const menuLabel = useMemo(() => {
+    if (!menu) return "";
+    const target = menu.target;
+    if (target.kind === "cell") return `Menu de la cellule ${cellKey(target.row, target.col)}`;
+    if (target.kind === "row") return `Menu de la ligne ${target.index + 1}`;
+    return `Menu de la colonne ${COL_LETTERS[target.index]}`;
+  }, [menu]);
+
+  /** Ouvre le menu depuis le clavier (touche Menu) sur la cellule active. */
+  const requestCellMenu = useCallback(
+    (row: number, col: number, anchor: DOMRect) => {
+      openMenu({ kind: "cell", row, col }, { left: anchor.left, top: anchor.bottom });
+    },
+    [openMenu],
+  );
+
+  // -------------------------------------------------------------------------
+  // Barre de formule (TASK-003)
+  // -------------------------------------------------------------------------
+
+  const activeSizes = sizesByTab.get(activeTabId ?? "") ?? EMPTY_SIZES;
+  // Pendant le glisser, la taille aperçue remplace celle enregistrée.
+  const colSizes =
+    preview?.axis === "col"
+      ? applyResize(activeSizes.col, "col", preview.index, preview.size)
+      : activeSizes.col;
+  const rowSizes =
+    preview?.axis === "row"
+      ? applyResize(activeSizes.row, "row", preview.index, preview.size)
+      : activeSizes.row;
+
+  const columnTracks = useMemo(
+    () =>
+      Array.from({ length: COLS }, (_, col) => {
+        const size = colSizes.get(col);
+        return size === undefined ? "minmax(var(--sheet-col-min), 1fr)" : `minmax(0, ${size}px)`;
+      }).join(" "),
+    [colSizes],
+  );
+
+  const rowTracks = useMemo(
+    () =>
+      Array.from({ length: ROWS }, (_, row) => {
+        const size = rowSizes.get(row);
+        return size === undefined ? "auto" : `${size}px`;
+      }).join(" "),
+    [rowSizes],
+  );
+
+  const currentBarDraft = barDraft?.key === selectedKey ? barDraft.value : null;
+
+  /** Valeur affichée par la barre de formule, aperçu de formule compris. */
+  const barResult = useMemo(() => {
+    if (!selectedKey) return null;
+    if (currentBarDraft === null) {
+      const value = evaluated.get(selectedKey);
+      return value ? formatValue(value) : "";
+    }
+    // Pendant la saisie, on évalue la formule en cours sans toucher la grille.
+    const raw: Record<string, string> = {};
+    for (const [key, value] of activeMap) raw[key] = value;
+    raw[selectedKey] = currentBarDraft;
+    const previewValue = evaluateCells(raw).get(selectedKey);
+    return previewValue ? formatValue(previewValue) : "";
+  }, [activeMap, currentBarDraft, evaluated, selectedKey]);
+
+  // -------------------------------------------------------------------------
+  // Construction du menu contextuel (TASK-002)
+  // -------------------------------------------------------------------------
+
+  /** Menu contextuel d'une cellule : lignes, colonnes, formats et tailles. */
+  const menuItems = useMemo<SheetMenuItem[]>(() => {
+    if (!menu) return [];
+    const items: SheetMenuItem[] = [];
+    const insert = (kind: StructureKind, index: number, label: string) => ({
+      type: "item" as const,
+      id: `inserer-${kind}-${index}`,
+      label,
+      disabled: !canEdit || structureBusy,
+      onSelect: () => void runStructure(kind, "insert", index),
+    });
+    const remove = (kind: StructureKind, index: number, label: string) => ({
+      type: "item" as const,
+      id: `supprimer-${kind}`,
+      label,
+      disabled: !canEdit || structureBusy,
+      destructive: true,
+      onSelect: () => void runStructure(kind, "delete", index),
+    });
+    const format = (id: string, label: string, checked: boolean, action: () => void) => ({
+      type: "item" as const,
+      id,
+      label,
+      checked,
+      disabled: !canEdit || styleBusy,
+      onSelect: action,
+    });
+
+    const target = menu.target;
+    if (target.kind === "cell") {
+      items.push(insert("row", target.row, "Insérer une ligne au-dessus"));
+      items.push(insert("row", target.row + 1, "Insérer une ligne en dessous"));
+      items.push({ type: "separator", id: "colonnes" });
+      items.push(insert("col", target.col, "Insérer une colonne à gauche"));
+      items.push(insert("col", target.col + 1, "Insérer une colonne à droite"));
+      items.push({ type: "separator", id: "suppressions" });
+      items.push(remove("row", target.row, "Supprimer la ligne"));
+      items.push(remove("col", target.col, "Supprimer la colonne"));
+      items.push({ type: "separator", id: "formats" });
+      items.push(format("gras", "Gras", selectedStyle?.bold === true, () => toggleFlag("bold")));
+      items.push(
+        format("italique", "Italique", selectedStyle?.italic === true, () => toggleFlag("italic")),
+      );
+      items.push(
+        format("gauche", "Aligner à gauche", selectedStyle?.align === "left", () =>
+          toggleAlign("left"),
+        ),
+      );
+      items.push(
+        format("centre", "Centrer", selectedStyle?.align === "center", () => toggleAlign("center")),
+      );
+      items.push(
+        format("droite", "Aligner à droite", selectedStyle?.align === "right", () =>
+          toggleAlign("right"),
+        ),
+      );
+      items.push({
+        type: "item",
+        id: "effacer-format",
+        label: "Effacer le format",
+        disabled: !canEdit || styleBusy || !selectedStyle,
+        onSelect: () => void applyCellStyle(() => null),
+      });
+    } else if (target.kind === "row") {
+      items.push(insert("row", target.index, "Insérer une ligne au-dessus"));
+      items.push(insert("row", target.index + 1, "Insérer une ligne en dessous"));
+      items.push({ type: "separator", id: "suppressions" });
+      items.push(remove("row", target.index, "Supprimer la ligne"));
+    } else {
+      items.push(insert("col", target.index, "Insérer une colonne à gauche"));
+      items.push(insert("col", target.index + 1, "Insérer une colonne à droite"));
+      items.push({ type: "separator", id: "suppressions" });
+      items.push(remove("col", target.index, "Supprimer la colonne"));
+    }
+
+    if (!canEdit) {
+      items.push({ type: "separator", id: "lecture-seule" });
+      items.push({
+        type: "item",
+        id: "lecture-seule-info",
+        label: "Feuille en lecture seule",
+        disabled: true,
+        onSelect: () => undefined,
+      });
+    }
+    return items;
+  }, [
+    applyCellStyle,
+    canEdit,
+    menu,
+    runStructure,
+    selectedStyle,
+    structureBusy,
+    styleBusy,
+    toggleAlign,
+    toggleFlag,
+  ]);
+
+  function submitBarValue(value: string, move: MoveDirection) {
+    if (!selected) return;
+    if (value.length > MAX_CELL_CHARS) {
+      setError(`Cellule limitée à ${MAX_CELL_CHARS} caractères.`);
+      return;
+    }
+    commitCell(selected.row, selected.col, value);
+    if (move === "none") {
+      setEditing(null);
+      return;
+    }
+    const nextRow = move === "down" ? Math.min(selected.row + 1, ROWS - 1) : selected.row;
+    const nextCol = move === "right" ? Math.min(selected.col + 1, COLS - 1) : selected.col;
+    setEditing(null);
+    setSelected({ row: nextRow, col: nextCol });
+  }
+
+  function goToReference(reference: string) {
+    const target = parseKey(reference);
+    if (!target) {
+      setError(`Référence « ${reference} » invalide.`);
+      return;
+    }
+    if (target.row >= ROWS || target.col >= COLS) {
+      setError(
+        `Référence hors de la grille affichée (lignes 1 à ${ROWS}, colonnes A à ${COL_LETTERS[COLS - 1]}).`,
+      );
+      return;
+    }
+    setError(null);
+    setEditing(null);
+    setSelected({ row: target.row, col: target.col });
+    focusCell(target.row, target.col);
+  }
+
+  /** Donne le focus à une cellule de la grille (navigation clavier). */
+  const focusCell = useCallback((row: number, col: number) => {
+    const element = gridRef.current?.querySelector<HTMLButtonElement>(
+      `[data-cell-row="${row}"][data-cell-col="${col}"]`,
+    );
+    element?.focus();
+  }, []);
+
+  /** Navigation clavier de la grille quand aucune cellule n'est en édition. */
+  const moveSelection = useCallback(
+    (row: number, col: number) => {
+      const next = {
+        row: Math.max(0, Math.min(ROWS - 1, row)),
+        col: Math.max(0, Math.min(COLS - 1, col)),
+      };
+      setSelected(next);
+      focusCell(next.row, next.col);
+    },
+    [focusCell],
+  );
+
+  const onGridKeyDown = useCallback(
+    (event: ReactKeyboardEvent<HTMLDivElement>) => {
+      if (editing) return;
+      const deltas: Record<string, [number, number]> = {
+        ArrowUp: [-1, 0],
+        ArrowDown: [1, 0],
+        ArrowLeft: [0, -1],
+        ArrowRight: [0, 1],
+      };
+      const delta = deltas[event.key];
+      if (delta) {
+        event.preventDefault();
+        // Ctrl (ou Cmd) étend le pas d'une page entière de la grille visible.
+        const stride = event.ctrlKey || event.metaKey ? 5 : 1;
+        const current = selected ?? { row: 0, col: 0 };
+        moveSelection(current.row + delta[0] * stride, current.col + delta[1] * stride);
+        return;
+      }
+      if (event.key === "Home" && (event.ctrlKey || event.metaKey)) {
+        event.preventDefault();
+        moveSelection(0, 0);
+      } else if (event.key === "End" && (event.ctrlKey || event.metaKey)) {
+        event.preventDefault();
+        moveSelection(ROWS - 1, COLS - 1);
+      } else if (event.key === "Escape" && selected) {
+        setSelected(null);
+      }
+    },
+    [editing, moveSelection, selected],
+  );
 
   return (
     <div className="flex flex-col gap-3">
@@ -619,6 +1116,19 @@ export function SheetEditor({ fileId }: { fileId: string }) {
 
       {detail ? (
         <>
+          <FormulaBar
+            reference={selected ? cellKey(selected.row, selected.col) : ""}
+            value={selectedKey ? (activeMap.get(selectedKey) ?? "") : ""}
+            result={barResult}
+            tone={toneOf(selectedKey ? evaluated.get(selectedKey) : undefined)}
+            disabled={!canEdit}
+            onSubmit={submitBarValue}
+            onGoTo={goToReference}
+            onDraftChange={(value) =>
+              setBarDraft(value === null || !selectedKey ? null : { key: selectedKey, value })
+            }
+          />
+
           <div className="flex flex-wrap items-center gap-2">
             {detail.tabs.map((tab) => (
               <button
@@ -774,76 +1284,169 @@ export function SheetEditor({ fileId }: { fileId: string }) {
             </div>
           ) : null}
 
-          <div className="max-h-[70vh] overflow-auto rounded-xl border border-border bg-card">
-            <div
-              className="grid"
-              style={
-                {
-                  "--sheet-gutter": "44px",
-                  "--sheet-col-min": "96px",
-                  gridTemplateColumns: `var(--sheet-gutter) repeat(${COLS}, minmax(var(--sheet-col-min), 1fr))`,
-                  width: "max-content",
-                  minWidth: "100%",
-                } as CSSProperties
-              }
-            >
-              <div className="sticky left-0 top-0 z-20 border-b border-r border-border bg-muted" />
-              {COL_LETTERS.map((letter, index) => (
-                <div
-                  key={letter}
-                  className={cn(
-                    "sticky top-0 z-10 border-b border-border bg-muted px-2 py-1 text-center text-[11px] font-medium text-muted-foreground",
-                    index < COLS - 1 && "border-r",
-                  )}
-                >
-                  {letter}
-                </div>
-              ))}
-              {ROW_KEYS.map((rowKey, row) => (
-                <Fragment key={rowKey}>
-                  <div
+          {/*
+              Tableau natif (en-têtes de colonne et de ligne, cellules) disposé
+              en grille CSS : `display: contents` sur les enveloppes fait des
+              cellules les éléments de la grille, donc la mise en page reste
+              celle d'une grille et la sémantique celle d'un tableau.
+            */}
+          <table
+            // biome-ignore lint/a11y/noNoninteractiveElementToInteractiveRole: rôle « grid » du motif ARIA, posé sur le tableau natif pour que les lecteurs d'écran annoncent une grille navigable.
+            role="grid"
+            aria-label="Grille de la feuille"
+            aria-rowcount={ROWS + 1}
+            aria-colcount={COLS + 1}
+            aria-readonly={!canEdit}
+            className="grid"
+            onKeyDown={onGridKeyDown}
+            style={
+              {
+                "--sheet-gutter": "44px",
+                "--sheet-col-min": "96px",
+                gridTemplateColumns: `var(--sheet-gutter) ${columnTracks}`,
+                gridTemplateRows: `auto ${rowTracks}`,
+                width: "max-content",
+                minWidth: "100%",
+              } as CSSProperties
+            }
+          >
+            <caption className="sr-only">
+              Grille de la feuille — flèches pour parcourir les cellules, Entrée pour modifier,
+              touche Menu pour les actions de la cellule.
+            </caption>
+            <thead className="contents">
+              <tr className="contents">
+                <td className="sticky left-0 top-0 z-20 border-b border-r border-border bg-muted" />
+                {COL_LETTERS.map((letter, col) => (
+                  <th
+                    key={letter}
+                    scope="col"
+                    data-col-index={col}
+                    onContextMenu={(event) => {
+                      event.preventDefault();
+                      openMenu(
+                        { kind: "col", index: col },
+                        { left: event.clientX, top: event.clientY },
+                      );
+                    }}
                     className={cn(
-                      "sticky left-0 z-10 border-r border-border bg-muted px-2 py-1 text-right text-[11px] tabular-nums text-muted-foreground",
+                      "sticky top-0 z-10 border-b border-border bg-muted px-2 py-1 text-center text-[11px] font-medium text-muted-foreground",
+                      col < COLS - 1 && "border-r",
+                    )}
+                  >
+                    {letter}
+                    <ResizeHandle
+                      axis="col"
+                      index={col}
+                      label={`Redimensionner la colonne ${letter}`}
+                      current={sizeOf(colSizes, col, "col")}
+                      preview={
+                        preview?.axis === "col" && preview.index === col ? preview.size : null
+                      }
+                      disabled={!canEdit}
+                      onPreview={onPreviewSize}
+                      onCommit={commitSize}
+                      onSettle={onSettlePreview}
+                      onReset={resetSize}
+                    />
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody className="contents">
+              {ROW_KEYS.map((rowKey, row) => (
+                <tr key={rowKey} className="contents">
+                  <th
+                    scope="row"
+                    data-row-index={row}
+                    onContextMenu={(event) => {
+                      event.preventDefault();
+                      openMenu(
+                        { kind: "row", index: row },
+                        { left: event.clientX, top: event.clientY },
+                      );
+                    }}
+                    className={cn(
+                      "sticky left-0 z-10 border-r border-border bg-muted px-2 py-1 text-right text-[11px] font-normal tabular-nums text-muted-foreground",
                       row < ROWS - 1 && "border-b",
                     )}
                   >
                     {row + 1}
-                  </div>
+                    <ResizeHandle
+                      axis="row"
+                      index={row}
+                      label={`Redimensionner la ligne ${row + 1}`}
+                      current={sizeOf(rowSizes, row, "row")}
+                      preview={
+                        preview?.axis === "row" && preview.index === row ? preview.size : null
+                      }
+                      disabled={!canEdit}
+                      onPreview={onPreviewSize}
+                      onCommit={commitSize}
+                      onSettle={onSettlePreview}
+                      onReset={resetSize}
+                    />
+                  </th>
                   {Array.from({ length: COLS }, (_, col) => {
                     const key = cellKey(row, col);
                     const raw = activeMap.get(`${row}:${col}`) ?? "";
                     const value = evaluated.get(key);
                     const isEditing = editing?.row === row && editing?.col === col;
-                    const tone: CellTone =
-                      value?.kind === "number"
-                        ? "number"
-                        : value?.kind === "error"
-                          ? "error"
-                          : "text";
+                    const isSelected = selected?.row === row && selected?.col === col;
+                    const cellStyle = activeStyles.get(`${row}:${col}`) ?? null;
                     return (
-                      <GridCell
+                      <td
                         key={isEditing ? `${key}:edition` : key}
-                        row={row}
-                        col={col}
-                        raw={raw}
-                        display={value ? formatValue(value) : ""}
-                        tone={tone}
-                        cellStyle={activeStyles.get(`${row}:${col}`) ?? null}
-                        selected={selected?.row === row && selected?.col === col}
-                        canEdit={canEdit}
-                        editing={isEditing}
-                        lastRow={row === ROWS - 1}
-                        lastCol={col === COLS - 1}
-                        onStart={startEditing}
-                        onCommit={commitEditing}
-                        onCancel={cancelEditing}
-                      />
+                        className={cn(
+                          "min-w-0 overflow-hidden p-0",
+                          !isEditing && row !== ROWS - 1 && "border-b border-border",
+                          !isEditing && col !== COLS - 1 && "border-r border-border",
+                          !isEditing && cellStyle?.background
+                            ? STYLE_BACKGROUND_CLASSES[cellStyle.background]
+                            : undefined,
+                        )}
+                      >
+                        <GridCell
+                          row={row}
+                          col={col}
+                          raw={raw}
+                          display={value ? formatValue(value) : ""}
+                          tone={toneOf(value)}
+                          cellStyle={cellStyle}
+                          selected={isSelected}
+                          canEdit={canEdit}
+                          editing={isEditing}
+                          onStart={startEditing}
+                          onCommit={commitEditing}
+                          onCancel={cancelEditing}
+                          onRequestMenu={requestCellMenu}
+                          data-cell-row={row}
+                          data-cell-col={col}
+                        />
+                      </td>
                     );
                   })}
-                </Fragment>
+                </tr>
               ))}
-            </div>
-          </div>
+            </tbody>
+          </table>
+
+          <SheetContextMenu
+            open={menu !== null}
+            x={menu?.x ?? 0}
+            y={menu?.y ?? 0}
+            label={menuLabel}
+            items={menuItems}
+            onClose={closeMenu}
+            footer={
+              canEdit
+                ? "Clic droit ou touche Menu sur une cellule pour ces actions."
+                : "Cette feuille est en lecture seule."
+            }
+          />
+          <p aria-live="polite" className="sr-only">
+            {announcement}
+          </p>
         </>
       ) : !error ? (
         <p className="text-sm text-muted-foreground">Chargement…</p>

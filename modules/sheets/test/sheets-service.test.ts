@@ -8,10 +8,14 @@ import {
   type CellStyle,
   createSpreadsheet,
   csvCell,
+  deleteColumns,
+  deleteRows,
   deleteTab,
   exportSpreadsheetCsv,
   getSpreadsheet,
   importCsv,
+  insertColumns,
+  insertRows,
   listSpreadsheets,
   MAX_STYLE_CELLS,
   MAX_TABS,
@@ -21,6 +25,7 @@ import {
   SheetsError,
   saveCells,
   setCellStyle,
+  setDimensionSizes,
 } from "../src/index.ts";
 
 const { user, organization, auditEvents } = coreSchema;
@@ -754,5 +759,253 @@ describe("sheets — mise en forme (v1)", () => {
 
     const refreshed = await getSpreadsheet(f.actorAlice, first.entry.id);
     expect(refreshed.cells).toHaveLength(0);
+  });
+});
+
+describe("sheets — dimensions de la grille (TASK-001)", () => {
+  it("enregistre, relit et efface une taille de colonne et de ligne", async () => {
+    const { entry } = await createSpreadsheet(f.actorAlice, { title: "Dimensions" });
+    const detail = await getSpreadsheet(f.actorAlice, entry.id);
+    const tabId = detail.tabs[0]?.id;
+    if (!tabId) throw new Error("onglet manquant");
+
+    const result = await setDimensionSizes(f.actorAlice, entry.id, {
+      tabId,
+      sizes: [
+        { axis: "col", index: 1, size: 240 },
+        { axis: "row", index: 4, size: 48 },
+      ],
+    });
+    expect(result.sized).toBe(2);
+
+    let refreshed = await getSpreadsheet(f.actorAlice, entry.id);
+    expect(refreshed.sizes).toEqual([
+      { tabId, axis: "col", index: 1, size: 240 },
+      { tabId, axis: "row", index: 4, size: 48 },
+    ]);
+
+    // Une taille revenue au défaut retire la ligne plutôt que de la stocker.
+    await setDimensionSizes(f.actorAlice, entry.id, {
+      tabId,
+      sizes: [{ axis: "col", index: 1, size: 96 }],
+    });
+    refreshed = await getSpreadsheet(f.actorAlice, entry.id);
+    expect(refreshed.sizes).toEqual([{ tabId, axis: "row", index: 4, size: 48 }]);
+  });
+
+  it("dédoublonne un lot et refuse les tailles invalides", async () => {
+    const { entry } = await createSpreadsheet(f.actorAlice, { title: "Dimensions invalides" });
+    const detail = await getSpreadsheet(f.actorAlice, entry.id);
+    const tabId = detail.tabs[0]?.id;
+    if (!tabId) throw new Error("onglet manquant");
+
+    const result = await setDimensionSizes(f.actorAlice, entry.id, {
+      tabId,
+      sizes: [
+        { axis: "col", index: 2, size: 150 },
+        { axis: "col", index: 2, size: 300 },
+      ],
+    });
+    expect(result.sized).toBe(1);
+
+    const refreshed = await getSpreadsheet(f.actorAlice, entry.id);
+    expect(refreshed.sizes).toEqual([{ tabId, axis: "col", index: 2, size: 300 }]);
+
+    await expect(
+      setDimensionSizes(f.actorAlice, entry.id, {
+        tabId,
+        sizes: [{ axis: "col", index: 2, size: 9_999 }],
+      }),
+    ).rejects.toThrow(/Taille de colonne entre/);
+    await expect(
+      setDimensionSizes(f.actorAlice, entry.id, {
+        tabId,
+        sizes: [{ axis: "profondeur" as "col", index: 0, size: 100 }],
+      }),
+    ).rejects.toThrow(/Axe de redimensionnement invalide/);
+    await expect(setDimensionSizes(f.actorAlice, entry.id, { tabId, sizes: [] })).rejects.toThrow(
+      /Aucune taille/,
+    );
+
+    // Aucun appel refusé n'a modifié la taille enregistrée.
+    const after = await getSpreadsheet(f.actorAlice, entry.id);
+    expect(after.sizes).toEqual([{ tabId, axis: "col", index: 2, size: 300 }]);
+  });
+
+  it("refuse un membre sans droit et un onglet étranger", async () => {
+    const first = await createSpreadsheet(f.actorAlice, { title: "Dim A" });
+    const second = await createSpreadsheet(f.actorAlice, { title: "Dim B" });
+    const firstTab = (await getSpreadsheet(f.actorAlice, first.entry.id)).tabs[0]?.id;
+    const secondTab = (await getSpreadsheet(f.actorAlice, second.entry.id)).tabs[0]?.id;
+    if (!firstTab || !secondTab) throw new Error("onglet manquant");
+
+    await expect(
+      setDimensionSizes(f.actorBruno, first.entry.id, {
+        tabId: firstTab,
+        sizes: [{ axis: "col", index: 0, size: 120 }],
+      }),
+    ).rejects.toThrow(SheetsError);
+    await expect(
+      setDimensionSizes(f.actorAlice, first.entry.id, {
+        tabId: secondTab,
+        sizes: [{ axis: "col", index: 0, size: 120 }],
+      }),
+    ).rejects.toThrow(SheetsError);
+  });
+});
+
+describe("sheets — opérations structurelles (TASK-002)", () => {
+  it("insère et supprime une ligne en décalant les valeurs et les styles", async () => {
+    const { entry } = await createSpreadsheet(f.actorAlice, { title: "Lignes" });
+    const detail = await getSpreadsheet(f.actorAlice, entry.id);
+    const tabId = detail.tabs[0]?.id;
+    if (!tabId) throw new Error("onglet manquant");
+
+    await saveCells(f.actorAlice, entry.id, {
+      tabId,
+      updates: [
+        { row: 0, col: 0, value: "a1" },
+        { row: 1, col: 0, value: "b1" },
+        { row: 2, col: 0, value: "c1" },
+      ],
+    });
+    await setCellStyle(f.actorAlice, entry.id, {
+      tabId,
+      cells: [{ row: 2, col: 0 }],
+      style: { bold: true },
+    });
+
+    await insertRows(f.actorAlice, entry.id, { tabId, index: 1 });
+    let refreshed = await getSpreadsheet(f.actorAlice, entry.id);
+    expect(refreshed.cells.map((cell) => [cell.row, cell.value])).toEqual([
+      [0, "a1"],
+      [2, "b1"],
+      [3, "c1"],
+    ]);
+    // Le style suit la cellule décalée.
+    expect(refreshed.cells.find((cell) => cell.value === "c1")?.style).toEqual({ bold: true });
+
+    // Les lignes sous la suppression remontent d'un cran (« b1 » de 2 à 1, etc.).
+    await deleteRows(f.actorAlice, entry.id, { tabId, index: 0 });
+    refreshed = await getSpreadsheet(f.actorAlice, entry.id);
+    expect(refreshed.cells.map((cell) => [cell.row, cell.value])).toEqual([
+      [1, "b1"],
+      [2, "c1"],
+    ]);
+  });
+
+  it("insère et supprime une colonne en décalant les valeurs et les tailles", async () => {
+    const { entry } = await createSpreadsheet(f.actorAlice, { title: "Colonnes" });
+    const detail = await getSpreadsheet(f.actorAlice, entry.id);
+    const tabId = detail.tabs[0]?.id;
+    if (!tabId) throw new Error("onglet manquant");
+
+    await saveCells(f.actorAlice, entry.id, {
+      tabId,
+      updates: [
+        { row: 0, col: 0, value: "A" },
+        { row: 0, col: 1, value: "B" },
+        { row: 0, col: 2, value: "C" },
+      ],
+    });
+    await setDimensionSizes(f.actorAlice, entry.id, {
+      tabId,
+      sizes: [{ axis: "col", index: 2, size: 220 }],
+    });
+
+    await insertColumns(f.actorAlice, entry.id, { tabId, index: 1 });
+    let refreshed = await getSpreadsheet(f.actorAlice, entry.id);
+    expect(refreshed.cells.map((cell) => [cell.col, cell.value])).toEqual([
+      [0, "A"],
+      [2, "B"],
+      [3, "C"],
+    ]);
+    // La taille de colonne suit aussi le décalage.
+    expect(refreshed.sizes).toEqual([{ tabId, axis: "col", index: 3, size: 220 }]);
+
+    await deleteColumns(f.actorAlice, entry.id, { tabId, index: 0 });
+    refreshed = await getSpreadsheet(f.actorAlice, entry.id);
+    expect(refreshed.cells.map((cell) => [cell.col, cell.value])).toEqual([
+      [1, "B"],
+      [2, "C"],
+    ]);
+  });
+
+  it("supprime plusieurs éléments d'un coup et décale le reste", async () => {
+    const { entry } = await createSpreadsheet(f.actorAlice, { title: "Suppression multiple" });
+    const detail = await getSpreadsheet(f.actorAlice, entry.id);
+    const tabId = detail.tabs[0]?.id;
+    if (!tabId) throw new Error("onglet manquant");
+
+    await saveCells(f.actorAlice, entry.id, {
+      tabId,
+      updates: Array.from({ length: 6 }, (_, index) => ({
+        row: index,
+        col: 0,
+        value: `v${index}`,
+      })),
+    });
+
+    await deleteRows(f.actorAlice, entry.id, { tabId, index: 2, count: 2 });
+    const refreshed = await getSpreadsheet(f.actorAlice, entry.id);
+    expect(refreshed.cells.map((cell) => [cell.row, cell.value])).toEqual([
+      [0, "v0"],
+      [1, "v1"],
+      [2, "v4"],
+      [3, "v5"],
+    ]);
+  });
+
+  it("refuse une suppression hors grille ou un onglet étranger", async () => {
+    const { entry } = await createSpreadsheet(f.actorAlice, { title: "Structure refusée" });
+    const detail = await getSpreadsheet(f.actorAlice, entry.id);
+    const tabId = detail.tabs[0]?.id;
+    if (!tabId) throw new Error("onglet manquant");
+
+    await expect(
+      deleteRows(f.actorAlice, entry.id, { tabId, index: 0, count: 1_000_000 }),
+    ).rejects.toThrow(/Nombre de lignes à supprimer/);
+    await expect(
+      deleteColumns(f.actorAlice, entry.id, { tabId, index: 0, count: 2_000 }),
+    ).rejects.toThrow(/Nombre de colonnes à supprimer/);
+
+    const other = await createSpreadsheet(f.actorAlice, { title: "Autre" });
+    const otherTab = (await getSpreadsheet(f.actorAlice, other.entry.id)).tabs[0]?.id;
+    if (!otherTab) throw new Error("onglet manquant");
+    await expect(insertRows(f.actorAlice, entry.id, { tabId: otherTab, index: 0 })).rejects.toThrow(
+      SheetsError,
+    );
+    await expect(insertRows(f.actorBruno, entry.id, { tabId, index: 0 })).rejects.toThrow(
+      SheetsError,
+    );
+  });
+
+  it("journalise les insertions et suppressions", async () => {
+    const { entry } = await createSpreadsheet(f.actorAlice, { title: "Structure audit" });
+    const detail = await getSpreadsheet(f.actorAlice, entry.id);
+    const tabId = detail.tabs[0]?.id;
+    if (!tabId) throw new Error("onglet manquant");
+
+    await insertRows(f.actorAlice, entry.id, { tabId, index: 0 });
+    await deleteColumns(f.actorAlice, entry.id, { tabId, index: 1 });
+
+    const rows = (
+      await getDb().select().from(auditEvents).where(eq(auditEvents.orgId, f.orgId))
+    ).filter((row) => row.action.startsWith("sheets."));
+    const actions = rows.map((row) => row.action).sort();
+    expect(actions).toEqual([
+      "sheets.cols.delete",
+      "sheets.rows.insert",
+      "sheets.spreadsheet.create",
+    ]);
+    expect(rows.find((row) => row.action === "sheets.rows.insert")).toMatchObject({
+      resourceType: "tab",
+      result: "success",
+    });
+    expect(rows.find((row) => row.action === "sheets.cols.delete")?.metadata).toEqual({
+      fileId: entry.id,
+      index: 1,
+      count: 1,
+    });
   });
 });

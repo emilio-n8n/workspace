@@ -15,6 +15,13 @@
       "when": 1791899216094,
       "tag": "0001_certain_miracleman",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1791920892511,
+      "tag": "0002_neat_lucky_pierre",
+      "breakpoints": true
     }
   ]
 }

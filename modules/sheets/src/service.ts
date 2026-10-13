@@ -10,17 +10,28 @@ import {
   touchEntry,
 } from "@workspace/drive";
 import { type Actor, roleSatisfies } from "@workspace/permissions";
-import { and, asc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, lte, sql } from "drizzle-orm";
 import { MAX_CELL_CHARS, MAX_COLS, MAX_ROWS, parseCsv } from "./csv.ts";
+import {
+  DIMENSION_INDEX_MAX,
+  type DimensionAxis,
+  type DimensionSize,
+  isCustomSize,
+  MAX_DIMENSION_SIZES,
+  sizeKey,
+  validateSize,
+} from "./dimensions.ts";
 import { cellKey, evaluateCells, formatValue } from "./formula.ts";
 import {
   CELL_STYLE_BACKGROUNDS,
   type CellStyle,
   type SheetTabRow,
   sheetCells,
+  sheetDimensions,
   sheetTabs,
   spreadsheets,
 } from "./schema.ts";
+import { checkStructure, type StructureKind, type StructureMode } from "./structure.ts";
 
 export { MAX_CELL_CHARS, MAX_COLS, MAX_ROWS } from "./csv.ts";
 
@@ -57,6 +68,8 @@ export type SpreadsheetDetail = {
   canEdit: boolean;
   tabs: TabView[];
   cells: (CellView & { tabId: string })[];
+  /** Tailles de colonnes et de lignes qui diffèrent du défaut, par onglet. */
+  sizes: (DimensionSize & { tabId: string })[];
   /** Vrai quand la limite de chargement des cellules (50 000) est atteinte. */
   truncated: boolean;
 };
@@ -199,12 +212,27 @@ export async function getSpreadsheet(actor: Actor, fileId: string): Promise<Spre
           .limit(MAX_CELLS_PER_LOAD)
       : [];
 
+  const sizes =
+    tabIds.length > 0
+      ? await db()
+          .select({
+            tabId: sheetDimensions.tabId,
+            axis: sheetDimensions.axis,
+            index: sheetDimensions.index,
+            size: sheetDimensions.size,
+          })
+          .from(sheetDimensions)
+          .where(inArray(sheetDimensions.tabId, tabIds))
+          .limit(MAX_CELLS_PER_LOAD)
+      : [];
+
   return {
     fileId: entry.id,
     title: entry.name,
     canEdit: roleSatisfies(role, "write"),
     tabs,
     cells,
+    sizes,
     truncated: cells.length >= MAX_CELLS_PER_LOAD,
   };
 }
@@ -441,6 +469,319 @@ export async function setCellStyle(
 
   await touchEntry(actor, fileId).catch(() => undefined);
   return { styled: cells.length };
+}
+
+// ---------------------------------------------------------------------------
+// Dimensions de la grille (redimensionnement des colonnes et des lignes)
+// ---------------------------------------------------------------------------
+
+type Tx = Parameters<Parameters<typeof withTransaction>[0]>[0];
+
+/** Vérifie et dédoublonne un lot de tailles (messages français du module). */
+function assertSizes(sizes: DimensionSize[]): DimensionSize[] {
+  if (sizes.length === 0) {
+    throw new SheetsError("validation", "Aucune taille à enregistrer.");
+  }
+  if (sizes.length > MAX_DIMENSION_SIZES) {
+    throw new SheetsError(
+      "validation",
+      `Redimensionnement limité à ${MAX_DIMENSION_SIZES} tailles.`,
+    );
+  }
+  const deduped = new Map<string, DimensionSize>();
+  for (const entry of sizes) {
+    const message = validateSize(entry.axis, entry.index, entry.size);
+    if (message) throw new SheetsError("validation", message);
+    deduped.set(sizeKey(entry.axis, entry.index), entry);
+  }
+  return [...deduped.values()];
+}
+
+/**
+ * Écrit des tailles par lots : une taille qui revient au défaut retire sa
+ * ligne plutôt que de la stocker (la base ne garde que les écarts).
+ */
+async function writeDimensionSizes(tx: Tx, tabId: string, sizes: DimensionSize[]): Promise<void> {
+  for (const axis of ["col", "row"] as const) {
+    const upserts = sizes.filter((entry) => entry.axis === axis && isCustomSize(axis, entry.size));
+    for (let offset = 0; offset < upserts.length; offset += SAVE_CHUNK) {
+      const chunk = upserts.slice(offset, offset + SAVE_CHUNK);
+      await tx
+        .insert(sheetDimensions)
+        .values(
+          chunk.map((entry) => ({
+            tabId,
+            axis: entry.axis,
+            index: entry.index,
+            size: entry.size,
+          })),
+        )
+        .onConflictDoUpdate({
+          target: [sheetDimensions.tabId, sheetDimensions.axis, sheetDimensions.index],
+          set: { size: sql`excluded.size` },
+        });
+    }
+    const reset = sizes
+      .filter((entry) => entry.axis === axis && !isCustomSize(axis, entry.size))
+      .map((entry) => entry.index);
+    for (let offset = 0; offset < reset.length; offset += SAVE_CHUNK) {
+      await tx
+        .delete(sheetDimensions)
+        .where(
+          and(
+            eq(sheetDimensions.tabId, tabId),
+            eq(sheetDimensions.axis, axis),
+            inArray(sheetDimensions.index, reset.slice(offset, offset + SAVE_CHUNK)),
+          ),
+        );
+    }
+  }
+}
+
+/**
+ * Enregistre les largeurs de colonnes et hauteurs de lignes choisies au
+ * glisser (ou au clavier). Le lot est limité : l'interface envoie uniquement
+ * les tailles modifiées depuis la dernière sauvegarde.
+ */
+export async function setDimensionSizes(
+  actor: Actor,
+  fileId: string,
+  input: { tabId: string; sizes: DimensionSize[] },
+): Promise<{ sized: number }> {
+  const { spreadsheet } = await requireSpreadsheet(actor, fileId);
+  await requireEditor(actor, fileId);
+  const sizes = assertSizes(input.sizes);
+
+  const [tab] = await db()
+    .select({ id: sheetTabs.id })
+    .from(sheetTabs)
+    .where(and(eq(sheetTabs.id, input.tabId), eq(sheetTabs.spreadsheetId, spreadsheet.id)))
+    .limit(1);
+  if (!tab) throw new SheetsError("not_found", "Onglet introuvable.");
+
+  await withTransaction(async (tx) => {
+    await writeDimensionSizes(tx, tab.id, sizes);
+  });
+
+  await touchEntry(actor, fileId).catch(() => undefined);
+  return { sized: sizes.length };
+}
+
+// ---------------------------------------------------------------------------
+// Opérations structurelles (insertion / suppression de lignes et colonnes)
+// ---------------------------------------------------------------------------
+
+/**
+ * Décale d'un pas les cellules et les tailles d'un onglet à partir de `start`.
+ *
+ * L'ordre des mises à jour est essentiel : l'index unique (onglet, axe, index)
+ * refuse deux fois la même position. Une insertion traite donc les index du
+ * plus grand au plus petit (la case cible est déjà libérée), une suppression
+ * du plus petit au plus grand (même raison, en remontant). Les index sont
+ * relevés avant la boucle : ils décrivent l'état d'origine, pas le résultat.
+ */
+async function shiftAxis(
+  tx: Tx,
+  tabId: string,
+  axis: DimensionAxis,
+  start: number,
+  delta: number,
+  order: "asc" | "desc",
+): Promise<void> {
+  const column = axis === "row" ? sheetCells.row : sheetCells.col;
+  const ordering = order === "desc" ? desc(column) : asc(column);
+
+  const cellIndexes = await tx
+    .selectDistinct({ value: column })
+    .from(sheetCells)
+    .where(and(eq(sheetCells.tabId, tabId), gte(column, start)))
+    .orderBy(ordering);
+  for (const entry of cellIndexes) {
+    const target = entry.value + delta;
+    await tx
+      .update(sheetCells)
+      .set(axis === "row" ? { row: target } : { col: target })
+      .where(and(eq(sheetCells.tabId, tabId), eq(column, entry.value)));
+  }
+
+  const sizeIndexes = await tx
+    .selectDistinct({ value: sheetDimensions.index })
+    .from(sheetDimensions)
+    .where(
+      and(
+        eq(sheetDimensions.tabId, tabId),
+        eq(sheetDimensions.axis, axis),
+        gte(sheetDimensions.index, start),
+      ),
+    )
+    .orderBy(order === "desc" ? desc(sheetDimensions.index) : asc(sheetDimensions.index));
+  for (const entry of sizeIndexes) {
+    await tx
+      .update(sheetDimensions)
+      .set({ index: entry.value + delta })
+      .where(
+        and(
+          eq(sheetDimensions.tabId, tabId),
+          eq(sheetDimensions.axis, axis),
+          eq(sheetDimensions.index, entry.value),
+        ),
+      );
+  }
+}
+
+/** Supprime les cellules et les tailles d'une plage d'index (bornes incluses). */
+async function removeAxisRange(
+  tx: Tx,
+  tabId: string,
+  axis: DimensionAxis,
+  start: number,
+  end: number,
+): Promise<void> {
+  const column = axis === "row" ? sheetCells.row : sheetCells.col;
+  await tx
+    .delete(sheetCells)
+    .where(and(eq(sheetCells.tabId, tabId), gte(column, start), lte(column, end)));
+  await tx
+    .delete(sheetDimensions)
+    .where(
+      and(
+        eq(sheetDimensions.tabId, tabId),
+        eq(sheetDimensions.axis, axis),
+        gte(sheetDimensions.index, start),
+        lte(sheetDimensions.index, end),
+      ),
+    );
+}
+
+/** Plus grand index occupé sur un axe (0 si l'onglet est vide). */
+async function maxAxisIndex(tx: Tx, tabId: string, axis: DimensionAxis): Promise<number> {
+  const column = axis === "row" ? sheetCells.row : sheetCells.col;
+  const [row] = await tx
+    .select({ value: sql<number>`max(${column})`.mapWith(Number) })
+    .from(sheetCells)
+    .where(eq(sheetCells.tabId, tabId));
+  const value = row?.value;
+  return typeof value === "number" ? value : 0;
+}
+
+async function requireTabForStructure(
+  actor: Actor,
+  fileId: string,
+  tabId: string,
+): Promise<{ id: string }> {
+  const { spreadsheet } = await requireSpreadsheet(actor, fileId);
+  await requireEditor(actor, fileId);
+  const [tab] = await db()
+    .select({ id: sheetTabs.id })
+    .from(sheetTabs)
+    .where(and(eq(sheetTabs.id, tabId), eq(sheetTabs.spreadsheetId, spreadsheet.id)))
+    .limit(1);
+  if (!tab) throw new SheetsError("not_found", "Onglet introuvable.");
+  return tab;
+}
+
+/**
+ * Insère ou supprime des lignes ou des colonnes dans un onglet : les cellules
+ * existantes (valeurs et styles) suivent le décalage, ainsi que les tailles
+ * de la grille. Une insertion qui pousserait des cellules hors des limites de
+ * la feuille est refusée — jamais de perte silencieuse.
+ */
+async function mutateStructure(
+  actor: Actor,
+  fileId: string,
+  input: { tabId: string; kind: StructureKind; mode: StructureMode; index: number; count: number },
+): Promise<void> {
+  const { kind, mode, index, count } = input;
+  const axis: DimensionAxis = kind;
+  const message = checkStructure(kind, mode, index, count);
+  if (message) throw new SheetsError("validation", message);
+
+  const tab = await requireTabForStructure(actor, fileId, input.tabId);
+
+  await withTransaction(async (tx) => {
+    if (mode === "insert") {
+      const highest = await maxAxisIndex(tx, tab.id, axis);
+      if (highest + count >= DIMENSION_INDEX_MAX[axis]) {
+        throw new SheetsError(
+          "validation",
+          `Insertion impossible : elle dépasserait les ${DIMENSION_INDEX_MAX[axis]} ${kind === "row" ? "lignes" : "colonnes"} de la feuille.`,
+        );
+      }
+      if (index < DIMENSION_INDEX_MAX[axis]) {
+        await shiftAxis(tx, tab.id, axis, index, count, "desc");
+      }
+    } else {
+      const end = index + count - 1;
+      await removeAxisRange(tx, tab.id, axis, index, end);
+      if (end + 1 < DIMENSION_INDEX_MAX[axis]) {
+        await shiftAxis(tx, tab.id, axis, end + 1, -count, "asc");
+      }
+    }
+  });
+
+  await touchEntry(actor, fileId).catch(() => undefined);
+
+  await recordAudit({
+    orgId: actor.orgId,
+    actorUserId: actor.userId,
+    action: `sheets.${kind === "row" ? "rows" : "cols"}.${mode}`,
+    resourceType: "tab",
+    resourceId: tab.id,
+    result: "success",
+    metadata: { fileId, index, count },
+  });
+}
+
+export function insertRows(
+  actor: Actor,
+  fileId: string,
+  input: { tabId: string; index: number; count?: number },
+): Promise<void> {
+  return mutateStructure(actor, fileId, {
+    ...input,
+    kind: "row",
+    mode: "insert",
+    count: input.count ?? 1,
+  });
+}
+
+export function insertColumns(
+  actor: Actor,
+  fileId: string,
+  input: { tabId: string; index: number; count?: number },
+): Promise<void> {
+  return mutateStructure(actor, fileId, {
+    ...input,
+    kind: "col",
+    mode: "insert",
+    count: input.count ?? 1,
+  });
+}
+
+export function deleteRows(
+  actor: Actor,
+  fileId: string,
+  input: { tabId: string; index: number; count?: number },
+): Promise<void> {
+  return mutateStructure(actor, fileId, {
+    ...input,
+    kind: "row",
+    mode: "delete",
+    count: input.count ?? 1,
+  });
+}
+
+export function deleteColumns(
+  actor: Actor,
+  fileId: string,
+  input: { tabId: string; index: number; count?: number },
+): Promise<void> {
+  return mutateStructure(actor, fileId, {
+    ...input,
+    kind: "col",
+    mode: "delete",
+    count: input.count ?? 1,
+  });
 }
 
 /**
