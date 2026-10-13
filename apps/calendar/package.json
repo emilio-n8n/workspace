@@ -31,7 +31,6 @@
     "@workspace/meet": "workspace:*",
     "zod": "^4.1.12",
     "@workspace/search": "workspace:*",
-    "zod": "^4.1.12",
     "nitro": "3.0.260903-beta"
   },
   "devDependencies": {
