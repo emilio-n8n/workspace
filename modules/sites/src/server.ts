@@ -2,6 +2,7 @@ import { createServerFn } from "@tanstack/react-start";
 import { getRequest } from "@tanstack/react-start/server";
 import { requireActor } from "@workspace/auth";
 import { z } from "zod";
+import type { SiteBlock } from "./blocks.ts";
 import {
   addPage,
   createSite,
@@ -62,6 +63,13 @@ export const savePageFn = createServerFn({ method: "POST" })
         pageId: z.string().uuid(),
         title: z.string().trim().min(1).max(255),
         content: z.string().max(200_000),
+        /**
+         * Mise en page en blocs. La forme transportée est seulement vérifiée
+         * (tableau d'objets) : la validation métier — types de blocs,
+         * identifiants, longueurs — appartient au service, seul endroit qui
+         * produit des messages en français et reste valable hors HTTP.
+         */
+        blocks: z.array(z.record(z.string(), z.unknown())).nullish(),
       })
       .parse(input),
   )
@@ -70,6 +78,7 @@ export const savePageFn = createServerFn({ method: "POST" })
     return savePage(actor, data.fileId, data.pageId, {
       title: data.title,
       content: data.content,
+      blocks: data.blocks as SiteBlock[] | null | undefined,
     });
   });
 

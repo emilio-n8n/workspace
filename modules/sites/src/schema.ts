@@ -1,12 +1,23 @@
 import { schema as core } from "@workspace/database";
 import { driveFiles } from "@workspace/drive";
 import { sql } from "drizzle-orm";
-import { index, integer, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import {
+  index,
+  integer,
+  jsonb,
+  pgTable,
+  text,
+  timestamp,
+  uniqueIndex,
+  uuid,
+} from "drizzle-orm/pg-core";
+import type { SiteBlock } from "./blocks.ts";
 
 /**
  * Schéma du module Sites — voir docs/modules/sites.md.
  * Un site est un fichier Drive lié ; ses pages contiennent du Markdown rendu
- * en HTML sécurisé (échappement puis transformations contrôlées).
+ * en HTML sécurisé (échappement puis transformations contrôlées) ou une mise
+ * en page de blocs (`blocks`, voir `blocks.ts`) éditée dans le constructeur.
  */
 
 export const sitesSites = pgTable(
@@ -41,6 +52,12 @@ export const sitesPages = pgTable(
     title: text("title").notNull(),
     position: integer("position").notNull(),
     content: text("content").notNull().default(""),
+    /**
+     * Mise en page de blocs (constructeur de pages). `null` = page Markdown,
+     * dans ce cas `content` fait foi ; un tableau (éventuellement vide) =
+     * page construite en blocs, `content` est alors ignoré au rendu.
+     */
+    blocks: jsonb("blocks").$type<SiteBlock[]>(),
     updatedAt: timestamp("updated_at", { withTimezone: true })
       .defaultNow()
       .notNull()

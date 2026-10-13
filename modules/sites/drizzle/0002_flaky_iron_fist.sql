@@ -1,0 +1,1 @@
+ALTER TABLE "sites_pages" ADD COLUMN "blocks" jsonb;

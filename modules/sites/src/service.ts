@@ -11,6 +11,7 @@ import {
 } from "@workspace/drive";
 import { type Actor, roleSatisfies } from "@workspace/permissions";
 import { and, asc, eq, sql } from "drizzle-orm";
+import { checkBlocks, normalizeBlocks, type SiteBlock } from "./blocks.ts";
 import { slugify } from "./markdown.ts";
 import { type SitePageRow, sitesPages, sitesSites } from "./schema.ts";
 
@@ -40,7 +41,21 @@ export type SiteDetail = {
   pages: PageView[];
 };
 
-export type PageDetail = { id: string; slug: string; title: string; content: string };
+export type PageDetail = {
+  id: string;
+  slug: string;
+  title: string;
+  content: string;
+  blocks: SiteBlock[] | null;
+};
+
+/** Entrée de sauvegarde d'une page : `blocks` absent = ne pas y toucher. */
+export type SavePageInput = {
+  title: string;
+  content: string;
+  /** Mise en page en blocs ; `null` efface les blocs (retour au Markdown). */
+  blocks?: SiteBlock[] | null;
+};
 
 const db = () => getDb();
 
@@ -200,14 +215,22 @@ export async function getSite(actor: Actor, fileId: string): Promise<SiteDetail>
 
 export async function getPage(actor: Actor, fileId: string, pageId: string): Promise<PageDetail> {
   const { page } = await requirePage(actor, fileId, pageId);
-  return { id: page.id, slug: page.slug, title: page.title, content: page.content };
+  return {
+    id: page.id,
+    slug: page.slug,
+    title: page.title,
+    content: page.content,
+    // Normalisation défensive : une valeur corrompue en base ne doit jamais
+    // casser le rendu de la page (les blocs illisibles sont écartés).
+    blocks: page.blocks === null ? null : normalizeBlocks(page.blocks),
+  };
 }
 
 export async function savePage(
   actor: Actor,
   fileId: string,
   pageId: string,
-  input: { title: string; content: string },
+  input: SavePageInput,
 ): Promise<PageDetail> {
   const { page } = await requirePage(actor, fileId, pageId);
   await requireEditor(actor, fileId);
@@ -217,9 +240,22 @@ export async function savePage(
     throw new SitesError("validation", "Contenu de page limité à 200 000 caractères.");
   }
 
+  // `blocks` absent → page Markdown intacte ; `null` → la page redevient
+  // Markdown ; un tableau → la page est construite en blocs.
+  let blocks: SiteBlock[] | null | undefined = input.blocks === undefined ? undefined : null;
+  if (input.blocks != null) {
+    const checked = checkBlocks(input.blocks);
+    if (checked.error) throw new SitesError("validation", checked.error);
+    blocks = checked.blocks;
+  }
+
   await db()
     .update(sitesPages)
-    .set({ title, content: input.content })
+    .set({
+      title,
+      content: input.content,
+      ...(blocks === undefined ? {} : { blocks }),
+    })
     .where(eq(sitesPages.id, page.id));
   await touchEntry(actor, fileId).catch(() => undefined);
 
@@ -233,9 +269,12 @@ export async function savePage(
     metadata: { pageId: page.id },
   });
 
+  const saved =
+    blocks === undefined ? (page.blocks === null ? null : normalizeBlocks(page.blocks)) : blocks;
+
   // Le slug de la page reste inchangé lors d'un renommage : il est déjà
   // public (URL de page) et des liens externes peuvent le référencer.
-  return { id: page.id, slug: page.slug, title, content: input.content };
+  return { id: page.id, slug: page.slug, title, content: input.content, blocks: saved };
 }
 
 export async function addPage(
