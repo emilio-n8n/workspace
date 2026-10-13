@@ -1,3 +1,4 @@
+import { recordAudit } from "@workspace/audit";
 import { schema as coreSchema, getDb, withTransaction } from "@workspace/database";
 import {
   createLinkedFile,
@@ -140,6 +141,10 @@ async function latestVersion(documentId: string): Promise<DocsVersion | null> {
 // Cycle de vie
 // ---------------------------------------------------------------------------
 
+// Mutations notables uniquement : l'autosave (`saveDocument`), l'export et la
+// liste des versions ne sont pas journalisés — un événement par frappe
+// noierait le journal d'audit.
+
 export async function createDocument(
   actor: Actor,
   input: { parentFolderId?: string | null; title: string },
@@ -167,6 +172,15 @@ export async function createDocument(
     });
 
     return doc;
+  });
+
+  await recordAudit({
+    orgId: actor.orgId,
+    actorUserId: actor.userId,
+    action: "docs.document.create",
+    resourceType: "document",
+    resourceId: entry.id,
+    result: "success",
   });
 
   return { entry, document };
@@ -382,6 +396,15 @@ export async function renameDocument(
   const entry = await driveRename(actor, fileId, clean);
   await db().update(docsDocuments).set({ title: clean }).where(eq(docsDocuments.fileId, fileId));
 
+  await recordAudit({
+    orgId: actor.orgId,
+    actorUserId: actor.userId,
+    action: "docs.document.rename",
+    resourceType: "document",
+    resourceId: fileId,
+    result: "success",
+  });
+
   return entry;
 }
 
@@ -487,6 +510,16 @@ export async function addComment(
     .values({ documentId: document.id, authorId: actor.userId, body, quote })
     .returning();
   if (!created) throw new DocsError("conflict", "Ajout du commentaire impossible.");
+
+  await recordAudit({
+    orgId: actor.orgId,
+    actorUserId: actor.userId,
+    action: "docs.comment.add",
+    resourceType: "document",
+    resourceId: fileId,
+    result: "success",
+    metadata: { commentId: created.id },
+  });
 
   return toCommentView(created, await commentAuthorName(actor.userId));
 }

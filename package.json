@@ -18,7 +18,8 @@
     "generate-routes": "turbo run generate-routes",
     "db:migrate": "node scripts/db-migrate-all.mjs",
     "check:design": "node scripts/contrast-check.mjs",
-    "seed:demo": "tsx scripts/seed-demo.mts"
+    "seed:demo": "tsx scripts/seed-demo.mts",
+    "backup": "node scripts/backup.mjs"
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.13.0",

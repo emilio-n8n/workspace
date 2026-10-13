@@ -18,5 +18,16 @@
   "envMode": "loose",
   "globalPassThroughEnv": ["DEMO_SEED_ALLOW_REMOTE"],
   "concurrency": "20",
-  "globalEnv": ["DATABASE_URL", "TEST_DATABASE_URL", "SESSION_SECRET", "PUBLIC_URL"]
+  "globalEnv": [
+    "DATABASE_URL",
+    "TEST_DATABASE_URL",
+    "SESSION_SECRET",
+    "PUBLIC_URL",
+    "BACKUP_DIR",
+    "BACKUP_RETENTION_DAYS",
+    "STORAGE_DIR",
+    "STORAGE_DRIVER",
+    "COLLAB_URL",
+    "COLLAB_PORT"
+  ]
 }
