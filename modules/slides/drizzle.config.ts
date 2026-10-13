@@ -8,6 +8,10 @@ export default defineConfig({
   dialect: "postgresql",
   schema: "./src/schema.ts",
   out: "./drizzle",
+  // Registre de migrations PROPRE à ce package : le registre partagé
+  // provoquait des sauts de migrations quand les horodatages de génération
+  // s'entrecroisaient entre modules (prouvé en CI sur base vierge).
+  migrations: { schema: "drizzle", table: "__drizzle_migrations_slides" },
   dbCredentials: {
     url: process.env.DATABASE_URL ?? "",
   },
