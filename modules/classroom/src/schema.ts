@@ -88,6 +88,29 @@ export const classroomSubmissions = pgTable(
   ],
 );
 
+/**
+ * Pièces jointes d'une copie : métadonnées en base, binaire dans
+ * @workspace/storage (clé `classroom/<orgId>/<uuid>`). La suppression de la
+ * copie (ou du devoir, en cascade) entraîne celle des métadonnées ; le blob
+ * reste dans le stockage (nettoyage hors ligne).
+ */
+export const classroomSubmissionAttachments = pgTable(
+  "classroom_submission_attachments",
+  {
+    id: uuid("id").primaryKey().default(sql`uuidv7()`),
+    submissionId: uuid("submission_id")
+      .notNull()
+      .references(() => classroomSubmissions.id, { onDelete: "cascade" }),
+    filename: text("filename").notNull(),
+    contentType: text("content_type").notNull(),
+    sizeBytes: integer("size_bytes").notNull(),
+    storageKey: text("storage_key").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [index("classroom_submission_attachments_submission_idx").on(table.submissionId)],
+);
+
 export type ClassroomCourseRow = typeof classroomCourses.$inferSelect;
 export type ClassroomAssignmentRow = typeof classroomAssignments.$inferSelect;
 export type ClassroomSubmissionRow = typeof classroomSubmissions.$inferSelect;
+export type ClassroomSubmissionAttachmentRow = typeof classroomSubmissionAttachments.$inferSelect;

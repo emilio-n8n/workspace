@@ -24,6 +24,7 @@
     "@workspace/database": "workspace:*",
     "@workspace/notifications": "workspace:*",
     "@workspace/permissions": "workspace:*",
+    "@workspace/storage": "workspace:*",
     "@workspace/ui": "workspace:*",
     "drizzle-orm": "^0.45.4",
     "react": "^19.2.0",

@@ -1,7 +1,7 @@
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { closeDb, schema as coreSchema, getDb } from "@workspace/database";
 import type { Actor } from "@workspace/permissions";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   ClassroomError,
@@ -10,12 +10,15 @@ import {
   createCourse,
   deleteAssignment,
   getCourse,
+  getSubmissionAttachment,
   gradeSubmission,
   joinByCode,
   listCourses,
   listSubmissions,
+  MAX_ATTACHMENT_BYTES,
   randomJoinCode,
   submitAssignment,
+  uploadSubmissionAttachment,
 } from "../src/index.ts";
 
 const { user, organization, auditEvents } = coreSchema;
@@ -29,6 +32,7 @@ type Fixtures = {
   actorAlice: Actor;
   actorBruno: Actor;
   actorChloe: Actor;
+  actorDiego: Actor;
 };
 
 async function createFixtures(): Promise<Fixtures> {
@@ -58,6 +62,7 @@ async function createFixtures(): Promise<Fixtures> {
   const alice = await makeUser("Alice");
   const bruno = await makeUser("Bruno");
   const chloe = await makeUser("Chloe");
+  const diego = await makeUser("Diego");
 
   return {
     orgId,
@@ -65,6 +70,7 @@ async function createFixtures(): Promise<Fixtures> {
     actorAlice: { userId: alice, orgId },
     actorBruno: { userId: bruno, orgId },
     actorChloe: { userId: chloe, orgId: otherOrgId },
+    actorDiego: { userId: diego, orgId },
   };
 }
 
@@ -75,6 +81,7 @@ async function cleanup(f: Fixtures): Promise<void> {
   await db.delete(user).where(eq(user.id, f.actorAlice.userId));
   await db.delete(user).where(eq(user.id, f.actorBruno.userId));
   await db.delete(user).where(eq(user.id, f.actorChloe.userId));
+  await db.delete(user).where(eq(user.id, f.actorDiego.userId));
 }
 
 let f: Fixtures;
@@ -400,5 +407,187 @@ describe("classroom — audit", () => {
     await getCourse(f.actorBruno, course.id);
 
     expect(await countRows()).toBe(before);
+  });
+});
+
+describe("classroom — pièces jointes", () => {
+  /** Cours d'Alice où Bruno est élève, prêt à recevoir un devoir. */
+  async function courseWithBruno(name: string): Promise<{ id: string }> {
+    const course = await createCourse(f.actorAlice, { name });
+    const detail = await getCourse(f.actorAlice, course.id);
+    const code = detail.joinCode;
+    if (!code) throw new Error("code manquant");
+    await joinByCode(f.actorBruno, code);
+    return course;
+  }
+
+  it("téléverse, rattache au rendu, sert les octets à l'identique et expose les métadonnées", async () => {
+    const course = await courseWithBruno("Biologie");
+    const assignment = await createAssignment(f.actorAlice, course.id, { title: "Rapport" });
+
+    // Contenu binaire non textuel : la restitution doit être octet pour octet.
+    const bytes = randomBytes(2048);
+    const token = await uploadSubmissionAttachment(f.actorBruno, {
+      filename: "rapport.pdf",
+      contentType: "application/pdf",
+      body: bytes,
+    });
+    expect(token.storageKey.startsWith(`classroom/${f.orgId}/`)).toBe(true);
+    expect(token.sizeBytes).toBe(bytes.length);
+
+    await submitAssignment(f.actorBruno, assignment.id, "Voici mon rapport", [token]);
+
+    // Vue prof : métadonnées exposées, clé de stockage jamais divulguée.
+    const submissions = await listSubmissions(f.actorAlice, assignment.id);
+    expect(submissions).toHaveLength(1);
+    const [meta] = submissions[0]?.attachments ?? [];
+    expect(meta).toMatchObject({
+      filename: "rapport.pdf",
+      contentType: "application/pdf",
+      sizeBytes: bytes.length,
+    });
+    expect(meta).not.toHaveProperty("storageKey");
+
+    if (!meta) throw new Error("pièce jointe manquante");
+    const downloaded = await getSubmissionAttachment(f.actorAlice, meta.id);
+    expect(downloaded.filename).toBe("rapport.pdf");
+    expect(downloaded.contentType).toBe("application/pdf");
+    expect(downloaded.body.equals(bytes)).toBe(true);
+
+    // L'élève propriétaire peut aussi télécharger sa propre pièce jointe.
+    const own = await getSubmissionAttachment(f.actorBruno, meta.id);
+    expect(own.body.equals(bytes)).toBe(true);
+
+    // Le rendu de l'élève porte les mêmes métadonnées (sans la clé).
+    const studentView = await getCourse(f.actorBruno, course.id);
+    const mine = studentView.assignments[0]?.mySubmission;
+    expect(mine?.attachments).toHaveLength(1);
+    expect(mine?.attachments[0]).toMatchObject({
+      filename: "rapport.pdf",
+      sizeBytes: bytes.length,
+    });
+  });
+
+  it("refuse une clé de stockage d'une autre organisation", async () => {
+    const course = await courseWithBruno("Géographie");
+    const assignment = await createAssignment(f.actorAlice, course.id, { title: "Carte" });
+
+    const foreign = {
+      storageKey: `classroom/${f.otherOrgId}/${randomUUID()}`,
+      filename: "intrus.txt",
+      contentType: "text/plain",
+      sizeBytes: 4,
+    };
+    await expect(submitAssignment(f.actorBruno, assignment.id, "Copie", [foreign])).rejects.toThrow(
+      ClassroomError,
+    );
+
+    // Validation avant écriture : aucune copie n'a été créée.
+    await expect(listSubmissions(f.actorAlice, assignment.id)).resolves.toHaveLength(0);
+  });
+
+  it("refuse le téléchargement à un membre d'un autre cours ou d'une autre organisation", async () => {
+    const courseA = await courseWithBruno("Cours A");
+    const assignment = await createAssignment(f.actorAlice, courseA.id, { title: "Devoir A" });
+
+    // Diego est élève d'un AUTRE cours, dans la même organisation.
+    const courseB = await createCourse(f.actorAlice, { name: "Cours B" });
+    const detailB = await getCourse(f.actorAlice, courseB.id);
+    const codeB = detailB.joinCode;
+    if (!codeB) throw new Error("code manquant");
+    await joinByCode(f.actorDiego, codeB);
+
+    const token = await uploadSubmissionAttachment(f.actorBruno, {
+      filename: "copie.txt",
+      contentType: "text/plain",
+      body: Buffer.from("secret"),
+    });
+    await submitAssignment(f.actorBruno, assignment.id, "Ma copie", [token]);
+    const [submission] = await listSubmissions(f.actorAlice, assignment.id);
+    const attachmentId = submission?.attachments[0]?.id;
+    if (!attachmentId) throw new Error("pièce jointe manquante");
+
+    // Ni un membre d'un autre cours, ni un membre d'une autre organisation.
+    await expect(getSubmissionAttachment(f.actorDiego, attachmentId)).rejects.toThrow(
+      ClassroomError,
+    );
+    await expect(getSubmissionAttachment(f.actorChloe, attachmentId)).rejects.toThrow(
+      ClassroomError,
+    );
+    // L'enseignant du cours, lui, accède au fichier.
+    await expect(getSubmissionAttachment(f.actorAlice, attachmentId)).resolves.toBeTruthy();
+  });
+
+  it("refuse les noms avec séparateur de chemin et les fichiers au-delà de 10 Mo", async () => {
+    const body = Buffer.from("x");
+    await expect(
+      uploadSubmissionAttachment(f.actorBruno, {
+        filename: "dossier/fichier.txt",
+        contentType: "text/plain",
+        body,
+      }),
+    ).rejects.toThrow(ClassroomError);
+    await expect(
+      uploadSubmissionAttachment(f.actorBruno, {
+        filename: "dossier\\fichier.txt",
+        contentType: "text/plain",
+        body,
+      }),
+    ).rejects.toThrow(ClassroomError);
+    await expect(
+      uploadSubmissionAttachment(f.actorBruno, {
+        filename: "nul\0name.txt",
+        contentType: "text/plain",
+        body,
+      }),
+    ).rejects.toThrow(ClassroomError);
+    await expect(
+      uploadSubmissionAttachment(f.actorBruno, {
+        filename: "trop-gros.bin",
+        contentType: "application/octet-stream",
+        body: Buffer.alloc(MAX_ATTACHMENT_BYTES + 1),
+      }),
+    ).rejects.toThrow(/trop volumineuse/);
+  });
+
+  it("n'audite classroom.submission.attach que si une pièce jointe est déposée", async () => {
+    const course = await courseWithBruno("Journal PJ");
+    const assignment = await createAssignment(f.actorAlice, course.id, { title: "Mémoire" });
+
+    const attachRows = async () =>
+      await getDb()
+        .select()
+        .from(auditEvents)
+        .where(
+          and(
+            eq(auditEvents.orgId, f.orgId),
+            eq(auditEvents.action, "classroom.submission.attach"),
+          ),
+        );
+
+    // Copie sans pièce jointe : déjà couverte par classroom.submission.submit.
+    await submitAssignment(f.actorBruno, assignment.id, "Sans fichier");
+    expect(await attachRows()).toHaveLength(0);
+
+    // Nouvelle remise avec pièce jointe : exactement une ligne d'audit.
+    const token = await uploadSubmissionAttachment(f.actorBruno, {
+      filename: "annexe.txt",
+      contentType: "text/plain",
+      body: Buffer.from("hi"),
+    });
+    await submitAssignment(f.actorBruno, assignment.id, "Avec fichier", [token]);
+
+    const rows = await attachRows();
+    expect(rows).toHaveLength(1);
+    const [submission] = await listSubmissions(f.actorAlice, assignment.id);
+    expect(rows[0]).toMatchObject({
+      orgId: f.orgId,
+      actorUserId: f.actorBruno.userId,
+      action: "classroom.submission.attach",
+      resourceType: "submission",
+      resourceId: submission?.id,
+      result: "success",
+      metadata: { count: 1 },
+    });
   });
 });

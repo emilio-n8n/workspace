@@ -1682,6 +1682,9 @@ importers:
       '@workspace/permissions':
         specifier: workspace:*
         version: link:../../packages/permissions
+      '@workspace/storage':
+        specifier: workspace:*
+        version: link:../../packages/storage
       '@workspace/ui':
         specifier: workspace:*
         version: link:../../packages/ui

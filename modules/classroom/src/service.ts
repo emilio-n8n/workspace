@@ -1,9 +1,10 @@
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { recordAudit } from "@workspace/audit";
 import { getAppUrls } from "@workspace/config";
 import { schema as core, getDb, withTransaction } from "@workspace/database";
 import { createNotification } from "@workspace/notifications";
 import type { Actor } from "@workspace/permissions";
+import { getStorage } from "@workspace/storage";
 import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import {
   type ClassroomCourseRow,
@@ -11,6 +12,7 @@ import {
   classroomAssignments,
   classroomCourses,
   classroomMembers,
+  classroomSubmissionAttachments,
   classroomSubmissions,
 } from "./schema.ts";
 
@@ -44,6 +46,30 @@ export type SubmissionView = {
   submittedAt: string;
   grade: number | null;
   feedback: string | null;
+  /** Métadonnées des pièces jointes — le binaire se télécharge via la route dédiée. */
+  attachments: SubmissionAttachmentMeta[];
+};
+
+/** Métadonnées d'une pièce jointe exposées à l'UI (jamais la clé de stockage). */
+export type SubmissionAttachmentMeta = {
+  id: string;
+  filename: string;
+  contentType: string;
+  sizeBytes: number;
+};
+
+/** Jeton provisoire renvoyé par `uploadSubmissionAttachment` puis transmis à `submitAssignment`. */
+export type SubmissionAttachmentToken = {
+  storageKey: string;
+  filename: string;
+  contentType: string;
+  sizeBytes: number;
+};
+
+export type SubmissionAttachmentDownload = {
+  filename: string;
+  contentType: string;
+  body: Buffer;
 };
 
 export type AssignmentView = {
@@ -76,6 +102,12 @@ export const JOIN_CODE_LENGTH = 8;
 
 /** Nombre de tentatives avant d'abandonner la génération d'un code unique. */
 const JOIN_CODE_ATTEMPTS = 5;
+
+/** Bornes des pièces jointes : 5 fichiers de 10 Mio au maximum. */
+export const MAX_ATTACHMENTS = 5;
+export const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
+const MAX_ATTACHMENT_FILENAME_LENGTH = 255;
+const MAX_CONTENT_TYPE_LENGTH = 200;
 
 function isUniqueViolation(error: unknown): boolean {
   const candidate = error as { code?: string; cause?: { code?: string } };
@@ -325,6 +357,7 @@ export async function getCourse(actor: Actor, courseId: string): Promise<CourseD
   const assignmentIds = assignmentRows.map((assignment) => assignment.id);
   const submissionCounts = new Map<string, number>();
   const mySubmissions = new Map<string, ClassroomSubmissionRow>();
+  let myAttachments = new Map<string, SubmissionAttachmentMeta[]>();
 
   if (assignmentIds.length > 0) {
     const [counts, mine] = await Promise.all([
@@ -348,6 +381,8 @@ export async function getCourse(actor: Actor, courseId: string): Promise<CourseD
     ]);
     for (const row of counts) submissionCounts.set(row.assignmentId, row.value);
     for (const row of mine) mySubmissions.set(row.assignmentId, row);
+    // Les pièces jointes de mes copies, en une seule requête (pas de N+1).
+    myAttachments = await attachmentsBySubmission(mine.map((row) => row.id));
   }
 
   const assignments: AssignmentView[] = assignmentRows.map((assignment) => {
@@ -365,6 +400,7 @@ export async function getCourse(actor: Actor, courseId: string): Promise<CourseD
             submittedAt: mine.submittedAt.toISOString(),
             grade: mine.grade,
             feedback: mine.feedback,
+            attachments: myAttachments.get(mine.id) ?? [],
           }
         : null,
     };
@@ -442,10 +478,180 @@ export async function deleteAssignment(actor: Actor, assignmentId: string): Prom
   });
 }
 
+// ---------------------------------------------------------------------------
+// Pièces jointes — validation commune (upload, rendu, lecture)
+// ---------------------------------------------------------------------------
+
+function assertAttachmentFilename(value: unknown): string {
+  if (typeof value !== "string") {
+    throw new ClassroomError("validation", "Nom de fichier invalide.");
+  }
+  const filename = value.trim();
+  if (filename.length === 0 || filename.length > MAX_ATTACHMENT_FILENAME_LENGTH) {
+    throw new ClassroomError(
+      "validation",
+      `Nom de fichier invalide (1 à ${MAX_ATTACHMENT_FILENAME_LENGTH} caractères).`,
+    );
+  }
+  if (/[/\\]/.test(filename) || filename.includes("\0")) {
+    throw new ClassroomError(
+      "validation",
+      "Le nom du fichier ne peut pas contenir de séparateur de chemin.",
+    );
+  }
+  return filename;
+}
+
+function assertContentType(value: unknown): string {
+  if (typeof value !== "string") {
+    throw new ClassroomError("validation", "Type de contenu invalide.");
+  }
+  const contentType = value.trim();
+  if (contentType.length === 0 || contentType.length > MAX_CONTENT_TYPE_LENGTH) {
+    throw new ClassroomError(
+      "validation",
+      `Type de contenu invalide (1 à ${MAX_CONTENT_TYPE_LENGTH} caractères).`,
+    );
+  }
+  return contentType;
+}
+
+/**
+ * Valide les jetons d'upload avant rattachement : bornés à 5, chacun préfixé
+ * par `classroom/<orgId>/` — un jeton d'une autre organisation ne passe jamais.
+ */
+function assertAttachmentTokens(
+  actor: Actor,
+  attachments: SubmissionAttachmentToken[],
+): SubmissionAttachmentToken[] {
+  if (attachments.length > MAX_ATTACHMENTS) {
+    throw new ClassroomError("validation", `${MAX_ATTACHMENTS} pièces jointes au maximum.`);
+  }
+  const prefix = `classroom/${actor.orgId}/`;
+  return attachments.map((attachment) => {
+    if (!attachment.storageKey.startsWith(prefix)) {
+      throw new ClassroomError("validation", "Clé de pièce jointe invalide.");
+    }
+    if (
+      !Number.isInteger(attachment.sizeBytes) ||
+      attachment.sizeBytes < 0 ||
+      attachment.sizeBytes > MAX_ATTACHMENT_BYTES
+    ) {
+      throw new ClassroomError("validation", "Taille de pièce jointe invalide.");
+    }
+    return {
+      storageKey: attachment.storageKey,
+      filename: assertAttachmentFilename(attachment.filename),
+      contentType: assertContentType(attachment.contentType),
+      sizeBytes: attachment.sizeBytes,
+    };
+  });
+}
+
+/** Métadonnées des pièces jointes de plusieurs copies (une seule requête). */
+async function attachmentsBySubmission(
+  submissionIds: string[],
+): Promise<Map<string, SubmissionAttachmentMeta[]>> {
+  const result = new Map<string, SubmissionAttachmentMeta[]>();
+  if (submissionIds.length === 0) return result;
+  const rows = await db()
+    .select()
+    .from(classroomSubmissionAttachments)
+    .where(inArray(classroomSubmissionAttachments.submissionId, submissionIds))
+    .orderBy(asc(classroomSubmissionAttachments.createdAt), asc(classroomSubmissionAttachments.id));
+  for (const row of rows) {
+    const list = result.get(row.submissionId) ?? [];
+    list.push({
+      id: row.id,
+      filename: row.filename,
+      contentType: row.contentType,
+      sizeBytes: row.sizeBytes,
+    });
+    result.set(row.submissionId, list);
+  }
+  return result;
+}
+
+/**
+ * Téléverse une pièce jointe et renvoie un jeton provisoire (non encore lié à
+ * une copie) : `submitAssignment` le rattache à la copie rendue. Les
+ * métadonnées (nom, type, taille) sont portées par le jeton ; le binaire vit
+ * dans le stockage sous `classroom/<orgId>/<uuid>`.
+ */
+export async function uploadSubmissionAttachment(
+  actor: Actor,
+  input: { filename: string; contentType: string; body: Buffer },
+): Promise<SubmissionAttachmentToken> {
+  const filename = assertAttachmentFilename(input.filename);
+  const contentType = assertContentType(input.contentType);
+  if (input.body.length > MAX_ATTACHMENT_BYTES) {
+    throw new ClassroomError(
+      "validation",
+      `Pièce jointe trop volumineuse (${MAX_ATTACHMENT_BYTES / (1024 * 1024)} Mo maximum).`,
+    );
+  }
+  const storageKey = `classroom/${actor.orgId}/${randomUUID()}`;
+  await getStorage().put({ key: storageKey, body: input.body, contentType });
+  return { storageKey, filename, contentType, sizeBytes: input.body.length };
+}
+
+/** Pièce jointe d'une copie — l'élève propriétaire ou un enseignant du cours, jamais un tiers. */
+async function requireReadableSubmissionAttachment(actor: Actor, attachmentId: string) {
+  const [row] = await db()
+    .select({
+      attachment: classroomSubmissionAttachments,
+      studentId: classroomSubmissions.studentId,
+      courseId: classroomAssignments.courseId,
+    })
+    .from(classroomSubmissionAttachments)
+    .innerJoin(
+      classroomSubmissions,
+      eq(classroomSubmissions.id, classroomSubmissionAttachments.submissionId),
+    )
+    .innerJoin(classroomAssignments, eq(classroomAssignments.id, classroomSubmissions.assignmentId))
+    .innerJoin(classroomCourses, eq(classroomCourses.id, classroomAssignments.courseId))
+    .where(
+      and(
+        eq(classroomSubmissionAttachments.id, attachmentId),
+        eq(classroomCourses.orgId, actor.orgId),
+      ),
+    )
+    .limit(1);
+  if (!row) throw new ClassroomError("not_found", "Pièce jointe introuvable.");
+  if (row.studentId === actor.userId) return row.attachment;
+
+  const [membership] = await db()
+    .select({ role: classroomMembers.role })
+    .from(classroomMembers)
+    .where(
+      and(eq(classroomMembers.courseId, row.courseId), eq(classroomMembers.userId, actor.userId)),
+    )
+    .limit(1);
+  if (membership?.role !== "teacher") {
+    throw new ClassroomError(
+      "forbidden",
+      "Cette pièce jointe est réservée à l'élève et aux enseignants du cours.",
+    );
+  }
+  return row.attachment;
+}
+
+/** Téléchargement d'une pièce jointe — réservé à l'élève propriétaire et aux enseignants du cours. */
+export async function getSubmissionAttachment(
+  actor: Actor,
+  attachmentId: string,
+): Promise<SubmissionAttachmentDownload> {
+  const attachment = await requireReadableSubmissionAttachment(actor, attachmentId);
+  const body = await getStorage().get(attachment.storageKey);
+  if (!body) throw new ClassroomError("not_found", "Pièce jointe introuvable.");
+  return { filename: attachment.filename, contentType: attachment.contentType, body };
+}
+
 export async function submitAssignment(
   actor: Actor,
   assignmentId: string,
   content: string,
+  attachments: SubmissionAttachmentToken[] = [],
 ): Promise<{ ok: true }> {
   const [assignment] = await db()
     .select()
@@ -463,16 +669,42 @@ export async function submitAssignment(
   if (clean.length < 1 || clean.length > 50_000) {
     throw new ClassroomError("validation", "La copie doit contenir entre 1 et 50 000 caractères.");
   }
+  const tokens = assertAttachmentTokens(actor, attachments);
 
-  await db()
-    .insert(classroomSubmissions)
-    .values({ assignmentId, studentId: actor.userId, content: clean })
-    .onConflictDoUpdate({
-      target: [classroomSubmissions.assignmentId, classroomSubmissions.studentId],
-      // Une copie peut toujours être remplacée, mais la note déjà posée est
-      // conservée : l'enseignant re-note explicitement s'il le souhaite.
-      set: { content: clean, submittedAt: new Date() },
-    });
+  const { submissionId, attached } = await withTransaction(async (tx) => {
+    const [submission] = await tx
+      .insert(classroomSubmissions)
+      .values({ assignmentId, studentId: actor.userId, content: clean })
+      .onConflictDoUpdate({
+        target: [classroomSubmissions.assignmentId, classroomSubmissions.studentId],
+        // Une copie peut toujours être remplacée, mais la note déjà posée est
+        // conservée : l'enseignant re-note explicitement s'il le souhaite.
+        set: { content: clean, submittedAt: new Date() },
+      })
+      .returning({ id: classroomSubmissions.id });
+    if (!submission) throw new ClassroomError("conflict", "Remise de la copie impossible.");
+
+    // Les pièces jointes sont rattachées dans la même transaction que la copie :
+    // pas de copie sans ses fichiers, pas de fichiers orphelins. Une nouvelle
+    // remise ajoute ses fichiers à ceux déjà rendus (aucune suppression
+    // silencieuse d'un fichier précédemment déposé).
+    const rows =
+      tokens.length > 0
+        ? await tx
+            .insert(classroomSubmissionAttachments)
+            .values(
+              tokens.map((attachment) => ({
+                submissionId: submission.id,
+                storageKey: attachment.storageKey,
+                filename: attachment.filename,
+                contentType: attachment.contentType,
+                sizeBytes: attachment.sizeBytes,
+              })),
+            )
+            .returning({ id: classroomSubmissionAttachments.id })
+        : [];
+    return { submissionId: submission.id, attached: rows };
+  });
 
   await recordAudit({
     orgId: actor.orgId,
@@ -482,6 +714,21 @@ export async function submitAssignment(
     resourceId: assignmentId,
     result: "success",
   });
+
+  // La remise est déjà journalisée par `classroom.submission.submit` : le
+  // second évènement n'est émis que lorsqu'un dépôt de fichiers apporte une
+  // information supplémentaire (jamais de doublon pour une copie nue).
+  if (tokens.length > 0) {
+    await recordAudit({
+      orgId: actor.orgId,
+      actorUserId: actor.userId,
+      action: "classroom.submission.attach",
+      resourceType: "submission",
+      resourceId: submissionId,
+      result: "success",
+      metadata: { count: attached.length },
+    });
+  }
 
   return { ok: true };
 }
@@ -496,6 +743,8 @@ export type TeacherSubmissionView = {
   grade: number | null;
   feedback: string | null;
   points: number;
+  /** Métadonnées des pièces jointes (téléchargement via la route dédiée). */
+  attachments: SubmissionAttachmentMeta[];
 };
 
 export async function listSubmissions(
@@ -519,10 +768,14 @@ export async function listSubmissions(
     .where(eq(classroomSubmissions.assignmentId, assignmentId))
     .orderBy(asc(core.user.name));
 
+  // Pièces jointes en une seule requête pour toute la liste (pas de N+1).
+  const attachments = await attachmentsBySubmission(rows.map((row) => row.id));
+
   return rows.map((row) => ({
     ...row,
     submittedAt: row.submittedAt.toISOString(),
     points: assignment.points,
+    attachments: attachments.get(row.id) ?? [],
   }));
 }
 
