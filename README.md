@@ -1,8 +1,46 @@
 # Workspace
 
+[![CI](https://github.com/emilio-n8n/workspace/actions/workflows/ci.yml/badge.svg)](https://github.com/emilio-n8n/workspace/actions/workflows/ci.yml)
+[![Licence : AGPL-3.0-only](https://img.shields.io/badge/licence-AGPL--3.0--only-1a7f5a)](docs/decisions/0001-licence.md)
+[![Node](https://img.shields.io/badge/node-%E2%89%A522-1a7f5a)](https://nodejs.org)
+
 Suite bureautique open source, auto-hébergeable et pensée pour l'ère de l'IA — **une suite, plusieurs applications** : Drive, Docs et Tasks aujourd'hui ; Sheets, Slides, Mail, Calendar, Meet, Chat, Forms, Sites, Classroom et administration selon la [roadmap](ROADMAP.md). Un **serveur MCP officiel** permet à des agents IA autorisés d'utiliser les mêmes données avec les mêmes permissions.
 
 > **Statut : MVP en cours de finalisation.** Les fondations (comptes, organisations, permissions, stockage, MCP) sont livrées et testées ; l'avancement réel est suivi dans [ROADMAP.md](ROADMAP.md).
+
+## Aperçu
+
+Maquettes de l'accueil (dossier complet : [`docs/design-system/maquettes/`](docs/design-system/maquettes)) :
+
+| Thème clair | Thème sombre (palette de commandes) |
+|---|---|
+| ![Accueil — thème clair](docs/design-system/maquettes/accueil-clair.png) | ![Accueil — thème sombre](docs/design-system/maquettes/accueil-sombre-commande.png) |
+
+## Démarrage en 5 minutes
+
+Prérequis : Node ≥ 22, pnpm ≥ 12, PostgreSQL ≥ 16 (18 recommandé).
+
+```bash
+pnpm install
+cp .env.example .env        # renseigner DATABASE_URL / SESSION_SECRET
+pnpm db:migrate             # schéma cœur + les 13 modules, dans un ordre déterministe
+pnpm dev                    # démarre les 14 applications (3000-3013)
+pnpm dev:collab             # (optionnel) collaboration Docs temps réel — serveur Yjs, port 3100
+```
+
+Ouvrez <http://localhost:3000>, créez un compte : l'organisation, le Drive et les 13 autres
+applications sont immédiatement disponibles (une seule connexion, cookie de session partagé).
+Pour un jeu de données prêt à l'emploi : `pnpm seed:demo` (compte `demo@exemple.org`).
+
+Vérifications :
+
+```bash
+pnpm typecheck              # TypeScript strict, tous les packages
+pnpm test                   # unitaires + intégration (PostgreSQL requis)
+pnpm test:e2e               # Playwright multi-applications (SSO inclus)
+pnpm build                  # builds de production des applications (SSR)
+pnpm check:design           # contraste WCAG des tokens (calculé, OKLCH→sRGB)
+```
 
 ## Applications
 
@@ -35,38 +73,17 @@ Le **SSO est natif** : une connexion sur l'accueil donne accès à toutes les ap
 
 ## Stack
 
-TanStack Start · React · TypeScript strict · Tailwind CSS v4 · pnpm + Turborepo · PostgreSQL · Drizzle ORM · better-auth · Vitest + Playwright · Docker Compose.
-
-## Démarrage (développement)
-
-Prérequis : Node ≥ 22, pnpm ≥ 12, PostgreSQL ≥ 16 (18 recommandé).
-
-```bash
-pnpm install
-cp .env.example .env        # renseigner DATABASE_URL / SESSION_SECRET
-pnpm db:migrate             # schéma cœur + les 13 modules, dans un ordre déterministe
-pnpm dev                    # démarre les 14 applications (3000-3013)
-pnpm dev:collab             # (optionnel) collaboration Docs temps réel — serveur Yjs, port 3100
-```
-
-Vérifications :
-
-```bash
-pnpm typecheck              # TypeScript strict, tous les packages
-pnpm test                   # unitaires + intégration (PostgreSQL requis)
-pnpm test:e2e               # Playwright multi-applications (SSO inclus)
-pnpm build                  # builds de production des applications
-pnpm check:design           # contraste WCAG des tokens (calculé, OKLCH→sRGB)
-pnpm seed:demo              # jeu de démonstration complet (compte demo@exemple.org)
-```
+TanStack Start (Nitro/SSR) · React · TypeScript strict · Tailwind CSS v4 · pnpm + Turborepo · PostgreSQL · Drizzle ORM · better-auth · Vitest + Playwright · Docker Compose.
 
 ## Serveur MCP
+
+Les agents IA compatibles MCP (Claude, Codex, autres) utilisent Workspace **avec les mêmes règles d'autorisation que l'interface web**, via des jetons révocables, scopés et journalisés. Détails : [`apps/mcp-server/README.md`](apps/mcp-server/README.md) et [`docs/mcp/`](docs/mcp/overview.md).
 
 ```bash
 WORKSPACE_TOKEN=wsk_… pnpm --filter @workspace/mcp-server start
 ```
 
-Les jetons se créent dans l'application (Accueil → Agents & jetons) avec des scopes minimaux (`drive:read`, `docs:read`, `tasks:write`…), expirent par défaut après 90 jours et sont réservés aux administrateurs pour le scope `audit:read`. **27 outils** couvrent la suite ; les outils destructifs exigent une confirmation littérale. Chaque appel est journalisé (succès, refus, erreurs), et **toutes les mutations web sont auditées** (`@workspace/audit`). Détails : `docs/mcp/`.
+Les jetons se créent dans l'application (Accueil → **Agents & jetons**, `/app/settings/tokens`) avec des scopes minimaux (`drive:read`, `docs:read`, `tasks:write`…), expirent par défaut après 90 jours ; le scope `audit:read` (journal d'audit) est réservé aux rôles owner/admin de l'organisation. **29 outils** couvrent la suite (fichiers, documents, tâches, agenda, formulaires, tableur, présentations, chat, mail, classroom, sites) ; les outils destructifs exigent une confirmation littérale (`confirm: "SUPPRIMER"`). Chaque appel est journalisé (succès, refus, erreurs), et **toutes les mutations web sont auditées** (`@workspace/audit`).
 
 ## Structure du dépôt
 
@@ -83,11 +100,11 @@ docs/        architecture · decisions · design-system · modules · security �
 
 - [ROADMAP.md](ROADMAP.md) — phases et avancement réel
 - `docs/architecture/` — vue d'ensemble, monorepo, données, frontières des modules
-- `docs/decisions/` — ADR 0001-0012 (licence, stack, auth, permissions, multi-applications…)
+- `docs/decisions/` — ADR 0001-0014 (licence, stack, auth, permissions, multi-applications…)
 - `docs/design-system/` — « Papier & encre » : tokens, typographies, shell
 - `docs/modules/` — contrats et critères d'acceptation par module
 - `docs/security/` — modèle de permissions, menaces, contrôles
-- `docs/deployment/` — installation et exploitation auto-hébergée
+- `docs/deployment/` — installation et exploitation auto-hébergée, déploiement Vercel ([`vercel.md`](docs/deployment/vercel.md))
 - `docs/mcp/` — serveur MCP : outils, scopes, audit
 
 ## Licence
