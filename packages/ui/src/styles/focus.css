@@ -1,0 +1,102 @@
+/*
+ * Workspace — focus visible global (fichier additif)
+ *
+ * Un seul anneau de focus pour toute la suite : 2 px, token `--ring`, décalage
+ * de 2 px, coins arrondis suivis automatiquement par `outline`. Les primitifs
+ * qui préfèrent un anneau Tailwind (`focus-visible:ring-*`) gardent leur
+ * variante : les utilitaires sont dans une couche postérieure, ils restent
+ * donc prioritaires sur cette base.
+ *
+ * À importer APRÈS les tokens (l'ordre de la cascade fait la cohérence) :
+ *   @import "@workspace/design-tokens/tokens.css";
+ *   @import "@workspace/ui/styles/focus.css";
+ *
+ * Aucune couleur codée en dur : tout passe par les tokens sémantiques, le
+ * thème sombre et le mode contrastes forcés sont donc couverts d'origine.
+ */
+
+@layer base {
+  /*
+   * Éléments interactifs : liens, boutons natifs, champs, résumés, et rôles
+   * ARIA pilotés au clavier par les primitifs (onglet, option, élément de
+   * menu, combobox, interrupteur). `:where()` garde une spécificité nulle :
+   * n'importe quel utilitaire Tailwind peut surcharger localement.
+   */
+  :where(
+    a[href],
+    button,
+    summary,
+    input,
+    select,
+    textarea,
+    [contenteditable="true"],
+    [tabindex]:not([tabindex^="-"]),
+    [role="button"],
+    [role="tab"],
+    [role="menuitem"],
+    [role="option"],
+    [role="combobox"],
+    [role="switch"]
+  ):focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+
+  /* Un clic à la souris ne laisse aucun anneau : seules les navigations
+     clavier ou par lecteur d'écran affichent le focus. */
+  :where(
+    a[href],
+    button,
+    summary,
+    input,
+    select,
+    textarea,
+    [contenteditable="true"],
+    [tabindex]:not([tabindex^="-"]),
+    [role="button"],
+    [role="tab"],
+    [role="menuitem"],
+    [role="option"],
+    [role="combobox"],
+    [role="switch"]
+  ):focus:not(:focus-visible) {
+    outline: none;
+  }
+
+  /* Contrastes forcés (Windows) : l'anneau reprend la couleur système. */
+  @media (forced-colors: active) {
+    :where(
+      a[href],
+      button,
+      summary,
+      input,
+      select,
+      textarea,
+      [contenteditable="true"],
+      [tabindex]:not([tabindex^="-"]),
+      [role="button"],
+      [role="tab"],
+      [role="menuitem"],
+      [role="option"],
+      [role="combobox"],
+      [role="switch"]
+    ):focus-visible {
+      outline: 3px solid Highlight;
+      outline-offset: 2px;
+    }
+  }
+}
+
+@layer utilities {
+  /* Focus virtuel : pour les widgets à `aria-activedescendant` (listbox,
+     combobox), où le focus DOM reste sur le conteneur. */
+  .focus-ring {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+
+  /* Opt-out explicite (surfaces de dessin, lecteurs, zones fantômes). */
+  .focus-ring-none:focus-visible {
+    outline: none;
+  }
+}
