@@ -127,7 +127,8 @@ export function MeetView() {
               <div className="min-w-0 flex-1">
                 <p className="truncate font-display text-sm font-semibold">{room.name}</p>
                 <p className="text-xs text-muted-foreground">
-                  /room/{room.slug} · créée le {formatDate(room.createdAt)}
+                  /room/{room.slug} · créée le {formatDate(room.createdAt)} ·{" "}
+                  {room.requireAdmission ? "entrée sur admission" : "entrée libre"}
                 </p>
               </div>
               <Button size="sm" variant="outline" onClick={() => void copyLink(room.slug)}>

@@ -2,9 +2,9 @@
 
 ## Missions
 
-- [ ] TASK-001 : Écran préparatoire: aperçu caméra, micro, sélection des périphériques
-- [ ] TASK-002 : États muet/caméra-off visibles et persistants
-- [ ] TASK-003 : Salle d'attente (lobby) avec admission
+- [x] TASK-001 : Écran préparatoire: aperçu caméra, micro, sélection des périphériques
+- [x] TASK-002 : États muet/caméra-off visibles et persistants
+- [x] TASK-003 : Salle d'attente (lobby) avec admission
 - [ ] TASK-004 : Panneau participants latéral (rôles, muet individuel)
 - [ ] TASK-005 : Lever la main (indicateur pour tous)
 - [ ] TASK-006 : Chat de réunion

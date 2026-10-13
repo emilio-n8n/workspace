@@ -8,6 +8,13 @@
       "when": 1791747806312,
       "tag": "0000_smooth_magdalene",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1791920439450,
+      "tag": "0001_lobby",
+      "breakpoints": true
     }
   ]
 }
