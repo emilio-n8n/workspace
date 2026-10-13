@@ -57,6 +57,12 @@ export const mailMessages = pgTable(
     fromName: text("from_name"),
     toAddresses: jsonb("to_addresses").$type<string[]>().notNull().default([]),
     ccAddresses: jsonb("cc_addresses").$type<string[]>().notNull().default([]),
+    /**
+     * Copies cachées (Cci) : transmises au relais SMTP, jamais affichées aux
+     * autres destinataires. Même bornage (20 destinataires distincts au total)
+     * et même validation que « À » et « Cc ».
+     */
+    bccAddresses: jsonb("bcc_addresses").$type<string[]>().notNull().default([]),
     subject: text("subject").notNull().default(""),
     /**
      * Clé de fil de discussion : objet normalisé (voir computeThreadKey).

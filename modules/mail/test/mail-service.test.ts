@@ -208,8 +208,10 @@ describe("mail — boîtes", () => {
 
   it("crée la boîte à la volée : boîte de réception vide au premier accès", async () => {
     expect(await listMessages(f.actorBruno)).toEqual([]);
+    // Les cinq dossiers existent dès la création (dont les archives).
     expect(await listFolders(f.actorBruno)).toEqual({
       inbox: { total: 0, unread: 0 },
+      archive: { total: 0, unread: 0 },
       sent: { total: 0, unread: 0 },
       drafts: { total: 0, unread: 0 },
       trash: { total: 0, unread: 0 },

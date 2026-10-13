@@ -3,19 +3,16 @@ import {
   Button,
   ConfirmDialog,
   cn,
-  Dialog,
-  EmptyState,
   IconMail,
   Input,
-  Label,
   PageHeader,
   SegmentedTabs,
   Toasts,
   useToasts,
 } from "@workspace/ui";
-import { type ChangeEvent, type FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  type AttachmentToken,
+  archiveMessageFn,
   deleteMessageFn,
   type FolderCounts,
   type FolderKey,
@@ -27,16 +24,20 @@ import {
   type MessageDetail,
   type MessageSummary,
   restoreMessageFn,
-  saveDraftFn,
-  sendMailFn,
   type ThreadSummary,
   toggleStarFn,
   trashMessageFn,
-  uploadMailAttachmentFn,
 } from "../server.ts";
+import { formatFileSize } from "./attachments.ts";
+import { ComposerDialog, type ComposerSeed, EMPTY_SEED } from "./composer.tsx";
+import { MessageList, MessageListEmpty, type MessageListItem } from "./message-list.tsx";
+import { quoteOriginal, replyAllCopies, replyAllRecipients, replySubject } from "./reply.ts";
+import { clampIndex, type MailAction, stepIndex, useMailShortcuts } from "./shortcuts.ts";
+import { ShortcutsHelp } from "./shortcuts-help.tsx";
 
 const FOLDER_LABELS: Record<FolderKey, string> = {
   inbox: "Boîte de réception",
+  archive: "Archives",
   sent: "Envoyés",
   drafts: "Brouillons",
   trash: "Corbeille",
@@ -44,6 +45,7 @@ const FOLDER_LABELS: Record<FolderKey, string> = {
 
 const EMPTY_HINTS: Record<FolderKey, string> = {
   inbox: "Votre boîte est vide.",
+  archive: "Aucun message archivé.",
   sent: "Aucun message envoyé.",
   drafts: "Aucun brouillon en cours.",
   trash: "La corbeille est vide.",
@@ -58,76 +60,12 @@ function fmtDate(iso: string): string {
   return date.toLocaleDateString("fr-FR", { day: "numeric", month: "short" });
 }
 
+/** Séparation des adresses d'un champ libre historique (brouillons, messages). */
 function splitAddresses(value: string): string[] {
   return value
     .split(/[,;\s]+/)
     .map((entry) => entry.trim())
     .filter((entry) => entry.length > 0);
-}
-
-/** Bornes du compositeur, alignées sur le service (MAX_ATTACHMENTS / 10 Mio). */
-const COMPOSER_MAX_ATTACHMENTS = 5;
-const COMPOSER_MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
-
-function fmtSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} o`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} Ko`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} Mo`;
-}
-
-/** Lit un fichier local en base64 (sans préfixe data:) pour le serveur. */
-function fileToBase64(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onerror = () => reject(new Error(`Lecture de « ${file.name} » impossible.`));
-    reader.onload = () => {
-      const result = typeof reader.result === "string" ? reader.result : "";
-      const comma = result.indexOf(",");
-      if (comma < 0) {
-        reject(new Error(`Lecture de « ${file.name} » impossible.`));
-        return;
-      }
-      resolve(result.slice(comma + 1));
-    };
-    reader.readAsDataURL(file);
-  });
-}
-
-type Composer = {
-  id?: string;
-  to: string;
-  cc: string;
-  subject: string;
-  body: string;
-  attachments: AttachmentToken[];
-};
-
-/** Liste des pièces jointes d'un message lues (liens de téléchargement). */
-function AttachmentLinks({ attachments }: { attachments: MessageDetail["attachments"] }) {
-  if (attachments.length === 0) return null;
-  return (
-    <div className="flex flex-col gap-1 border-t border-border pt-2">
-      <p className="text-xs font-medium text-muted-foreground">
-        Pièce{attachments.length > 1 ? "s" : ""} jointe{attachments.length > 1 ? "s" : ""} (
-        {attachments.length})
-      </p>
-      <ul className="flex flex-col gap-0.5">
-        {attachments.map((attachment) => (
-          <li key={attachment.id}>
-            <a
-              href={`/api/mail/attachments/${attachment.id}`}
-              className="text-sm text-primary underline-offset-2 hover:underline"
-            >
-              📎 {attachment.filename}{" "}
-              <span className="text-xs text-muted-foreground">
-                ({fmtSize(attachment.sizeBytes)})
-              </span>
-            </a>
-          </li>
-        ))}
-      </ul>
-    </div>
-  );
 }
 
 type ViewMode = "conversations" | "messages";
@@ -137,12 +75,49 @@ const VIEW_TABS: { id: ViewMode; label: string }[] = [
   { id: "messages", label: "Messages" },
 ];
 
+function threadToItem(thread: ThreadSummary, folder: FolderKey): MessageListItem {
+  const latest = thread.latest;
+  return {
+    key: thread.threadKey,
+    messageId: latest.id,
+    title:
+      folder === "sent" || folder === "drafts"
+        ? latest.toAddresses.join(", ") || "(sans destinataire)"
+        : (latest.fromName ?? latest.fromAddress),
+    subject: thread.subject,
+    snippet: latest.snippet,
+    date: fmtDate(latest.createdAt),
+    unread: thread.unreadCount > 0,
+    starred: latest.starred,
+    count: thread.messageCount,
+    attachmentCount: latest.attachmentCount,
+    sendError: latest.sendError,
+  };
+}
+
+function messageToItem(message: MessageSummary, folder: FolderKey): MessageListItem {
+  return {
+    key: message.id,
+    messageId: message.id,
+    title:
+      folder === "sent" || folder === "drafts"
+        ? message.toAddresses.join(", ") || "(sans destinataire)"
+        : (message.fromName ?? message.fromAddress),
+    subject: message.subject,
+    snippet: message.snippet,
+    date: fmtDate(message.createdAt),
+    unread: !message.read,
+    starred: message.starred,
+    attachmentCount: message.attachmentCount,
+    sendError: message.sendError,
+  };
+}
+
 /**
  * Mail — boîtes locales par utilisateur, dossiers, recherche, brouillons,
- * envoi (SMTP optionnel, l'échec est toujours visible sur le message) et fils
- * de discussion (affichage « Conversations » par défaut).
- */
-export function MailView() {
+ * envoi (SMTP optionnel, l'échec est toujours visible sur le message), fils de
+ * discussion et raccourcis clavier (j/k, n, e, r, s, ?, /).
+ */ export function MailView() {
   const [address, setAddress] = useState("");
   const [folders, setFolders] = useState<FolderCounts | null>(null);
   const [folder, setFolder] = useState<FolderKey>("inbox");
@@ -157,11 +132,15 @@ export function MailView() {
     threadKey: string;
     messages: MessageDetail[];
   } | null>(null);
-  const [composer, setComposer] = useState<Composer | null>(null);
+  const [composer, setComposer] = useState<ComposerSeed | null>(null);
+  const [activeIndex, setActiveIndex] = useState(-1);
+  const [focusNonce, setFocusNonce] = useState(0);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
-  const { toasts, push, dismiss } = useToasts();
   const [confirmDeleteForever, setConfirmDeleteForever] = useState(false);
+  const [showShortcuts, setShowShortcuts] = useState(false);
+  const { toasts, push, dismiss } = useToasts();
+  const searchRef = useRef<HTMLInputElement>(null);
 
   const refreshFolders = useCallback(async () => {
     setFolders(await listFoldersFn());
@@ -209,208 +188,198 @@ export function MailView() {
     return () => clearInterval(interval);
   }, [refreshList, refreshFolders]);
 
-  async function refreshAll() {
+  const refreshAll = useCallback(async () => {
     await Promise.all([refreshList(), refreshFolders()]);
-  }
+  }, [refreshList, refreshFolders]);
 
-  async function openMessage(messageId: string) {
-    try {
-      setSelected(await getMessageFn({ data: { messageId } }));
-      await refreshAll();
-    } catch (caught) {
-      push("danger", caught instanceof Error ? caught.message : "Ouverture impossible.");
-    }
-  }
+  // -------------------------------------------------------------------------
+  // Lecture
+  // -------------------------------------------------------------------------
 
-  async function openThread(thread: ThreadSummary) {
-    try {
-      const threadMessages = await listThreadMessagesFn({
-        data: { messageId: thread.latest.id },
-      });
-      setSelectedThread({ threadKey: thread.threadKey, messages: threadMessages });
-    } catch (caught) {
-      push("danger", caught instanceof Error ? caught.message : "Ouverture impossible.");
-    }
-  }
+  const items = useMemo<MessageListItem[]>(
+    () =>
+      mode === "conversations"
+        ? threads.map((thread) => threadToItem(thread, folder))
+        : messages.map((message) => messageToItem(message, folder)),
+    [mode, threads, messages, folder],
+  );
+  const itemsRef = useRef(items);
+  itemsRef.current = items;
 
-  function openComposer(base?: Partial<Omit<Composer, "attachments">>) {
-    setComposer({ to: "", cc: "", subject: "", body: "", attachments: [], ...base });
-  }
+  // Une liste qui rétrécit (message archivé, corbeille) ne peut pas laisser la
+  // sélection pointer dans le vide.
+  useEffect(() => {
+    setActiveIndex((current) => clampIndex(current, items.length));
+  }, [items.length]);
 
-  function replyTo(message: MessageDetail) {
-    const subject = message.subject.startsWith("Re:") ? message.subject : `Re: ${message.subject}`;
-    openComposer({
-      to: message.fromAddress,
-      subject,
-      body: `\n\n— ${message.fromName ?? message.fromAddress} a écrit :\n> ${message.body.replaceAll("\n", "\n> ")}`,
-    });
-  }
+  const selectedKey =
+    mode === "conversations" ? (selectedThread?.threadKey ?? null) : (selected?.id ?? null);
 
-  async function onSend(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!composer) return;
-    setBusy(true);
-    try {
-      const result = await sendMailFn({
-        data: {
-          id: composer.id,
-          to: splitAddresses(composer.to),
-          cc: splitAddresses(composer.cc),
-          subject: composer.subject,
-          body: composer.body,
-          attachments: composer.attachments.length > 0 ? composer.attachments : undefined,
-        },
-      });
-      if (result.sendError) {
-        push("danger", result.sendError);
+  const openMessage = useCallback(
+    async (messageId: string) => {
+      try {
+        setSelected(await getMessageFn({ data: { messageId } }));
+        await refreshAll();
+      } catch (caught) {
+        push("danger", caught instanceof Error ? caught.message : "Ouverture impossible.");
       }
+    },
+    [push, refreshAll],
+  );
+
+  const openThread = useCallback(
+    async (thread: ThreadSummary) => {
+      try {
+        const threadMessages = await listThreadMessagesFn({
+          data: { messageId: thread.latest.id },
+        });
+        setSelectedThread({ threadKey: thread.threadKey, messages: threadMessages });
+      } catch (caught) {
+        push("danger", caught instanceof Error ? caught.message : "Ouverture impossible.");
+      }
+    },
+    [push],
+  );
+
+  const selectItem = useCallback(
+    (item: MessageListItem, index: number) => {
+      setActiveIndex(index);
+      if (mode === "conversations") {
+        const thread = threads.find((entry) => entry.threadKey === item.key);
+        if (thread) void openThread(thread);
+      } else {
+        void openMessage(item.messageId);
+      }
+    },
+    [mode, threads, openThread, openMessage],
+  );
+
+  const openComposer = useCallback((base?: Partial<ComposerSeed>) => {
+    setComposer({ ...EMPTY_SEED, ...base });
+  }, []);
+
+  const replyTo = useCallback(
+    (message: MessageDetail, mode: "reply" | "replyAll" = "reply") => {
+      if (mode === "reply") {
+        openComposer({
+          to: splitAddresses(message.fromAddress),
+          subject: replySubject(message.subject),
+          body: quoteOriginal(message),
+        });
+        return;
+      }
+      openComposer({
+        to: replyAllRecipients({
+          fromAddress: message.fromAddress,
+          toAddresses: message.toAddresses,
+          ccAddresses: message.ccAddresses,
+          responder: address,
+        }),
+        cc: replyAllCopies({ ccAddresses: message.ccAddresses, responder: address }),
+        subject: replySubject(message.subject),
+        body: quoteOriginal(message),
+      });
+    },
+    [address, openComposer],
+  );
+
+  const onSent = useCallback(
+    async (result: { sendError: string | null }) => {
       setComposer(null);
       setFolder("sent");
       setSelected(null);
+      setSelectedThread(null);
+      if (result.sendError) push("danger", result.sendError);
       await refreshAll();
-    } catch (caught) {
-      push("danger", caught instanceof Error ? caught.message : "Envoi impossible.");
-    } finally {
-      setBusy(false);
-    }
-  }
+    },
+    [push, refreshAll],
+  );
 
-  /**
-   * Téléverse les fichiers choisis un par un (jetons provisoires), avec les
-   * bornes du serveur appliquées côté client : 5 fichiers, 10 Mo chacun.
-   */
-  async function onPickAttachments(event: ChangeEvent<HTMLInputElement>) {
-    const files = [...(event.target.files ?? [])];
-    event.target.value = "";
-    if (!composer || files.length === 0) return;
+  // -------------------------------------------------------------------------
+  // Actions sur le message affiché
+  // -------------------------------------------------------------------------
 
-    const remaining = COMPOSER_MAX_ATTACHMENTS - composer.attachments.length;
-    if (remaining <= 0) {
-      push("danger", `${COMPOSER_MAX_ATTACHMENTS} pièces jointes au maximum.`);
-      return;
-    }
-    if (files.length > remaining) {
-      push(
-        "danger",
-        `${COMPOSER_MAX_ATTACHMENTS} pièces jointes au maximum (${remaining} emplacement${remaining > 1 ? "s" : ""} restant${remaining > 1 ? "s" : ""}).`,
-      );
-    }
-
-    setBusy(true);
-    try {
-      let updated = composer;
-      for (const file of files.slice(0, remaining)) {
-        if (file.size > COMPOSER_MAX_ATTACHMENT_BYTES) {
-          push("danger", `« ${file.name} » dépasse 10 Mo.`);
-          continue;
-        }
-        try {
-          const contentBase64 = await fileToBase64(file);
-          const token = await uploadMailAttachmentFn({
-            data: {
-              filename: file.name,
-              contentType: file.type || "application/octet-stream",
-              contentBase64,
-            },
-          });
-          updated = { ...updated, attachments: [...updated.attachments, token] };
-          setComposer(updated);
-        } catch (caught) {
-          push(
-            "danger",
-            caught instanceof Error
-              ? caught.message
-              : `Téléversement de « ${file.name} » impossible.`,
-          );
-        }
-      }
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  function removeAttachment(storageKey: string) {
-    if (!composer) return;
-    setComposer({
-      ...composer,
-      attachments: composer.attachments.filter((token) => token.storageKey !== storageKey),
-    });
-  }
-
-  async function onSaveDraft() {
-    if (!composer) return;
-    if (composer.attachments.length > 0) {
-      push("danger", "Les pièces jointes ne sont conservées qu'à l'envoi — envoyez le message.");
-      return;
-    }
-    setBusy(true);
-    try {
-      await saveDraftFn({
-        data: {
-          id: composer.id,
-          to: splitAddresses(composer.to),
-          cc: splitAddresses(composer.cc),
-          subject: composer.subject,
-          body: composer.body,
-        },
-      });
-      setComposer(null);
-      await refreshAll();
-    } catch (caught) {
-      push("danger", caught instanceof Error ? caught.message : "Enregistrement impossible.");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  // Cible des actions de lecture : le message sélectionné (mode Messages) ou le
-  // dernier message du fil (mode Conversations — KISS : on agit sur le dernier).
   const threadLatest = selectedThread?.messages.at(-1) ?? null;
   const activeMessage = mode === "conversations" ? threadLatest : selected;
 
-  async function onToggleStar(messageId: string) {
-    const result = await toggleStarFn({ data: { messageId } });
-    await refreshAll();
-    if (selected?.id === messageId) {
-      setSelected(await getMessageFn({ data: { messageId } }));
-    }
-    if (selectedThread?.messages.some((message) => message.id === messageId)) {
-      setSelectedThread({
-        ...selectedThread,
-        messages: selectedThread.messages.map((message) =>
-          message.id === messageId ? { ...message, starred: result.starred } : message,
-        ),
-      });
-    }
-  }
+  const onToggleStar = useCallback(
+    async (messageId: string) => {
+      try {
+        const result = await toggleStarFn({ data: { messageId } });
+        await refreshAll();
+        if (selected?.id === messageId) {
+          setSelected(await getMessageFn({ data: { messageId } }));
+        }
+        if (selectedThread?.messages.some((message) => message.id === messageId)) {
+          setSelectedThread({
+            ...selectedThread,
+            messages: selectedThread.messages.map((message) =>
+              message.id === messageId ? { ...message, starred: result.starred } : message,
+            ),
+          });
+        }
+      } catch (caught) {
+        push("danger", caught instanceof Error ? caught.message : "Action impossible.");
+      }
+    },
+    [push, refreshAll, selected, selectedThread],
+  );
 
-  async function onTrash() {
+  /** Après une sortie de liste (archive, corbeille) : la sélection reste utile. */
+  const keepSelection = useCallback(() => {
+    setActiveIndex((current) => clampIndex(current, Math.max(0, itemsRef.current.length - 1)));
+  }, []);
+
+  const onArchive = useCallback(async () => {
+    if (!activeMessage) return;
+    setBusy(true);
+    try {
+      await archiveMessageFn({ data: { messageId: activeMessage.id } });
+      push("success", "Message archivé.");
+      setSelected(null);
+      setSelectedThread(null);
+      keepSelection();
+      await refreshAll();
+    } catch (caught) {
+      push("danger", caught instanceof Error ? caught.message : "Archivage impossible.");
+    } finally {
+      setBusy(false);
+    }
+  }, [activeMessage, keepSelection, push, refreshAll]);
+
+  const onTrash = useCallback(async () => {
     if (!activeMessage) return;
     setBusy(true);
     try {
       await trashMessageFn({ data: { messageId: activeMessage.id } });
       setSelected(null);
       setSelectedThread(null);
+      keepSelection();
       await refreshAll();
+    } catch (caught) {
+      push("danger", caught instanceof Error ? caught.message : "Mise à la corbeille impossible.");
     } finally {
       setBusy(false);
     }
-  }
+  }, [activeMessage, keepSelection, push, refreshAll]);
 
-  async function onRestore() {
+  const onRestore = useCallback(async () => {
     if (!activeMessage) return;
     setBusy(true);
     try {
       await restoreMessageFn({ data: { messageId: activeMessage.id } });
       setSelected(null);
       setSelectedThread(null);
+      keepSelection();
       await refreshAll();
+    } catch (caught) {
+      push("danger", caught instanceof Error ? caught.message : "Restauration impossible.");
     } finally {
       setBusy(false);
     }
-  }
+  }, [activeMessage, keepSelection, push, refreshAll]);
 
-  async function onDeleteForever() {
+  const onDeleteForever = useCallback(async () => {
     if (!activeMessage) return;
     setBusy(true);
     try {
@@ -418,15 +387,119 @@ export function MailView() {
       setConfirmDeleteForever(false);
       setSelected(null);
       setSelectedThread(null);
+      keepSelection();
       await refreshAll();
     } catch (caught) {
       push("danger", caught instanceof Error ? caught.message : "Suppression impossible.");
     } finally {
       setBusy(false);
     }
-  }
+  }, [activeMessage, keepSelection, push, refreshAll]);
+
+  // -------------------------------------------------------------------------
+  // Raccourcis clavier
+  // -------------------------------------------------------------------------
+
+  const onShortcut = useCallback(
+    (action: MailAction) => {
+      switch (action) {
+        case "next":
+        case "previous": {
+          const direction = action === "next" ? 1 : -1;
+          const next = stepIndex(activeIndex, direction, itemsRef.current.length);
+          if (next === null) return;
+          const item = itemsRef.current[next];
+          if (!item) return;
+          setActiveIndex(next);
+          setFocusNonce((value) => value + 1);
+          // La lecture suit le curseur : inutile de valider pour voir le message.
+          selectItem(item, next);
+          return;
+        }
+        case "first":
+        case "last": {
+          const next =
+            itemsRef.current.length === 0
+              ? -1
+              : action === "first"
+                ? 0
+                : itemsRef.current.length - 1;
+          const item = itemsRef.current[next];
+          if (!item) return;
+          setActiveIndex(next);
+          setFocusNonce((value) => value + 1);
+          selectItem(item, next);
+          return;
+        }
+        case "open": {
+          const item = itemsRef.current[activeIndex];
+          if (item) selectItem(item, activeIndex);
+          return;
+        }
+        case "compose":
+          openComposer();
+          return;
+        case "reply":
+          if (activeMessage && folder !== "sent" && folder !== "drafts") {
+            replyTo(activeMessage);
+          }
+          return;
+        case "archive":
+          if (folder !== "trash" && folder !== "drafts" && folder !== "archive") void onArchive();
+          return;
+        case "trash":
+          void onTrash();
+          return;
+        case "star":
+          if (activeMessage) void onToggleStar(activeMessage.id);
+          return;
+        case "close":
+          setSelected(null);
+          setSelectedThread(null);
+          return;
+        case "search":
+          searchRef.current?.focus();
+          searchRef.current?.select();
+          return;
+        case "help":
+          setShowShortcuts((current) => !current);
+          return;
+        default:
+          return;
+      }
+    },
+    [
+      activeIndex,
+      activeMessage,
+      folder,
+      onArchive,
+      onTrash,
+      onToggleStar,
+      openComposer,
+      replyTo,
+      selectItem,
+    ],
+  );
+
+  const modalOpen = composer !== null || confirmDeleteForever || showShortcuts;
+
+  useMailShortcuts(onShortcut, { modalOpen });
+
+  const onDraftSaved = useCallback(() => {
+    void refreshAll();
+  }, [refreshAll]);
+
+  const onComposerError = useCallback(
+    (message: string) => {
+      push("danger", message);
+    },
+    [push],
+  );
 
   const folderEntries = useMemo(() => Object.keys(FOLDER_LABELS) as FolderKey[], []);
+
+  const canArchive =
+    activeMessage !== null && folder !== "trash" && folder !== "drafts" && folder !== "archive";
 
   return (
     <div className="mx-auto flex h-[calc(100vh-8.5rem)] max-w-6xl flex-col gap-3">
@@ -434,9 +507,20 @@ export function MailView() {
         title="Mail"
         description={address ? `Boîte de ${address}` : undefined}
         actions={
-          <Button size="sm" onClick={() => openComposer()}>
-            Écrire
-          </Button>
+          <div className="flex items-center gap-1">
+            <Button
+              size="sm"
+              variant="ghost"
+              aria-label="Raccourcis clavier"
+              title="Raccourcis clavier (?)"
+              onClick={() => setShowShortcuts(true)}
+            >
+              ?
+            </Button>
+            <Button size="sm" onClick={() => openComposer()}>
+              Écrire
+            </Button>
+          </div>
         }
       />
 
@@ -454,6 +538,7 @@ export function MailView() {
                   type="button"
                   onClick={() => {
                     setFolder(key);
+                    setActiveIndex(-1);
                     setSelected(null);
                     setSelectedThread(null);
                     setUnreadOnly(false);
@@ -466,9 +551,7 @@ export function MailView() {
                 >
                   <span className="truncate">{FOLDER_LABELS[key]}</span>
                   <span className="ml-auto flex items-center gap-1">
-                    {counts && counts.unread > 0 && key !== "sent" && key !== "drafts" ? (
-                      <Badge>{counts.unread}</Badge>
-                    ) : null}
+                    {counts && counts.unread > 0 ? <Badge>{counts.unread}</Badge> : null}
                     <span className="text-xs text-muted-foreground">{counts?.total ?? ""}</span>
                   </span>
                 </button>
@@ -505,152 +588,43 @@ export function MailView() {
               ariaLabel="Affichage"
               items={VIEW_TABS}
               value={mode}
-              onChange={(next) => setMode(next)}
+              onChange={(next) => {
+                setMode(next);
+                setActiveIndex(-1);
+                setSelected(null);
+                setSelectedThread(null);
+              }}
             />
             <Input
+              id="mail-search"
+              ref={searchRef}
               aria-label="Rechercher dans les messages"
-              placeholder="Rechercher…"
+              placeholder="Rechercher… (touche /)"
               value={query}
               onChange={(event) => setQuery(event.target.value)}
               className="h-8"
             />
           </div>
-          {loading ? (
-            <ul className="flex flex-1 flex-col divide-y divide-border overflow-y-auto">
-              <li className="p-3 text-xs text-muted-foreground">Chargement…</li>
-            </ul>
-          ) : mode === "conversations" ? (
-            threads.length === 0 ? (
-              <EmptyState
-                icon={<IconMail />}
-                title="Aucune conversation."
+          <MessageList
+            items={items}
+            selectedKey={selectedKey}
+            folder={folder}
+            activeIndex={activeIndex}
+            focusNonce={focusNonce}
+            loading={loading}
+            empty={
+              <MessageListEmpty
+                title={mode === "conversations" ? "Aucune conversation." : "Aucun message."}
                 hint={EMPTY_HINTS[folder]}
-                className="flex-1 justify-center border-0 bg-transparent"
+                action={
+                  <Button size="sm" variant="outline" onClick={() => openComposer()}>
+                    Écrire un message
+                  </Button>
+                }
               />
-            ) : (
-              <ul className="flex flex-1 flex-col divide-y divide-border overflow-y-auto">
-                {threads.map((thread) => (
-                  <li key={thread.threadKey}>
-                    <button
-                      type="button"
-                      onClick={() => void openThread(thread)}
-                      className={cn(
-                        "flex w-full flex-col gap-0.5 px-3 py-2 text-left text-sm transition-colors hover:bg-muted",
-                        thread.threadKey === selectedThread?.threadKey && "bg-accent/60",
-                        thread.unreadCount > 0 && "font-medium",
-                      )}
-                    >
-                      <span className="flex items-center gap-2">
-                        {thread.unreadCount > 0 ? (
-                          <span
-                            aria-label="Non lu"
-                            className="size-1.5 rounded-full bg-primary"
-                            role="img"
-                          />
-                        ) : null}
-                        <span className="min-w-0 flex-1 truncate">
-                          {folder === "sent" || folder === "drafts"
-                            ? `À : ${thread.latest.toAddresses.join(", ") || "(sans destinataire)"}`
-                            : (thread.latest.fromName ?? thread.latest.fromAddress)}
-                        </span>
-                        <span className="text-[11px] text-muted-foreground">
-                          {fmtDate(thread.latest.createdAt)}
-                        </span>
-                      </span>
-                      <span className="flex items-center gap-1.5">
-                        <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
-                          {thread.subject || "(sans objet)"}
-                        </span>
-                        {thread.messageCount > 1 ? <Badge>{thread.messageCount}</Badge> : null}
-                      </span>
-                      <span className="flex items-center gap-1">
-                        <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
-                          {thread.latest.snippet}
-                        </span>
-                        {thread.latest.attachmentCount > 0 ? (
-                          <span
-                            className="text-[10px] text-muted-foreground"
-                            title="Pièces jointes"
-                          >
-                            📎 {thread.latest.attachmentCount}
-                          </span>
-                        ) : null}
-                        {thread.latest.starred ? <span className="text-attention">★</span> : null}
-                        {thread.latest.sendError ? (
-                          <span
-                            className="text-[10px] text-destructive"
-                            title={thread.latest.sendError}
-                          >
-                            ⚠
-                          </span>
-                        ) : null}
-                      </span>
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )
-          ) : messages.length === 0 ? (
-            <EmptyState
-              icon={<IconMail />}
-              title="Aucun message."
-              hint={EMPTY_HINTS[folder]}
-              className="flex-1 justify-center border-0 bg-transparent"
-            />
-          ) : (
-            <ul className="flex flex-1 flex-col divide-y divide-border overflow-y-auto">
-              {messages.map((message) => (
-                <li key={message.id}>
-                  <button
-                    type="button"
-                    onClick={() => void openMessage(message.id)}
-                    className={cn(
-                      "flex w-full flex-col gap-0.5 px-3 py-2 text-left text-sm transition-colors hover:bg-muted",
-                      message.id === selected?.id && "bg-accent/60",
-                      !message.read && "font-medium",
-                    )}
-                  >
-                    <span className="flex items-center gap-2">
-                      {!message.read ? (
-                        <span
-                          aria-label="Non lu"
-                          className="size-1.5 rounded-full bg-primary"
-                          role="img"
-                        />
-                      ) : null}
-                      <span className="min-w-0 flex-1 truncate">
-                        {folder === "sent" || folder === "drafts"
-                          ? `À : ${message.toAddresses.join(", ") || "(sans destinataire)"}`
-                          : (message.fromName ?? message.fromAddress)}
-                      </span>
-                      <span className="text-[11px] text-muted-foreground">
-                        {fmtDate(message.createdAt)}
-                      </span>
-                    </span>
-                    <span className="truncate text-xs text-muted-foreground">
-                      {message.subject || "(sans objet)"}
-                    </span>
-                    <span className="flex items-center gap-1">
-                      <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
-                        {message.snippet}
-                      </span>
-                      {message.attachmentCount > 0 ? (
-                        <span className="text-[10px] text-muted-foreground" title="Pièces jointes">
-                          📎 {message.attachmentCount}
-                        </span>
-                      ) : null}
-                      {message.starred ? <span className="text-attention">★</span> : null}
-                      {message.sendError ? (
-                        <span className="text-[10px] text-destructive" title={message.sendError}>
-                          ⚠
-                        </span>
-                      ) : null}
-                    </span>
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
+            }
+            onSelect={(item, index) => selectItem(item, index)}
+          />
         </section>
 
         <section className="flex min-w-0 flex-1 flex-col rounded-xl border border-border bg-card">
@@ -675,14 +649,19 @@ export function MailView() {
                   >
                     {threadLatest?.starred ? "★" : "☆"}
                   </Button>
-                  {folder !== "sent" && folder !== "drafts" ? (
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => threadLatest && replyTo(threadLatest)}
-                    >
-                      Répondre
-                    </Button>
+                  {folder !== "sent" && folder !== "drafts" && threadLatest ? (
+                    <>
+                      <Button size="sm" variant="outline" onClick={() => replyTo(threadLatest)}>
+                        Répondre
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => replyTo(threadLatest, "replyAll")}
+                      >
+                        Répondre à tous
+                      </Button>
+                    </>
                   ) : null}
                   {folder === "drafts" && threadLatest ? (
                     <Button
@@ -691,14 +670,25 @@ export function MailView() {
                       onClick={() =>
                         openComposer({
                           id: threadLatest.id,
-                          to: threadLatest.toAddresses.join(", "),
-                          cc: threadLatest.ccAddresses.join(", "),
+                          to: [...threadLatest.toAddresses],
+                          cc: [...threadLatest.ccAddresses],
+                          bcc: [...threadLatest.bccAddresses],
                           subject: threadLatest.subject,
                           body: threadLatest.body,
                         })
                       }
                     >
                       Modifier
+                    </Button>
+                  ) : null}
+                  {canArchive ? (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      loading={busy}
+                      onClick={() => void onArchive()}
+                    >
+                      Archiver
                     </Button>
                   ) : null}
                   {folder === "trash" ? (
@@ -719,6 +709,26 @@ export function MailView() {
                         onClick={() => setConfirmDeleteForever(true)}
                       >
                         Supprimer définitivement
+                      </Button>
+                    </>
+                  ) : folder === "archive" ? (
+                    <>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        loading={busy}
+                        onClick={() => void onRestore()}
+                      >
+                        Remettre dans son dossier
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="text-destructive"
+                        loading={busy}
+                        onClick={() => void onTrash()}
+                      >
+                        Corbeille
                       </Button>
                     </>
                   ) : (
@@ -752,6 +762,9 @@ export function MailView() {
                           À : {message.toAddresses.join(", ")}
                           {message.ccAddresses.length > 0
                             ? ` · Cc : ${message.ccAddresses.join(", ")}`
+                            : ""}
+                          {message.bccAddresses.length > 0
+                            ? ` · Cci : ${message.bccAddresses.join(", ")}`
                             : ""}
                         </p>
                       </div>
@@ -788,6 +801,9 @@ export function MailView() {
                     {selected.ccAddresses.length > 0
                       ? ` · Cc : ${selected.ccAddresses.join(", ")}`
                       : ""}
+                    {selected.bccAddresses.length > 0
+                      ? ` · Cci : ${selected.bccAddresses.join(", ")}`
+                      : ""}
                   </p>
                   {selected.sendError ? (
                     <p className="mt-1 rounded-md border border-destructive/40 bg-destructive/5 px-2 py-1 text-xs text-destructive">
@@ -805,9 +821,18 @@ export function MailView() {
                     {selected.starred ? "★" : "☆"}
                   </Button>
                   {folder !== "sent" && folder !== "drafts" ? (
-                    <Button size="sm" variant="outline" onClick={() => replyTo(selected)}>
-                      Répondre
-                    </Button>
+                    <>
+                      <Button size="sm" variant="outline" onClick={() => replyTo(selected)}>
+                        Répondre
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => replyTo(selected, "replyAll")}
+                      >
+                        Répondre à tous
+                      </Button>
+                    </>
                   ) : null}
                   {folder === "drafts" ? (
                     <Button
@@ -816,14 +841,25 @@ export function MailView() {
                       onClick={() =>
                         openComposer({
                           id: selected.id,
-                          to: selected.toAddresses.join(", "),
-                          cc: selected.ccAddresses.join(", "),
+                          to: [...selected.toAddresses],
+                          cc: [...selected.ccAddresses],
+                          bcc: [...selected.bccAddresses],
                           subject: selected.subject,
                           body: selected.body,
                         })
                       }
                     >
                       Modifier
+                    </Button>
+                  ) : null}
+                  {canArchive ? (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      loading={busy}
+                      onClick={() => void onArchive()}
+                    >
+                      Archiver
                     </Button>
                   ) : null}
                   {folder === "trash" ? (
@@ -844,6 +880,26 @@ export function MailView() {
                         onClick={() => setConfirmDeleteForever(true)}
                       >
                         Supprimer définitivement
+                      </Button>
+                    </>
+                  ) : folder === "archive" ? (
+                    <>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        loading={busy}
+                        onClick={() => void onRestore()}
+                      >
+                        Remettre dans son dossier
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="text-destructive"
+                        loading={busy}
+                        onClick={() => void onTrash()}
+                      >
+                        Corbeille
                       </Button>
                     </>
                   ) : (
@@ -868,11 +924,28 @@ export function MailView() {
             </>
           ) : (
             <div className="grid flex-1 place-items-center p-6">
-              <p className="text-sm text-muted-foreground">
-                {mode === "conversations"
-                  ? "Sélectionnez une conversation."
-                  : "Sélectionnez un message."}
-              </p>
+              <div className="flex flex-col items-center gap-2 text-center">
+                <span className="text-muted-foreground [&_svg]:size-5">
+                  <IconMail />
+                </span>
+                <p className="text-sm text-muted-foreground">
+                  {mode === "conversations"
+                    ? "Sélectionnez une conversation."
+                    : "Sélectionnez un message."}
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  {items.length > 0
+                    ? "Astuce : j et k pour parcourir, n pour écrire, e pour archiver."
+                    : "Appuyez sur n pour écrire un message."}
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setShowShortcuts(true)}
+                  className="text-xs font-medium text-primary underline-offset-2 hover:underline"
+                >
+                  Voir tous les raccourcis
+                </button>
+              </div>
             </div>
           )}
         </section>
@@ -880,106 +953,17 @@ export function MailView() {
 
       <Toasts toasts={toasts} dismiss={dismiss} />
 
-      <Dialog
-        open={composer !== null}
-        onClose={() => setComposer(null)}
-        title={composer?.id ? "Modifier le brouillon" : "Nouveau message"}
-        className="max-w-2xl"
-      >
-        {composer ? (
-          <form onSubmit={onSend} method="post" className="flex flex-col gap-3">
-            <div className="flex flex-col gap-1">
-              <Label htmlFor="mail-to">À (séparés par des virgules)</Label>
-              <Input
-                id="mail-to"
-                value={composer.to}
-                onChange={(event) => setComposer({ ...composer, to: event.target.value })}
-                autoFocus
-              />
-            </div>
-            <div className="flex flex-col gap-1">
-              <Label htmlFor="mail-cc">Cc</Label>
-              <Input
-                id="mail-cc"
-                value={composer.cc}
-                onChange={(event) => setComposer({ ...composer, cc: event.target.value })}
-              />
-            </div>
-            <div className="flex flex-col gap-1">
-              <Label htmlFor="mail-subject">Objet</Label>
-              <Input
-                id="mail-subject"
-                value={composer.subject}
-                onChange={(event) => setComposer({ ...composer, subject: event.target.value })}
-                maxLength={500}
-              />
-            </div>
-            <div className="flex flex-col gap-1">
-              <Label htmlFor="mail-body">Message</Label>
-              <textarea
-                id="mail-body"
-                value={composer.body}
-                onChange={(event) => setComposer({ ...composer, body: event.target.value })}
-                rows={10}
-                className="rounded-md border border-input bg-background px-3 py-2 text-sm"
-              />
-            </div>
-            <div className="flex flex-col gap-1">
-              <Label htmlFor="mail-attachments">Pièces jointes (5 max, 10 Mo chacune)</Label>
-              <Input
-                id="mail-attachments"
-                type="file"
-                multiple
-                aria-label="Pièces jointes"
-                disabled={busy}
-                onChange={(event) => void onPickAttachments(event)}
-                className="h-auto py-1.5"
-              />
-              {composer.attachments.length > 0 ? (
-                <ul className="flex flex-col gap-1">
-                  {composer.attachments.map((attachment) => (
-                    <li
-                      key={attachment.storageKey}
-                      className="flex items-center gap-2 rounded-md border border-border bg-muted/40 px-2 py-1 text-xs"
-                    >
-                      <span className="min-w-0 flex-1 truncate" title={attachment.filename}>
-                        {attachment.filename}
-                      </span>
-                      <span className="shrink-0 text-muted-foreground">
-                        {fmtSize(attachment.sizeBytes)}
-                      </span>
-                      <button
-                        type="button"
-                        aria-label={`Retirer ${attachment.filename}`}
-                        onClick={() => removeAttachment(attachment.storageKey)}
-                        className="shrink-0 text-muted-foreground transition-colors hover:text-destructive"
-                      >
-                        ✕
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              ) : null}
-            </div>
-            <div className="flex justify-end gap-2">
-              <Button type="button" variant="ghost" onClick={() => setComposer(null)}>
-                Annuler
-              </Button>
-              <Button
-                type="button"
-                variant="outline"
-                loading={busy}
-                onClick={() => void onSaveDraft()}
-              >
-                Enregistrer en brouillon
-              </Button>
-              <Button type="submit" loading={busy}>
-                Envoyer
-              </Button>
-            </div>
-          </form>
-        ) : null}
-      </Dialog>
+      {composer ? (
+        <ComposerDialog
+          seed={composer}
+          onClose={() => setComposer(null)}
+          onSent={onSent}
+          onDraftSaved={onDraftSaved}
+          onError={onComposerError}
+        />
+      ) : null}
+
+      <ShortcutsHelp open={showShortcuts} onClose={() => setShowShortcuts(false)} />
 
       <ConfirmDialog
         open={confirmDeleteForever}
@@ -991,6 +975,34 @@ export function MailView() {
         busy={busy}
         destructive
       />
+    </div>
+  );
+}
+
+/** Liste des pièces jointes d'un message lues (liens de téléchargement). */
+function AttachmentLinks({ attachments }: { attachments: MessageDetail["attachments"] }) {
+  if (attachments.length === 0) return null;
+  return (
+    <div className="flex flex-col gap-1 border-t border-border pt-2">
+      <p className="text-xs font-medium text-muted-foreground">
+        Pièce{attachments.length > 1 ? "s" : ""} jointe{attachments.length > 1 ? "s" : ""} (
+        {attachments.length})
+      </p>
+      <ul className="flex flex-col gap-0.5">
+        {attachments.map((attachment) => (
+          <li key={attachment.id}>
+            <a
+              href={`/api/mail/attachments/${attachment.id}`}
+              className="text-sm text-primary underline-offset-2 hover:underline"
+            >
+              📎 {attachment.filename}{" "}
+              <span className="text-xs text-muted-foreground">
+                ({formatFileSize(attachment.sizeBytes)})
+              </span>
+            </a>
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }

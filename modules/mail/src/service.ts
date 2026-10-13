@@ -30,8 +30,15 @@ export function isMailError(error: unknown): error is MailError {
   return error instanceof MailError;
 }
 
-export type FolderKey = "inbox" | "sent" | "drafts" | "trash";
-const FOLDERS: FolderKey[] = ["inbox", "sent", "drafts", "trash"];
+export type FolderKey = "inbox" | "archive" | "sent" | "drafts" | "trash";
+const FOLDERS: FolderKey[] = ["inbox", "archive", "sent", "drafts", "trash"];
+
+/**
+ * Dossiers qu'un message peut quitter pour les archives : la corbeille et les
+ * brouillons restent dehors (archiver un brouillon n'aurait aucun sens — il
+ * n'est pas encore parti).
+ */
+const ARCHIVABLE: FolderKey[] = ["inbox", "sent"];
 
 export type MailboxView = { id: string; address: string };
 
@@ -63,6 +70,8 @@ export type AttachmentMeta = {
 export type MessageDetail = MessageSummary & {
   body: string;
   ccAddresses: string[];
+  /** Copies cachées (Cci) — jamais affichées aux autres destinataires. */
+  bccAddresses: string[];
   attachments: AttachmentMeta[];
 };
 
@@ -127,12 +136,36 @@ function assertEmails(values: string[], label: string): string[] {
   return result;
 }
 
-/** L'union to + cc (dédupliquée) est bornée, pas chaque liste séparément. */
-function assertRecipientUnion(to: string[], cc: string[]): void {
-  const distinct = new Set([...to, ...cc]);
+/** L'union À + Cc + Cci (dédupliquée) est bornée, pas chaque liste séparément. */
+function assertRecipientUnion(to: string[], cc: string[], bcc: string[]): void {
+  const distinct = new Set([...to, ...cc, ...bcc]);
   if (distinct.size > MAX_RECIPIENTS) {
-    throw new MailError("validation", `${MAX_RECIPIENTS} destinataires au maximum.`);
+    throw new MailError(
+      "validation",
+      `${MAX_RECIPIENTS} destinataires au maximum (À, Cc et Cci confondus).`,
+    );
   }
+}
+
+type Recipients = { to: string[]; cc: string[]; bcc: string[] };
+
+/**
+ * Valide les trois listes de destinataires d'un coup. `requireTo` distingue
+ * l'envoi (au moins un destinataire) du brouillon (une ébauche peut être
+ * enregistrée sans destinataire).
+ */
+function assertRecipients(
+  input: { to: string[]; cc: string[]; bcc?: string[] },
+  options: { requireTo: boolean },
+): Recipients {
+  const to = assertEmails(input.to, "Destinataire");
+  const cc = assertEmails(input.cc, "Copie");
+  const bcc = assertEmails(input.bcc ?? [], "Copie cachée");
+  if (options.requireTo && to.length === 0) {
+    throw new MailError("validation", "Au moins un destinataire est requis.");
+  }
+  assertRecipientUnion(to, cc, bcc);
+  return { to, cc, bcc };
 }
 
 function assertSubject(value: string): string {
@@ -376,6 +409,16 @@ async function requireMailbox(actor: Actor): Promise<MailMailboxRow> {
   return row;
 }
 
+/**
+ * Dossier d'origine mémorisé à la sortie d'une liste (corbeille, archives) :
+ * une valeur absente ou inconnue retombe sur la boîte de réception.
+ */
+function originFolder(trashedFrom: string | null): FolderKey {
+  return trashedFrom && FOLDERS.includes(trashedFrom as FolderKey)
+    ? (trashedFrom as FolderKey)
+    : "inbox";
+}
+
 async function requireOwnedMessage(actor: Actor, messageId: string) {
   const mailbox = await requireMailbox(actor);
   const [message] = await db()
@@ -441,6 +484,7 @@ function toDetail(row: MailMessageRow, attachments: AttachmentMeta[]): MessageDe
     ...toSummary({ ...row, attachmentCount: attachments.length }, row.body),
     body: row.body,
     ccAddresses: row.ccAddresses,
+    bccAddresses: row.bccAddresses,
     attachments,
   };
 }
@@ -722,12 +766,17 @@ export async function getAttachment(
  */
 export async function saveDraft(
   actor: Actor,
-  input: { id?: string; to: string[]; cc: string[]; subject: string; body: string },
+  input: {
+    id?: string;
+    to: string[];
+    cc: string[];
+    bcc?: string[];
+    subject: string;
+    body: string;
+  },
 ): Promise<{ id: string }> {
   const mailbox = await ensureMailbox(actor);
-  const to = assertEmails(input.to, "Destinataire");
-  const cc = assertEmails(input.cc, "Copie");
-  assertRecipientUnion(to, cc);
+  const { to, cc, bcc } = assertRecipients(input, { requireTo: false });
   const subject = assertSubject(input.subject);
   const body = assertBodyLength(
     input.body,
@@ -745,6 +794,7 @@ export async function saveDraft(
       .set({
         toAddresses: to,
         ccAddresses: cc,
+        bccAddresses: bcc,
         subject,
         threadKey: computeThreadKey(subject),
         body,
@@ -763,6 +813,7 @@ export async function saveDraft(
       fromAddress: mailbox.address,
       toAddresses: to,
       ccAddresses: cc,
+      bccAddresses: bcc,
       subject,
       threadKey: computeThreadKey(subject),
       body,
@@ -784,6 +835,7 @@ export async function sendMail(
     id?: string;
     to: string[];
     cc: string[];
+    bcc?: string[];
     subject: string;
     body: string;
     /** Jetons d'upload (uploadMailAttachment) à rattacher au message envoyé. */
@@ -791,12 +843,7 @@ export async function sendMail(
   },
 ): Promise<{ id: string; sendError: string | null }> {
   const mailbox = await ensureMailbox(actor);
-  const to = assertEmails(input.to, "Destinataire");
-  if (to.length === 0) {
-    throw new MailError("validation", "Au moins un destinataire est requis.");
-  }
-  const cc = assertEmails(input.cc, "Copie");
-  assertRecipientUnion(to, cc);
+  const { to, cc, bcc } = assertRecipients(input, { requireTo: true });
   const subject = assertSubject(input.subject);
   const body = assertBodyLength(
     input.body,
@@ -826,6 +873,7 @@ export async function sendMail(
         fromAddress: mailbox.address,
         toAddresses: to,
         ccAddresses: cc,
+        bccAddresses: bcc,
         subject,
         threadKey: computeThreadKey(subject),
         body,
@@ -872,11 +920,15 @@ export async function sendMail(
         from: env.SMTP_FROM ?? mailbox.address,
         to: to.join(", "),
         cc: cc.length > 0 ? cc.join(", ") : undefined,
+        // Les copies cachées partent dans l'enveloppe SMTP, jamais dans les
+        // en-têtes visibles : nodemailer les place dans `bcc`.
+        bcc: bcc.length > 0 ? bcc.join(", ") : undefined,
         subject: subject || "(sans objet)",
         text: body,
       });
     } catch (caught) {
-      sendError = `Échec SMTP : ${caught instanceof Error ? caught.message : "erreur inconnue"}`;
+      const detail = caught instanceof Error ? caught.message : "erreur inconnue";
+      sendError = `Échec SMTP : ${detail} — le message reste dans « Envoyés », vous pouvez le renvoyer.`;
     }
   }
 
@@ -894,6 +946,52 @@ export async function sendMail(
     metadata: { to: to.length },
   });
   return { id: sentId, sendError };
+}
+
+// ---------------------------------------------------------------------------
+// Archives
+// ---------------------------------------------------------------------------
+
+/**
+ * Archive un message de la boîte de réception (ou des « Envoyés ») : il quitte
+ * la liste principale sans être détruit, et retrouve son dossier d'origine à la
+ * restauration. La corbeille et les brouillons ne sont jamais archivables.
+ */
+export async function archiveMessage(actor: Actor, messageId: string): Promise<void> {
+  const { message } = await requireOwnedMessage(actor, messageId);
+  const folder = message.folder as FolderKey;
+  if (folder === "archive") return;
+  if (!ARCHIVABLE.includes(folder)) {
+    throw new MailError(
+      "validation",
+      folder === "trash"
+        ? "Un message à la corbeille ne peut pas être archivé."
+        : "Seuls les messages reçus ou envoyés peuvent être archivés.",
+    );
+  }
+  await db()
+    .update(mailMessages)
+    .set({ folder: "archive", trashedFrom: folder })
+    .where(eq(mailMessages.id, messageId));
+  await recordAudit({
+    orgId: actor.orgId,
+    actorUserId: actor.userId,
+    action: "mail.message.archive",
+    resourceType: "mail_message",
+    resourceId: messageId,
+    result: "success",
+    metadata: { from: folder },
+  });
+}
+
+/** Sort un message des archives vers son dossier d'origine (boîte par défaut). */
+export async function unarchiveMessage(actor: Actor, messageId: string): Promise<void> {
+  const { message } = await requireOwnedMessage(actor, messageId);
+  if (message.folder !== "archive") return;
+  await db()
+    .update(mailMessages)
+    .set({ folder: originFolder(message.trashedFrom), trashedFrom: null })
+    .where(eq(mailMessages.id, messageId));
 }
 
 // ---------------------------------------------------------------------------
@@ -920,13 +1018,9 @@ export async function trashMessage(actor: Actor, messageId: string): Promise<voi
 export async function restoreMessage(actor: Actor, messageId: string): Promise<void> {
   const { message } = await requireOwnedMessage(actor, messageId);
   if (message.folder !== "trash") return;
-  const target =
-    message.trashedFrom && FOLDERS.includes(message.trashedFrom as FolderKey)
-      ? message.trashedFrom
-      : "inbox";
   await db()
     .update(mailMessages)
-    .set({ folder: target, trashedFrom: null })
+    .set({ folder: originFolder(message.trashedFrom), trashedFrom: null })
     .where(eq(mailMessages.id, messageId));
 }
 

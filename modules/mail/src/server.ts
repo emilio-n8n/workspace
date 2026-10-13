@@ -3,6 +3,7 @@ import { getRequest } from "@tanstack/react-start/server";
 import { requireActor } from "@workspace/auth";
 import { z } from "zod";
 import {
+  archiveMessage,
   deleteMessage,
   ensureMailbox,
   getMessage,
@@ -16,6 +17,7 @@ import {
   sendMail,
   toggleStar,
   trashMessage,
+  unarchiveMessage,
   uploadMailAttachment,
 } from "./index.ts";
 
@@ -29,12 +31,13 @@ export type {
   ThreadSummary,
 } from "./index.ts";
 
-const folderSchema = z.enum(["inbox", "sent", "drafts", "trash"]);
+const folderSchema = z.enum(["inbox", "archive", "sent", "drafts", "trash"]);
 
 const mailFields = z.object({
   id: z.string().uuid().optional(),
   to: z.array(z.string().max(255)).max(20),
   cc: z.array(z.string().max(255)).max(20),
+  bcc: z.array(z.string().max(255)).max(20).optional(),
   subject: z.string().max(500),
   body: z.string().max(100_000),
 });
@@ -150,6 +153,24 @@ export const trashMessageFn = createServerFn({ method: "POST" })
   .handler(async ({ data }) => {
     const { actor } = await requireActor(getRequest().headers);
     await trashMessage(actor, data.messageId);
+    return { ok: true };
+  });
+
+/** Archive un message reçu ou envoyé (retrouvable dans « Archives »). */
+export const archiveMessageFn = createServerFn({ method: "POST" })
+  .validator((input: unknown) => z.object({ messageId: z.string().uuid() }).parse(input))
+  .handler(async ({ data }) => {
+    const { actor } = await requireActor(getRequest().headers);
+    await archiveMessage(actor, data.messageId);
+    return { ok: true };
+  });
+
+/** Sort un message des archives et le rend à son dossier d'origine. */
+export const unarchiveMessageFn = createServerFn({ method: "POST" })
+  .validator((input: unknown) => z.object({ messageId: z.string().uuid() }).parse(input))
+  .handler(async ({ data }) => {
+    const { actor } = await requireActor(getRequest().headers);
+    await unarchiveMessage(actor, data.messageId);
     return { ok: true };
   });
 
