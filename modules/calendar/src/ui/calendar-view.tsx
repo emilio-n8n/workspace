@@ -1,13 +1,10 @@
 import { createRoomFn } from "@workspace/meet/server";
 import {
   Alert,
-  Badge,
   Button,
   ConfirmDialog,
-  cn,
   Dialog,
   Input,
-  Label,
   type SegmentedTabItem,
   SegmentedTabs,
 } from "@workspace/ui";
@@ -21,165 +18,51 @@ import {
   getMeetUrlFn,
   listCalendarsFn,
   listEventsFn,
-  type Recurrence,
   setAttendanceFn,
   updateEventFn,
 } from "../server.ts";
-
-type ViewMode = "month" | "week";
+import { AgendaView } from "./agenda-view.tsx";
+import { CalendarSidebar } from "./calendar-sidebar.tsx";
+import { DayColumns } from "./day-columns.tsx";
+import { EventDetailDialog } from "./event-detail-dialog.tsx";
+import {
+  type EditorState,
+  EventEditorDialog,
+  editorFromEvent,
+  emptyEditor,
+} from "./event-editor-dialog.tsx";
+import { MonthGrid } from "./month-grid.tsx";
+import { type QuickDraft, quickDraftRange, splitEmails } from "./quick-create.ts";
+import { QuickAddBar } from "./quick-create-form.tsx";
+import { usePersistentViewMode } from "./use-persistent-view.ts";
+import {
+  rangeFor,
+  shiftCursor,
+  startOfMonth,
+  VIEW_LABELS,
+  type ViewMode,
+  viewHeading,
+} from "./view-state.ts";
 
 const MODE_TABS: SegmentedTabItem<ViewMode>[] = [
-  { id: "month", label: "Mois" },
-  { id: "week", label: "Semaine" },
+  { id: "day", label: VIEW_LABELS.day },
+  { id: "week", label: VIEW_LABELS.week },
+  { id: "month", label: VIEW_LABELS.month },
+  { id: "agenda", label: VIEW_LABELS.agenda },
 ];
 
-/** Libellés de récurrence affichés dans l'éditeur et le détail. */
-const RECURRENCE_LABELS: Record<Recurrence, string> = {
-  none: "Aucune",
-  daily: "Quotidienne",
-  weekly: "Hebdomadaire",
-  monthly: "Mensuelle",
-};
-
-const RECURRENCE_OPTIONS = Object.keys(RECURRENCE_LABELS) as Recurrence[];
-
-const DAY_LABELS = ["lun", "mar", "mer", "jeu", "ven", "sam", "dim"];
-const MONTH_LABELS = [
-  "janvier",
-  "février",
-  "mars",
-  "avril",
-  "mai",
-  "juin",
-  "juillet",
-  "août",
-  "septembre",
-  "octobre",
-  "novembre",
-  "décembre",
-];
-
-const ATTENDANCE_LABELS: Record<string, string> = {
-  invited: "Invité",
-  accepted: "A accepté",
-  declined: "A refusé",
-};
-
-function startOfDay(date: Date): Date {
-  const copy = new Date(date);
-  copy.setHours(0, 0, 0, 0);
-  return copy;
-}
-
-function addDays(date: Date, days: number): Date {
-  const copy = new Date(date);
-  copy.setDate(copy.getDate() + days);
-  return copy;
-}
-
-function startOfWeek(date: Date): Date {
-  const base = startOfDay(date);
-  const day = (base.getDay() + 6) % 7;
-  return addDays(base, -day);
-}
-
-function sameDay(a: Date, b: Date): boolean {
-  return (
-    a.getFullYear() === b.getFullYear() &&
-    a.getMonth() === b.getMonth() &&
-    a.getDate() === b.getDate()
-  );
-}
-
-function fmtTime(iso: string): string {
-  return new Date(iso).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
-}
-
-function fmtDay(date: Date, timeZone?: string): string {
-  return date.toLocaleDateString("fr-FR", {
-    weekday: "long",
-    day: "numeric",
-    month: "long",
-    timeZone,
-  });
-}
-
-function toDateInput(date: Date): string {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
-}
-
-function toUtcDateInput(date: Date): string {
-  const year = date.getUTCFullYear();
-  const month = String(date.getUTCMonth() + 1).padStart(2, "0");
-  const day = String(date.getUTCDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
-}
-
 /**
- * Bornes d'un événement « journée entière » : minuit UTC du jour choisi et
- * minuit UTC du lendemain. Les événements sur plusieurs jours restent hors
- * périmètre.
- */
-function allDayRange(date: string): { startsAt: string; endsAt: string } {
-  const [year, month, day] = date.split("-").map(Number);
-  const start = new Date(Date.UTC(year ?? 1970, (month ?? 1) - 1, day ?? 1));
-  return {
-    startsAt: start.toISOString(),
-    endsAt: new Date(start.getTime() + 24 * 60 * 60 * 1000).toISOString(),
-  };
-}
-
-function toTimeInput(date: Date): string {
-  return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
-}
-
-type EditorState = {
-  eventId: string | null;
-  title: string;
-  date: string;
-  allDay: boolean;
-  startTime: string;
-  endTime: string;
-  location: string;
-  description: string;
-  attendees: string;
-  calendarId: string;
-  recurrence: Recurrence;
-  /** Date locale `yyyy-mm-dd`, vide quand la récurrence est « Aucune ». */
-  recurrenceUntil: string;
-  /** Case « visioconférence » (création uniquement, jamais pour une édition). */
-  meetRoom: boolean;
-};
-
-function emptyEditor(date: Date, calendarId: string): EditorState {
-  return {
-    eventId: null,
-    title: "",
-    date: toDateInput(date),
-    allDay: false,
-    startTime: "09:00",
-    endTime: "10:00",
-    location: "",
-    description: "",
-    attendees: "",
-    calendarId,
-    recurrence: "none",
-    recurrenceUntil: "",
-    meetRoom: false,
-  };
-}
-
-/**
- * Calendar — vue mois et semaine, création/édition d'événements, invitations
- * et réponses (accepter / refuser). Les événements visibles sont ceux des
- * agendas de l'organisation, de l'agenda personnel et les invitations reçues.
+ * Calendar — vues Jour / Semaine / Mois / Agenda commutables, mini calendrier
+ * de navigation, création rapide en ligne et dialogue complet.
+ *
+ * Les événements visibles sont ceux des agendas de l'organisation, de l'agenda
+ * personnel et les invitations reçues.
  */
 export function CalendarView() {
-  const [mode, setMode] = useState<ViewMode>("month");
+  const [mode, setMode] = usePersistentViewMode();
   const [cursor, setCursor] = useState(() => new Date());
+  const [miniMonth, setMiniMonth] = useState(() => startOfMonth(new Date()));
+  const [today] = useState(() => new Date());
   const [events, setEvents] = useState<EventView[]>([]);
   const [calendars, setCalendars] = useState<CalendarOption[]>([]);
   const [loading, setLoading] = useState(true);
@@ -192,23 +75,19 @@ export function CalendarView() {
   const [agendaOpen, setAgendaOpen] = useState(false);
   const [agendaName, setAgendaName] = useState("");
   const [agendaShared, setAgendaShared] = useState(true);
+  /** Jour dont la case affiche le formulaire de création rapide. */
+  const [inlineDay, setInlineDay] = useState<Date | null>(null);
 
-  const range = useMemo(() => {
-    if (mode === "month") {
-      const start = startOfWeek(new Date(cursor.getFullYear(), cursor.getMonth(), 1));
-      return {
-        from: start,
-        to: addDays(start, 42),
-        days: Array.from({ length: 42 }, (_, index) => addDays(start, index)),
-      };
-    }
-    const start = startOfWeek(cursor);
-    return {
-      from: start,
-      to: addDays(start, 7),
-      days: Array.from({ length: 7 }, (_, index) => addDays(start, index)),
-    };
-  }, [mode, cursor]);
+  const range = useMemo(() => rangeFor(mode, cursor), [mode, cursor]);
+
+  // Le mini calendrier suit le curseur dès qu'il sort du mois affiché.
+  useEffect(() => {
+    setMiniMonth((current) =>
+      current.getFullYear() === cursor.getFullYear() && current.getMonth() === cursor.getMonth()
+        ? current
+        : startOfMonth(cursor),
+    );
+  }, [cursor]);
 
   const refresh = useCallback(async () => {
     setError(null);
@@ -234,50 +113,83 @@ export function CalendarView() {
     void refresh();
   }, [refresh]);
 
-  const eventsByDay = useMemo(() => {
-    const map = new Map<string, EventView[]>();
-    for (const event of events) {
-      // « Journée entière » : la date est le préfixe UTC de l'instant stocké.
-      const dayKey = event.allDay
-        ? event.startsAt.slice(0, 10)
-        : toDateInput(new Date(event.startsAt));
-      const list = map.get(dayKey) ?? [];
-      list.push(event);
-      map.set(dayKey, list);
-    }
-    return map;
-  }, [events]);
+  const defaultCalendarId = useMemo(
+    () => calendars.find((calendar) => calendar.isMine)?.id ?? calendars[0]?.id,
+    [calendars],
+  );
 
-  function openCreate(day?: Date) {
-    const fallback = calendars.find((calendar) => calendar.isMine) ?? calendars[0];
-    if (!fallback) return;
+  // -------------------------------------------------------------------------
+  // Navigation
+  // -------------------------------------------------------------------------
+
+  const shift = useCallback(
+    (direction: 1 | -1) => {
+      setCursor((previous) => shiftCursor(previous, mode, direction));
+    },
+    [mode],
+  );
+
+  const goToDay = useCallback((day: Date) => {
+    setCursor(day);
+    setInlineDay(null);
+  }, []);
+
+  const changeMode = useCallback(
+    (next: ViewMode) => {
+      setMode(next);
+      setInlineDay(null);
+    },
+    [setMode],
+  );
+
+  // -------------------------------------------------------------------------
+  // Création / édition
+  // -------------------------------------------------------------------------
+
+  /** Crée un événement depuis un brouillon de création rapide. */
+  const createQuick = useCallback(
+    async (draft: QuickDraft) => {
+      const { startsAt, endsAt, allDay } = quickDraftRange(draft);
+      setBusy(true);
+      setError(null);
+      try {
+        await createEventFn({
+          data: {
+            calendarId: defaultCalendarId ?? null,
+            title: draft.title.trim(),
+            startsAt,
+            endsAt,
+            allDay,
+          },
+        });
+        setInlineDay(null);
+        await refresh();
+      } catch (caught) {
+        setError(caught instanceof Error ? caught.message : "Création impossible.");
+      } finally {
+        setBusy(false);
+      }
+    },
+    [defaultCalendarId, refresh],
+  );
+
+  function openFullEditor(day?: Date) {
+    if (!defaultCalendarId) return;
     setEditorError(null);
-    setEditor(emptyEditor(day ?? new Date(), fallback.id));
+    // Le formulaire en ligne cède la place au dialogue complet.
+    setInlineDay(null);
+    setEditor(emptyEditor(day ?? cursor, defaultCalendarId));
   }
 
-  function openEdit(event: EventView) {
-    const start = new Date(event.startsAt);
-    const end = new Date(event.endsAt);
+  /** Ouvre l'éditeur complet prérempli depuis la barre d'ajout rapide. */
+  function openDetailsFromQuick(draft: QuickDraft, calendarId: string | undefined) {
+    if (!calendarId) return;
     setEditorError(null);
-    setEditor({
-      eventId: event.id,
-      title: event.title,
-      date: event.allDay ? toUtcDateInput(start) : toDateInput(start),
-      allDay: event.allDay,
-      startTime: toTimeInput(start),
-      endTime: toTimeInput(end),
-      location: event.location ?? "",
-      description: event.description ?? "",
-      attendees: "",
-      calendarId: event.calendarId,
-      recurrence: event.recurrence,
-      recurrenceUntil: event.recurrenceUntil ? toDateInput(new Date(event.recurrenceUntil)) : "",
-      meetRoom: false,
-    });
+    setInlineDay(null);
+    setEditor({ ...emptyEditor(new Date(), calendarId), ...draft });
   }
 
-  async function onSaveEditor(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  async function onSaveEditor() {
     if (!editor) return;
     setBusy(true);
     setEditorError(null);
@@ -286,15 +198,9 @@ export function CalendarView() {
     // dialogue (état d'erreur existant de la vue).
     let meetWarning: string | null = null;
     try {
-      let startsAt: string;
-      let endsAt: string;
-      if (editor.allDay) {
-        // DATE seule : minuit UTC du jour, fin = minuit UTC du lendemain.
-        ({ startsAt, endsAt } = allDayRange(editor.date));
-      } else {
-        startsAt = new Date(`${editor.date}T${editor.startTime}:00`).toISOString();
-        endsAt = new Date(`${editor.date}T${editor.endTime}:00`).toISOString();
-      }
+      // L'état de l'éditeur est compatible avec un brouillon de création
+      // rapide : même logique de conversion (journée entière → minuits UTC).
+      const { startsAt, endsAt } = quickDraftRange(editor);
 
       // Fin de série : fin de la journée locale choisie (l'occurrence de ce
       // jour-là reste incluse), `null` quand la répétition est « Aucune ».
@@ -326,10 +232,7 @@ export function CalendarView() {
           },
         });
       } else {
-        const attendees = editor.attendees
-          .split(/[,;\s]+/)
-          .map((value) => value.trim())
-          .filter((value) => value.length > 0);
+        const attendees = splitEmails(editor.attendees);
 
         // Visioconférence en un clic : la salle Meet est créée avant
         // l'événement, puis son lien est ajouté au lieu. Les salles Meet sont
@@ -377,6 +280,10 @@ export function CalendarView() {
       setBusy(false);
     }
   }
+
+  // -------------------------------------------------------------------------
+  // Réponses, suppression, agendas
+  // -------------------------------------------------------------------------
 
   async function respond(status: "accepted" | "declined") {
     if (!selected) return;
@@ -429,46 +336,34 @@ export function CalendarView() {
     }
   }
 
-  const today = new Date();
-  const weekStart = startOfWeek(cursor);
+  // -------------------------------------------------------------------------
+  // Rendu
+  // -------------------------------------------------------------------------
+
+  const heading = viewHeading(mode, cursor);
+  const gridLabel = `Calendrier — ${heading}`;
 
   return (
-    <div className="mx-auto flex max-w-6xl flex-col gap-4">
+    <div className="mx-auto flex max-w-7xl flex-col gap-4">
       <header className="flex flex-wrap items-center gap-2">
-        <h1 className="font-display text-xl font-semibold tracking-tight">
-          {mode === "month"
-            ? `${MONTH_LABELS[cursor.getMonth()]} ${cursor.getFullYear()}`
-            : `Semaine du ${weekStart.getDate()} ${MONTH_LABELS[weekStart.getMonth()]}`}
-        </h1>
+        <h1 className="font-display text-xl font-semibold tracking-tight">{heading}</h1>
         <div className="flex items-center gap-1">
           <Button
             variant="outline"
             size="sm"
             aria-label="Période précédente"
-            onClick={() =>
-              setCursor((previous) =>
-                mode === "month"
-                  ? new Date(previous.getFullYear(), previous.getMonth() - 1, 1)
-                  : addDays(previous, -7),
-              )
-            }
+            onClick={() => shift(-1)}
           >
             ‹
           </Button>
-          <Button variant="outline" size="sm" onClick={() => setCursor(new Date())}>
+          <Button variant="outline" size="sm" onClick={() => goToDay(new Date())}>
             Aujourd'hui
           </Button>
           <Button
             variant="outline"
             size="sm"
             aria-label="Période suivante"
-            onClick={() =>
-              setCursor((previous) =>
-                mode === "month"
-                  ? new Date(previous.getFullYear(), previous.getMonth() + 1, 1)
-                  : addDays(previous, 7),
-              )
-            }
+            onClick={() => shift(1)}
           >
             ›
           </Button>
@@ -477,243 +372,123 @@ export function CalendarView() {
           <SegmentedTabs
             items={MODE_TABS}
             value={mode}
-            onChange={setMode}
+            onChange={changeMode}
             ariaLabel="Affichage du calendrier"
           />
-          <Button size="sm" onClick={() => openCreate(new Date())}>
-            Nouvel événement
-          </Button>
         </div>
       </header>
 
-      <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-        {calendars.map((calendar) => (
-          <span key={calendar.id} className="rounded-full border border-border px-2 py-0.5">
-            {calendar.name}
-            {calendar.isOrg ? " · organisation" : ""}
-          </span>
-        ))}
-        <button
-          type="button"
-          onClick={() => setAgendaOpen(true)}
-          className="font-medium text-primary hover:underline"
-        >
-          ＋ Agenda partagé
-        </button>
-      </div>
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-start">
+        <CalendarSidebar
+          month={miniMonth}
+          cursor={cursor}
+          today={today}
+          events={events}
+          mode={mode}
+          onModeChange={changeMode}
+          onMonthChange={setMiniMonth}
+          onSelectDay={goToDay}
+          onNewEvent={() => openFullEditor(cursor)}
+          onCreateAgenda={() => setAgendaOpen(true)}
+          calendars={calendars}
+        />
 
-      {error ? <Alert tone="danger">{error}</Alert> : null}
+        <div className="flex min-w-0 flex-1 flex-col gap-3">
+          {error ? (
+            <Alert tone="danger">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span>{error}</span>
+                <Button size="sm" variant="outline" onClick={() => void refresh()}>
+                  Réessayer
+                </Button>
+              </div>
+            </Alert>
+          ) : null}
 
-      {loading ? (
-        <p className="text-sm text-muted-foreground">Chargement…</p>
-      ) : mode === "month" ? (
-        <>
-          <div className="overflow-hidden rounded-xl border border-border bg-card">
-            <div className="grid grid-cols-7 border-b border-border bg-muted/50">
-              {DAY_LABELS.map((label) => (
-                <span
-                  key={label}
-                  className="px-2 py-1.5 text-center text-[11px] font-medium uppercase tracking-widest text-muted-foreground"
-                >
-                  {label}
-                </span>
-              ))}
+          {mode !== "month" ? (
+            <QuickAddBar
+              day={cursor}
+              calendars={calendars}
+              busy={busy}
+              submitError={null}
+              onCreate={(draft) => void createQuick(draft)}
+              onOpenDetails={openDetailsFromQuick}
+            />
+          ) : null}
+
+          {loading ? (
+            <div role="status" className="flex flex-col gap-2" aria-live="polite">
+              <p className="text-sm text-muted-foreground">Chargement…</p>
+              <div className="h-64 animate-pulse rounded-xl border border-border bg-muted/40" />
             </div>
-            <div className="grid grid-cols-7">
-              {range.days.map((day) => {
-                const key = toDateInput(day);
-                const dayEvents = eventsByDay.get(key) ?? [];
-                const inMonth = day.getMonth() === cursor.getMonth();
-                const isToday = sameDay(day, today);
-                const fullDate = day.toLocaleDateString("fr-FR", {
-                  day: "numeric",
-                  month: "long",
-                  year: "numeric",
-                });
-                return (
-                  <div
-                    key={key}
-                    className={cn(
-                      "min-h-28 border-b border-r border-border p-1.5 [&:nth-child(7n)]:border-r-0",
-                      !inMonth && "bg-muted/40",
-                    )}
-                  >
-                    <button
-                      type="button"
-                      onClick={() => openCreate(day)}
-                      aria-label={`Créer un événement le ${fullDate}`}
-                      className={cn(
-                        "mb-1 grid size-6 place-items-center rounded-full text-xs transition-colors",
-                        isToday
-                          ? "bg-primary font-semibold text-primary-foreground"
-                          : "text-muted-foreground hover:bg-muted",
-                      )}
-                    >
-                      {day.getDate()}
-                    </button>
-                    <div className="flex flex-col gap-1">
-                      {dayEvents.slice(0, 3).map((event) => (
-                        <button
-                          key={event.id}
-                          type="button"
-                          onClick={() => setSelected(event)}
-                          className="truncate rounded bg-accent px-1.5 py-0.5 text-left text-xs text-accent-foreground transition-opacity hover:opacity-85"
-                        >
-                          {event.allDay ? event.title : `${fmtTime(event.startsAt)} ${event.title}`}
-                        </button>
-                      ))}
-                      {dayEvents.length > 3 ? (
-                        <span className="px-1 text-[11px] text-muted-foreground">
-                          +{dayEvents.length - 3} autre(s)
-                        </span>
-                      ) : null}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-          {/* Pas d'EmptyState ici : la carte serait trop lourde dans la grille du mois,
-              simple ligne atténuée. L'absence d'agenda est gérée par l'auto-création. */}
-          {events.length === 0 ? (
+          ) : mode === "month" ? (
+            <MonthGrid
+              days={range.days}
+              month={cursor}
+              today={today}
+              events={events}
+              submitError={error}
+              busy={busy}
+              inlineDay={inlineDay}
+              onInlineOpen={(day) => {
+                setInlineDay(day);
+                setCursor(day);
+              }}
+              onInlineCancel={() => setInlineDay(null)}
+              onCreate={(draft) => void createQuick(draft)}
+              onSelectEvent={setSelected}
+              onPage={shift}
+              ariaLabel={gridLabel}
+            />
+          ) : mode === "agenda" ? (
+            <AgendaView
+              days={range.days}
+              today={today}
+              events={events}
+              onSelectEvent={setSelected}
+            />
+          ) : (
+            <DayColumns
+              days={range.days}
+              today={today}
+              events={events}
+              submitError={error}
+              busy={busy}
+              inlineDay={inlineDay}
+              onInlineOpen={(day) => {
+                setInlineDay(day);
+                setCursor(day);
+              }}
+              onInlineCancel={() => setInlineDay(null)}
+              onCreate={(draft) => void createQuick(draft)}
+              onSelectEvent={setSelected}
+              onPage={shift}
+              ariaLabel={gridLabel}
+            />
+          )}
+
+          {mode === "month" && events.length === 0 ? (
             <p className="text-sm text-muted-foreground">Aucun événement sur cette période.</p>
           ) : null}
-        </>
-      ) : (
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-7">
-          {range.days.map((day) => {
-            const key = toDateInput(day);
-            const dayEvents = eventsByDay.get(key) ?? [];
-            const isToday = sameDay(day, today);
-            return (
-              <div
-                key={key}
-                className="flex min-h-44 flex-col gap-2 rounded-xl border border-border bg-card p-2"
-              >
-                <p
-                  className={cn(
-                    "text-xs font-medium",
-                    isToday ? "text-primary" : "text-muted-foreground",
-                  )}
-                >
-                  {DAY_LABELS[(day.getDay() + 6) % 7]} {day.getDate()}
-                </p>
-                {dayEvents.map((event) => (
-                  <button
-                    key={event.id}
-                    type="button"
-                    onClick={() => setSelected(event)}
-                    className="rounded bg-accent px-2 py-1 text-left text-xs text-accent-foreground transition-opacity hover:opacity-85"
-                  >
-                    {event.allDay ? (
-                      event.title
-                    ) : (
-                      <>
-                        <span className="font-medium">{fmtTime(event.startsAt)}</span> {event.title}
-                      </>
-                    )}
-                  </button>
-                ))}
-                {dayEvents.length === 0 ? (
-                  <p className="text-[11px] text-muted-foreground">—</p>
-                ) : null}
-              </div>
-            );
-          })}
         </div>
-      )}
+      </div>
 
       {/* --- Détails d'un événement ------------------------------------------- */}
-      <Dialog
-        open={selected !== null}
+      <EventDetailDialog
+        event={selected}
+        busy={busy}
         onClose={() => setSelected(null)}
-        title={selected?.title ?? "Événement"}
-      >
-        {selected ? (
-          <div className="flex flex-col gap-3">
-            <div className="flex flex-wrap items-center gap-2">
-              <Badge variant="outline">{selected.calendarName}</Badge>
-              {selected.recurring ? (
-                <Badge variant="outline">↻ {RECURRENCE_LABELS[selected.recurrence]}</Badge>
-              ) : null}
-              {selected.myStatus ? (
-                <Badge variant={selected.myStatus === "accepted" ? "accent" : "outline"}>
-                  {ATTENDANCE_LABELS[selected.myStatus]}
-                </Badge>
-              ) : null}
-            </div>
-            <p className="text-sm">
-              {selected.allDay
-                ? `${fmtDay(new Date(selected.startsAt), "UTC")} · journée entière`
-                : `${fmtDay(new Date(selected.startsAt))} · ${fmtTime(selected.startsAt)} – ${fmtTime(selected.endsAt)}`}
-            </p>
-            {selected.location ? (
-              <p className="text-sm text-muted-foreground">Lieu : {selected.location}</p>
-            ) : null}
-            {selected.description ? (
-              <p className="whitespace-pre-wrap text-sm text-muted-foreground">
-                {selected.description}
-              </p>
-            ) : null}
-            {selected.attendees.length > 0 ? (
-              <div>
-                <h3 className="mb-1 text-xs font-semibold uppercase tracking-widest text-muted-foreground">
-                  Invités
-                </h3>
-                <ul className="flex flex-col gap-1 text-sm">
-                  {selected.attendees.map((attendee) => (
-                    <li key={attendee.id} className="flex items-center gap-2">
-                      <span className="flex-1 truncate">{attendee.name ?? attendee.email}</span>
-                      <span className="text-xs text-muted-foreground">
-                        {ATTENDANCE_LABELS[attendee.status] ?? attendee.status}
-                      </span>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            ) : null}
-            <div className="flex flex-wrap justify-end gap-2">
-              {selected.myStatus && selected.myStatus !== "accepted" ? (
-                <Button size="sm" loading={busy} onClick={() => void respond("accepted")}>
-                  Accepter
-                </Button>
-              ) : null}
-              {selected.myStatus && selected.myStatus !== "declined" ? (
-                <Button
-                  size="sm"
-                  variant="outline"
-                  loading={busy}
-                  onClick={() => void respond("declined")}
-                >
-                  Refuser
-                </Button>
-              ) : null}
-              {selected.canEdit ? (
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => {
-                    openEdit(selected);
-                    setSelected(null);
-                  }}
-                >
-                  Modifier
-                </Button>
-              ) : null}
-              {selected.canEdit ? (
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="text-destructive"
-                  onClick={() => setDeleteOpen(true)}
-                >
-                  Supprimer
-                </Button>
-              ) : null}
-            </div>
-          </div>
-        ) : null}
-      </Dialog>
+        onEdit={(event) => {
+          setEditorError(null);
+          setEditor(editorFromEvent(event));
+          setSelected(null);
+        }}
+        onDelete={(event) => {
+          setSelected(event);
+          setDeleteOpen(true);
+        }}
+        onRespond={(status) => void respond(status)}
+      />
 
       {/* --- Confirmation de suppression --------------------------------------- */}
       <ConfirmDialog
@@ -731,191 +506,24 @@ export function CalendarView() {
         destructive
       />
 
-      {/* --- Création / édition ----------------------------------------------- */}
-      <Dialog
-        open={editor !== null}
+      {/* --- Création / édition complète -------------------------------------- */}
+      <EventEditorDialog
+        editor={editor}
+        calendars={calendars}
+        busy={busy}
+        error={editorError}
+        onChange={(patch) => setEditor((current) => (current ? { ...current, ...patch } : current))}
         onClose={() => setEditor(null)}
-        title={editor?.eventId ? "Modifier l'événement" : "Nouvel événement"}
-      >
-        {editor ? (
-          <form onSubmit={onSaveEditor} method="post" className="flex flex-col gap-3">
-            <div className="flex flex-col gap-1">
-              <Label htmlFor="event-title">Titre</Label>
-              <Input
-                id="event-title"
-                value={editor.title}
-                onChange={(event) => setEditor({ ...editor, title: event.target.value })}
-                maxLength={255}
-                autoFocus
-              />
-            </div>
-            {!editor.eventId ? (
-              <div className="flex flex-col gap-1">
-                <Label htmlFor="event-calendar">Agenda</Label>
-                <select
-                  id="event-calendar"
-                  value={editor.calendarId}
-                  onChange={(event) => setEditor({ ...editor, calendarId: event.target.value })}
-                  className="h-9 rounded-md border border-input bg-background px-2 text-sm"
-                >
-                  {calendars.map((calendar) => (
-                    <option key={calendar.id} value={calendar.id}>
-                      {calendar.name}
-                      {calendar.isOrg ? " (organisation)" : ""}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            ) : null}
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-              <div className="flex flex-col gap-1">
-                <Label htmlFor="event-date">Date</Label>
-                <Input
-                  id="event-date"
-                  type="date"
-                  value={editor.date}
-                  onChange={(event) => setEditor({ ...editor, date: event.target.value })}
-                  required
-                />
-              </div>
-              <div className="flex flex-col gap-1">
-                <Label htmlFor="event-start">Début</Label>
-                <Input
-                  id="event-start"
-                  type="time"
-                  value={editor.startTime}
-                  disabled={editor.allDay}
-                  onChange={(event) => setEditor({ ...editor, startTime: event.target.value })}
-                />
-              </div>
-              <div className="flex flex-col gap-1">
-                <Label htmlFor="event-end">Fin</Label>
-                <Input
-                  id="event-end"
-                  type="time"
-                  value={editor.endTime}
-                  disabled={editor.allDay}
-                  onChange={(event) => setEditor({ ...editor, endTime: event.target.value })}
-                />
-              </div>
-            </div>
-            <label className="flex items-center gap-2 text-sm">
-              <input
-                type="checkbox"
-                className="accent-primary"
-                checked={editor.allDay}
-                onChange={(event) => setEditor({ ...editor, allDay: event.target.checked })}
-              />
-              Journée entière
-            </label>
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <div className="flex flex-col gap-1">
-                <Label htmlFor="event-recurrence">Répétition</Label>
-                <select
-                  id="event-recurrence"
-                  value={editor.recurrence}
-                  onChange={(event) => {
-                    const recurrence = event.target.value as Recurrence;
-                    setEditor({
-                      ...editor,
-                      recurrence,
-                      // « Aucune » efface la fin de série ; la date reste
-                      // requise dès qu'une répétition est choisie.
-                      recurrenceUntil: recurrence === "none" ? "" : editor.recurrenceUntil,
-                    });
-                  }}
-                  className="h-9 rounded-md border border-input bg-background px-2 text-sm"
-                >
-                  {RECURRENCE_OPTIONS.map((value) => (
-                    <option key={value} value={value}>
-                      {RECURRENCE_LABELS[value]}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              {editor.recurrence !== "none" ? (
-                <div className="flex flex-col gap-1">
-                  <Label htmlFor="event-recurrence-until">Répéter jusqu'au</Label>
-                  <Input
-                    id="event-recurrence-until"
-                    type="date"
-                    value={editor.recurrenceUntil}
-                    onChange={(event) =>
-                      setEditor({ ...editor, recurrenceUntil: event.target.value })
-                    }
-                    required
-                  />
-                </div>
-              ) : null}
-            </div>
-            {editor.recurrence !== "none" ? (
-              <p className="text-xs text-muted-foreground">
-                Modifier ou supprimer une répétition s'applique à toute la série.
-              </p>
-            ) : null}
-            <div className="flex flex-col gap-1">
-              <Label htmlFor="event-location">Lieu</Label>
-              <Input
-                id="event-location"
-                value={editor.location}
-                onChange={(event) => setEditor({ ...editor, location: event.target.value })}
-                maxLength={255}
-              />
-            </div>
-            {!editor.eventId ? (
-              <div className="flex flex-col gap-1">
-                <Label htmlFor="event-attendees">Invités (e-mails séparés par des virgules)</Label>
-                <Input
-                  id="event-attendees"
-                  value={editor.attendees}
-                  onChange={(event) => setEditor({ ...editor, attendees: event.target.value })}
-                  placeholder="alice@exemple.org, bruno@exemple.org"
-                />
-              </div>
-            ) : null}
-            {!editor.eventId ? (
-              <label className="flex items-center gap-2 text-sm">
-                <input
-                  type="checkbox"
-                  className="accent-primary"
-                  checked={editor.meetRoom}
-                  onChange={(event) => setEditor({ ...editor, meetRoom: event.target.checked })}
-                />
-                Créer une salle de visioconférence
-              </label>
-            ) : null}
-            <div className="flex flex-col gap-1">
-              <Label htmlFor="event-description">Description</Label>
-              <textarea
-                id="event-description"
-                value={editor.description}
-                onChange={(event) => setEditor({ ...editor, description: event.target.value })}
-                rows={3}
-                className="rounded-md border border-input bg-background px-3 py-2 text-sm"
-              />
-            </div>
-            {editorError ? (
-              <p role="alert" className="text-sm text-destructive">
-                {editorError}
-              </p>
-            ) : null}
-            <div className="flex justify-end gap-2">
-              <Button type="button" variant="ghost" onClick={() => setEditor(null)}>
-                Annuler
-              </Button>
-              <Button type="submit" loading={busy} disabled={editor.title.trim().length === 0}>
-                {editor.eventId ? "Enregistrer" : "Créer l'événement"}
-              </Button>
-            </div>
-          </form>
-        ) : null}
-      </Dialog>
+        onSubmit={() => void onSaveEditor()}
+      />
 
       {/* --- Nouvel agenda partagé -------------------------------------------- */}
       <Dialog open={agendaOpen} onClose={() => setAgendaOpen(false)} title="Nouvel agenda">
         <form onSubmit={onCreateAgenda} method="post" className="flex flex-col gap-3">
           <div className="flex flex-col gap-1">
-            <Label htmlFor="agenda-name">Nom de l'agenda</Label>
+            <label htmlFor="agenda-name" className="text-sm font-medium leading-none">
+              Nom de l'agenda
+            </label>
             <Input
               id="agenda-name"
               value={agendaName}
@@ -935,12 +543,20 @@ export function CalendarView() {
             Visible par tous les membres de l'organisation
           </label>
           <div className="flex justify-end gap-2">
-            <Button type="button" variant="ghost" onClick={() => setAgendaOpen(false)}>
+            <button
+              type="button"
+              onClick={() => setAgendaOpen(false)}
+              className="rounded-md px-3 py-1.5 text-sm hover:bg-muted"
+            >
               Annuler
-            </Button>
-            <Button type="submit" loading={busy} disabled={agendaName.trim().length === 0}>
+            </button>
+            <button
+              type="submit"
+              disabled={busy || agendaName.trim().length === 0}
+              className="rounded-md bg-primary px-3 py-1.5 text-sm text-primary-foreground disabled:opacity-50"
+            >
               Créer l'agenda
-            </Button>
+            </button>
           </div>
         </form>
       </Dialog>
