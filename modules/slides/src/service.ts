@@ -17,6 +17,7 @@ import {
   presentations,
   slideElements,
 } from "./schema.ts";
+import { MAX_NOTES_CHARS, notesForSave } from "./slide-notes.ts";
 
 /** Type MIME du pointeur Drive d'une présentation Workspace. */
 export const SLIDES_MIME = "application/vnd.workspace.slides+json";
@@ -24,7 +25,6 @@ export const SLIDES_MIME = "application/vnd.workspace.slides+json";
 const MAX_SLIDES = 100;
 const MAX_ELEMENTS_PER_SLIDE = 100;
 const MAX_TEXT_CHARS = 2000;
-const MAX_NOTES_CHARS = 5000;
 
 /** Taille maximale d'une image de diapositive (8 Mo). */
 export const MAX_SLIDE_IMAGE_BYTES = 8 * 1024 * 1024;
@@ -168,12 +168,15 @@ function assertSlides(input: unknown): SlideInput[] {
       throw new SlidesError("validation", "Notes de diapositive invalides.");
     }
     if ((slide.notes ?? "").length > MAX_NOTES_CHARS) {
-      throw new SlidesError("validation", "Les notes sont limitées à 5000 caractères.");
+      throw new SlidesError(
+        "validation",
+        `Les notes sont limitées à ${MAX_NOTES_CHARS} caractères.`,
+      );
     }
     return {
       id: typeof slide.id === "string" ? slide.id : undefined,
       title: (slide.title ?? "").trim().slice(0, 255) || null,
-      notes: (slide.notes ?? "").trim() || null,
+      notes: notesForSave(slide.notes),
       elements: slide.elements.map((rawElement) => {
         if (typeof rawElement !== "object" || rawElement === null) {
           throw new SlidesError("validation", "Élément invalide.");

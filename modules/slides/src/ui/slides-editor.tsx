@@ -1,79 +1,39 @@
-import { Alert, Button, ConfirmDialog, cn, Dialog, Input, Label } from "@workspace/ui";
+import { Alert, Button, ConfirmDialog, cn, Dialog, Input, Kbd, Label } from "@workspace/ui";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import {
+  clamp,
+  cloneSlide,
+  type EditorElement,
+  type EditorSlide,
+  mergeSavedIds,
+  toEditor,
+} from "../editor-model.ts";
 import {
   type ElementView,
   getPresentationFn,
   renamePresentationFn,
-  type SlideView,
   savePresentationFn,
 } from "../server.ts";
+import {
+  isInsideModal,
+  isTypingTarget,
+  slideNavigationAnnouncement,
+  slideNavigationTarget,
+} from "../slide-navigation.ts";
+import { formatElapsed } from "../slide-notes.ts";
+import { canMoveSlide, moveTarget, reorderSlides } from "../slide-order.ts";
+import { SlideCanvas } from "./slide-canvas.tsx";
+import { SlideFilmstrip } from "./slide-filmstrip.tsx";
+import { PresenterNotes, SlideNotesField } from "./slide-notes-panel.tsx";
 
-type EditorElement = Omit<ElementView, "id"> & { key: string; id?: string };
-type EditorSlide = {
-  id?: string;
-  key: string;
-  title: string;
-  notes: string;
-  elements: EditorElement[];
-};
 type SaveStatus = "idle" | "saving" | "saved" | "error";
-
-function round1(value: number): number {
-  return Math.round(value * 10) / 10;
-}
-
-function clamp(value: number, min: number, max: number): number {
-  return Math.min(max, Math.max(min, value));
-}
-
-function toEditor(slides: SlideView[]): EditorSlide[] {
-  return slides.map((slide) => ({
-    id: slide.id,
-    key: crypto.randomUUID(),
-    title: slide.title ?? "",
-    notes: slide.notes ?? "",
-    elements: slide.elements.map((element) => ({ ...element, key: crypto.randomUUID() })),
-  }));
-}
-
-/**
- * Injecte les identifiants renvoyés par le serveur pour les éléments créés
- * pendant cette sauvegarde, sans toucher au reste de l'état local (les clés
- * React restent identiques : aucun remontage, aucune édition perdue).
- */
-function mergeSavedIds(
-  current: EditorSlide[],
-  sent: EditorSlide[],
-  saved: SlideView[],
-): EditorSlide[] {
-  const sentSlides = new Map(sent.map((slide, index) => [slide.key, { slide, index }] as const));
-  return current.map((slide) => {
-    const match = sentSlides.get(slide.key);
-    const savedSlide = match ? saved[match.index] : undefined;
-    if (!match || !savedSlide) return slide;
-    const sentElements = new Map(
-      match.slide.elements.map((element, index) => [element.key, index] as const),
-    );
-    let elementsChanged = false;
-    const elements = slide.elements.map((element) => {
-      if (element.id) return element;
-      const sentIndex = sentElements.get(element.key);
-      const savedElement = sentIndex === undefined ? undefined : savedSlide.elements[sentIndex];
-      if (!savedElement) return element;
-      elementsChanged = true;
-      return { ...element, id: savedElement.id };
-    });
-    const id = slide.id ?? savedSlide.id;
-    if (!elementsChanged && id === slide.id) return slide;
-    return { ...slide, id, elements };
-  });
-}
 
 /**
  * Éditeur de présentation : diapositives en 16:9 à positions relatives (%),
- * déplacement et redimensionnement à la souris, propriétés à droite,
- * autosave et mode présentation plein écran.
+ * bande de vignettes (sélection, réordonnancement), déplacement et
+ * redimensionnement à la souris, notes du présentateur, autosave et mode
+ * présentation plein écran.
  */
 export function SlidesEditor({ fileId }: { fileId: string }) {
   const [title, setTitle] = useState("");
@@ -83,15 +43,17 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
   const [selectedElementKey, setSelectedElementKey] = useState<string | null>(null);
   const [status, setStatus] = useState<SaveStatus>("idle");
   const [error, setError] = useState<string | null>(null);
+  const [announcement, setAnnouncement] = useState("");
   const [loading, setLoading] = useState(true);
   const [presenting, setPresenting] = useState(false);
   const [presentIndex, setPresentIndex] = useState(0);
+  const [notesOpen, setNotesOpen] = useState(false);
+  const [elapsed, setElapsed] = useState(0);
   const [printToken, setPrintToken] = useState(0);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [imageOpen, setImageOpen] = useState(false);
   const [imageBusy, setImageBusy] = useState(false);
   const [imageError, setImageError] = useState<string | null>(null);
-  const canvasRef = useRef<HTMLDivElement>(null);
   const slidesRef = useRef<EditorSlide[]>([]);
   const canEditRef = useRef(false);
   const revisionRef = useRef(1);
@@ -167,7 +129,7 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
     schedule();
   }
 
-  function updateElement(elementKey: string, patch: Partial<EditorElement>) {
+  function updateElement(elementKey: string, patch: Partial<ElementView>) {
     mutateSlide(selectedSlide, (slide) => ({
       ...slide,
       elements: slide.elements.map((element) =>
@@ -175,6 +137,11 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
       ),
     }));
   }
+
+  const selectSlide = useCallback((index: number) => {
+    setSelectedSlide(index);
+    setSelectedElementKey(null);
+  }, []);
 
   function addElement(kind: "text" | "shape") {
     const element: EditorElement =
@@ -279,17 +246,11 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
   function duplicateSlide() {
     const source = slides[selectedSlide];
     if (!source) return;
+    const copy = cloneSlide(
+      source,
+      `${source.title || `Diapositive ${selectedSlide + 1}`} (copie)`,
+    );
     setSlides((current) => {
-      const copy: EditorSlide = {
-        key: crypto.randomUUID(),
-        title: `${source.title || `Diapositive ${selectedSlide + 1}`} (copie)`,
-        notes: source.notes,
-        elements: source.elements.map((element) => ({
-          ...element,
-          key: crypto.randomUUID(),
-          id: undefined,
-        })),
-      };
       const next = [...current];
       next.splice(selectedSlide + 1, 0, copy);
       return next;
@@ -306,17 +267,20 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
     schedule();
   }
 
-  function moveSlide(direction: -1 | 1) {
-    const target = selectedSlide + direction;
-    if (target < 0 || target >= slides.length) return;
-    setSlides((current) => {
-      const next = [...current];
-      const [item] = next.splice(selectedSlide, 1);
-      if (item) next.splice(target, 0, item);
-      return next;
-    });
-    setSelectedSlide(target);
+  /** Déplacement d'une diapositive : la sélection la suit. */
+  function moveSlideTo(from: number, to: number) {
+    if (from === to) return;
+    setSlides((current) => reorderSlides(current, from, to));
+    setSelectedSlide(to);
+    setSelectedElementKey(null);
+    setAnnouncement(`Diapositive ${from + 1} déplacée en position ${to + 1}.`);
     schedule();
+  }
+
+  function moveSlide(direction: -1 | 1) {
+    const target = moveTarget(selectedSlide, direction, slides.length);
+    if (target === null) return;
+    moveSlideTo(selectedSlide, target);
   }
 
   async function onRenameTitle() {
@@ -333,73 +297,70 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
     }
   }
 
-  function startElementDrag(event: React.PointerEvent, element: EditorElement) {
-    if (!canEdit) return;
-    event.preventDefault();
-    event.stopPropagation();
-    setSelectedElementKey(element.key);
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const rect = canvas.getBoundingClientRect();
-    const startX = event.clientX;
-    const startY = event.clientY;
-    const origin = { x: element.x, y: element.y };
-    const move = (moveEvent: PointerEvent) => {
-      const dx = ((moveEvent.clientX - startX) / rect.width) * 100;
-      const dy = ((moveEvent.clientY - startY) / rect.height) * 100;
-      updateElement(element.key, {
-        x: round1(clamp(origin.x + dx, 0, 100 - element.w)),
-        y: round1(clamp(origin.y + dy, 0, 100 - element.h)),
-      });
-    };
-    const up = () => {
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", up);
-    };
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", up);
-  }
-
-  function startElementResize(event: React.PointerEvent, element: EditorElement) {
-    if (!canEdit) return;
-    event.preventDefault();
-    event.stopPropagation();
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const rect = canvas.getBoundingClientRect();
-    const startX = event.clientX;
-    const startY = event.clientY;
-    const origin = { w: element.w, h: element.h };
-    const move = (moveEvent: PointerEvent) => {
-      const dw = ((moveEvent.clientX - startX) / rect.width) * 100;
-      const dh = ((moveEvent.clientY - startY) / rect.height) * 100;
-      updateElement(element.key, {
-        w: round1(clamp(origin.w + dw, 2, 100 - element.x)),
-        h: round1(clamp(origin.h + dh, 2, 100 - element.y)),
-      });
-    };
-    const up = () => {
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", up);
-    };
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", up);
-  }
-
+  // Navigation clavier entre diapositives, partout dans l'éditeur : flèches,
+  // Page préc./suiv., Début/Fin. Les champs de saisie et les fenêtres modales
+  // gardent le clavier (la bande de vignettes traite ses propres flèches).
   useEffect(() => {
-    if (!presenting) return;
+    if (presenting) return;
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "ArrowRight") {
-        setPresentIndex((current) => Math.min(current + 1, slides.length - 1));
-      } else if (event.key === "ArrowLeft") {
-        setPresentIndex((current) => Math.max(current - 1, 0));
-      } else if (event.key === "Escape") {
-        setPresenting(false);
-      }
+      const target = event.target as Element | null;
+      if (isTypingTarget(target) || isInsideModal(target)) return;
+      const next = slideNavigationTarget({
+        key: event.key,
+        altKey: event.altKey,
+        ctrlKey: event.ctrlKey,
+        metaKey: event.metaKey,
+        count: slides.length,
+        current: selectedSlide,
+      });
+      if (next === null) return;
+      event.preventDefault();
+      selectSlide(next);
+      setAnnouncement(slideNavigationAnnouncement(next, slides.length));
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [presenting, slides.length]);
+  }, [presenting, selectSlide, selectedSlide, slides.length]);
+
+  // Mode présentation : mêmes raccourcis de déplacement, Échap pour quitter
+  // (ou refermer les notes du présentateur).
+  useEffect(() => {
+    if (!presenting) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        if (notesOpen) setNotesOpen(false);
+        else setPresenting(false);
+        return;
+      }
+      const next = slideNavigationTarget({
+        key: event.key,
+        altKey: event.altKey,
+        ctrlKey: event.ctrlKey,
+        metaKey: event.metaKey,
+        count: slides.length,
+        current: presentIndex,
+      });
+      if (next === null) return;
+      event.preventDefault();
+      setPresentIndex(next);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [presenting, notesOpen, presentIndex, slides.length]);
+
+  // Chronomètre du présentateur : remis à zéro à chaque ouverture.
+  useEffect(() => {
+    if (!presenting) {
+      setElapsed(0);
+      return;
+    }
+    const startedAt = Date.now();
+    const id = window.setInterval(
+      () => setElapsed(Math.floor((Date.now() - startedAt) / 1000)),
+      1000,
+    );
+    return () => window.clearInterval(id);
+  }, [presenting]);
 
   // Impression : le clic monte la racine #slides-print-root (portal vers
   // <body> pour échapper aux conteneurs défilants de l'application), puis
@@ -416,93 +377,6 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
   const current = slides[selectedSlide] ?? null;
   const selectedElement =
     current?.elements.find((element) => element.key === selectedElementKey) ?? null;
-
-  function renderSlide(slide: EditorSlide, interactive: boolean) {
-    return (
-      <div
-        ref={interactive ? canvasRef : undefined}
-        onPointerDown={() => {
-          if (interactive) setSelectedElementKey(null);
-        }}
-        style={
-          { containerType: "inline-size", "--slide-design-width": "960" } as React.CSSProperties
-        }
-        className="relative aspect-[16/9] w-full overflow-hidden rounded-xl border border-border bg-card text-foreground shadow-soft"
-      >
-        {slide.elements.map((element) => {
-          const className = cn(
-            "absolute select-none whitespace-pre-wrap rounded",
-            element.kind === "shape" && "border border-border bg-accent",
-            element.kind === "image" && "bg-muted",
-          );
-          const style = {
-            left: `${element.x}%`,
-            top: `${element.y}%`,
-            width: `${element.w}%`,
-            height: `${element.h}%`,
-            fontSize: `calc(${element.fontSize} * 100cqw / var(--slide-design-width))`,
-            fontWeight: element.bold ? 700 : 400,
-            textAlign: element.align,
-            lineHeight: 1.25,
-          } as const;
-          // Image : le binaire est servi par la route média (clé anti-IDOR) ;
-          // la zone garde ses poignées de déplacement/redimensionnement.
-          const content =
-            element.kind === "image" && element.mediaKey ? (
-              <img
-                src={`/api/slides/media?fileId=${fileId}&key=${encodeURIComponent(element.mediaKey)}`}
-                className="size-full object-contain"
-                draggable={false}
-                alt=""
-              />
-            ) : (
-              element.text
-            );
-          if (!interactive) {
-            return (
-              <div key={element.key} className={className} style={style}>
-                {content}
-              </div>
-            );
-          }
-          return (
-            <button
-              key={element.key}
-              type="button"
-              aria-label={
-                element.kind === "image"
-                  ? "Élément image"
-                  : element.text
-                    ? `Élément ${element.text}`
-                    : `Élément ${element.kind === "shape" ? "forme" : "texte"}`
-              }
-              onPointerDown={(event) => startElementDrag(event, element)}
-              onClick={(event) => {
-                event.stopPropagation();
-                setSelectedElementKey(element.key);
-              }}
-              className={cn(
-                className,
-                "cursor-move text-left focus-visible:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring",
-                selectedElementKey === element.key &&
-                  "outline outline-2 outline-offset-2 outline-ring",
-              )}
-              style={style}
-            >
-              {content}
-              {selectedElementKey === element.key ? (
-                <span
-                  aria-hidden
-                  onPointerDown={(event) => startElementResize(event, element)}
-                  className="absolute -bottom-1 -right-1 size-3 cursor-nwse-resize rounded-sm border border-border bg-background"
-                />
-              ) : null}
-            </button>
-          );
-        })}
-      </div>
-    );
-  }
 
   const statusLabel =
     status === "saving"
@@ -559,6 +433,7 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
             disabled={slides.length === 0}
             onClick={() => {
               setPresentIndex(selectedSlide);
+              setNotesOpen(false);
               setPresenting(true);
             }}
           >
@@ -572,33 +447,15 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
       {loading ? (
         <p className="text-sm text-muted-foreground">Chargement…</p>
       ) : current ? (
-        <div className="flex flex-col gap-3 lg:flex-row">
-          <ol className="flex shrink-0 flex-row gap-2 overflow-x-auto lg:w-44 lg:flex-col lg:overflow-y-auto print-hide">
-            {slides.map((slide, index) => (
-              <li key={slide.key}>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setSelectedSlide(index);
-                    setSelectedElementKey(null);
-                  }}
-                  className={cn(
-                    "w-full min-w-36 rounded-lg border p-1.5 text-left transition-colors",
-                    index === selectedSlide
-                      ? "border-primary bg-accent text-accent-foreground"
-                      : "border-border bg-card hover:bg-muted",
-                  )}
-                >
-                  <span className="grid aspect-[16/9] w-full place-items-center rounded bg-background text-[10px] text-muted-foreground">
-                    {index + 1}
-                  </span>
-                  <span className="mt-1 block truncate text-[11px] font-medium">
-                    {slide.title || `Diapositive ${index + 1}`}
-                  </span>
-                </button>
-              </li>
-            ))}
-          </ol>
+        <section aria-label="Éditeur de diapositives" className="flex flex-col gap-3 lg:flex-row">
+          <SlideFilmstrip
+            slides={slides}
+            selectedIndex={selectedSlide}
+            canEdit={canEdit}
+            fileId={fileId}
+            onSelect={selectSlide}
+            onMove={moveSlideTo}
+          />
 
           <div className="flex min-w-0 flex-1 flex-col gap-2">
             <div className="flex flex-wrap items-center gap-2 print-hide">
@@ -641,7 +498,7 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
                     size="sm"
                     variant="ghost"
                     aria-label="Monter la diapositive"
-                    disabled={selectedSlide === 0}
+                    disabled={!canMoveSlide(selectedSlide, -1, slides.length)}
                     onClick={() => moveSlide(-1)}
                   >
                     ↑
@@ -650,7 +507,7 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
                     size="sm"
                     variant="ghost"
                     aria-label="Descendre la diapositive"
-                    disabled={selectedSlide === slides.length - 1}
+                    disabled={!canMoveSlide(selectedSlide, 1, slides.length)}
                     onClick={() => moveSlide(1)}
                   >
                     ↓
@@ -658,7 +515,21 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
                 </>
               ) : null}
             </div>
-            {renderSlide(current, canEdit)}
+
+            <p className="text-[11px] text-muted-foreground print-hide">
+              <Kbd>←</Kbd> <Kbd>→</Kbd> ou <Kbd>Page préc.</Kbd> / <Kbd>Page suiv.</Kbd> pour
+              changer de diapositive, <Kbd>Début</Kbd> et <Kbd>Fin</Kbd> pour la première ou la
+              dernière.
+            </p>
+
+            <SlideCanvas
+              slide={current}
+              fileId={fileId}
+              interactive={canEdit}
+              selectedElementKey={selectedElementKey}
+              onSelectElement={setSelectedElementKey}
+              onGeometryChange={updateElement}
+            />
           </div>
 
           <aside className="flex w-full shrink-0 flex-col gap-3 rounded-xl border border-border bg-card p-3 lg:w-60 print-hide">
@@ -674,20 +545,15 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
                 maxLength={255}
               />
             </div>
-            <div className="flex flex-col gap-1">
-              <Label htmlFor="slide-notes">Notes du présentateur</Label>
-              <textarea
-                id="slide-notes"
-                value={current.notes}
-                disabled={!canEdit}
-                onChange={(event) =>
-                  mutateSlide(selectedSlide, (slide) => ({ ...slide, notes: event.target.value }))
-                }
-                rows={3}
-                maxLength={5000}
-                className="rounded-md border border-input bg-background px-3 py-2 text-sm"
-              />
-            </div>
+
+            <SlideNotesField
+              slide={current}
+              index={selectedSlide}
+              canEdit={canEdit}
+              onNotesChange={(notes) =>
+                mutateSlide(selectedSlide, (slide) => ({ ...slide, notes }))
+              }
+            />
 
             <div className="border-t border-border pt-3">
               {selectedElement && canEdit ? (
@@ -774,7 +640,7 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
               )}
             </div>
           </aside>
-        </div>
+        </section>
       ) : null}
 
       <ConfirmDialog
@@ -809,10 +675,33 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
 
       {presenting ? (
         <div className="fixed inset-0 z-50 flex flex-col bg-rail text-rail-foreground">
-          <div className="flex items-center gap-2 px-4 py-2 text-sm">
-            <span>
+          <div className="flex flex-wrap items-center gap-2 px-4 py-2 text-sm">
+            <span className="tabular-nums">
               {presentIndex + 1} / {slides.length}
             </span>
+            {slides[presentIndex]?.title.trim() ? (
+              <span className="max-w-48 truncate text-rail-foreground/70">
+                {slides[presentIndex]?.title}
+              </span>
+            ) : null}
+            <span className="tabular-nums text-rail-foreground/70">
+              <span className="sr-only">Temps écoulé : </span>
+              {formatElapsed(elapsed)}
+            </span>
+            <Button
+              size="sm"
+              variant="ghost"
+              className="ml-2 text-rail-foreground hover:bg-rail-active hover:text-rail-foreground"
+              aria-expanded={notesOpen}
+              aria-label={
+                notesOpen
+                  ? "Masquer les notes du présentateur"
+                  : "Afficher les notes du présentateur"
+              }
+              onClick={() => setNotesOpen((open) => !open)}
+            >
+              Notes
+            </Button>
             <button
               type="button"
               className="ml-auto rounded-md px-2 py-1 hover:bg-rail-active focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
@@ -821,10 +710,19 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
               ✕ Quitter (Échap)
             </button>
           </div>
-          <div className="flex flex-1 items-center justify-center p-6">
-            <div className="w-full max-w-5xl">
-              {slides[presentIndex] ? renderSlide(slides[presentIndex], false) : null}
+          <div className="flex flex-1 items-center justify-center gap-4 overflow-auto p-6">
+            <div className={cn("w-full", notesOpen ? "max-w-3xl" : "max-w-5xl")}>
+              {slides[presentIndex] ? (
+                <SlideCanvas slide={slides[presentIndex]} fileId={fileId} />
+              ) : null}
             </div>
+            {notesOpen && slides[presentIndex] ? (
+              <PresenterNotes
+                slide={slides[presentIndex]}
+                index={presentIndex}
+                id="presenter-notes"
+              />
+            ) : null}
           </div>
           <div className="flex justify-center gap-2 pb-4">
             <Button
@@ -849,6 +747,11 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
         </div>
       ) : null}
 
+      {/* Région live : changements de diapositive et déplacements annoncés. */}
+      <p role="status" aria-live="polite" className="sr-only print-hide">
+        {announcement}
+      </p>
+
       {/* Racine d'impression : toutes les diapositives, une page chacune.
           Portal vers <body> pour échapper aux conteneurs défilants. */}
       {printToken > 0
@@ -856,7 +759,7 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
             <div id="slides-print-root">
               {slides.map((slide) => (
                 <div key={slide.key} className="print-slide">
-                  {renderSlide(slide, false)}
+                  <SlideCanvas slide={slide} fileId={fileId} />
                 </div>
               ))}
             </div>,
