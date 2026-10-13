@@ -23,6 +23,32 @@ import { organization } from "better-auth/plugins";
  * - Organisations : plugin organization + équipes (groupes de partage).
  * - Autorisation : PAS ici — elle vit dans `packages/permissions` (ADR-0004).
  */
+/**
+ * Règles de limitation de débit better-auth.
+ *
+ * En production : garde strict (3 essais / 30 s sur sign-in/sign-up, 100
+ * req/min globalement). Hors production : garde permissif — les adresses
+ * partagées (NAT familial, réseau d'entreprise, CI) ne doivent pas bloquer
+ * les inscriptions légitimes ; la protection anti-bourrage reste la
+ * responsabilité du déploiement (proxy, fail2ban, captcha).
+ */
+export function authRateLimitOptions(production: boolean) {
+  return {
+    enabled: true,
+    window: 60,
+    max: production ? 100 : 2000,
+    customRules: production
+      ? {
+          "/sign-in/email": { window: 30, max: 3 },
+          "/sign-up/email": { window: 30, max: 3 },
+        }
+      : {
+          "/sign-in/email": { window: 30, max: 1000 },
+          "/sign-up/email": { window: 30, max: 1000 },
+        },
+  };
+}
+
 export function createAuth() {
   const env = getServerEnv();
 
@@ -65,23 +91,7 @@ export function createAuth() {
       cookieCache: { enabled: false },
     },
     plugins: [organization({ teams: { enabled: true } })],
-    rateLimit: {
-      // Garde global : 100 requêtes / 60 s par IP et par chemin (toutes les
-      // routes better-auth confondues).
-      enabled: true,
-      window: 60,
-      max: 100,
-      // Garde anti-bourrage ciblé sur les entrées par mot de passe.
-      // better-auth 1.7.7 applique déjà une règle intégrée de 3 essais / 10 s
-      // à `/sign-in*` et `/sign-up*` (vérifié dans
-      // `better-auth/dist/api/rate-limiter/index.mjs`) ; les règles ci-dessous
-      // la remplacent par 3 essais / 30 s : même plafond de rafale, débit
-      // soutenu divisé par 3 (6/min au lieu de 18/min).
-      customRules: {
-        "/sign-in/email": { window: 30, max: 3 },
-        "/sign-up/email": { window: 30, max: 3 },
-      },
-    },
+    rateLimit: authRateLimitOptions(isProduction()),
     advanced: {
       defaultCookieAttributes: {
         httpOnly: true,

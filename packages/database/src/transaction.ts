@@ -1,4 +1,4 @@
-import { type Database, getDb } from "./client";
+import { type Database, getDb } from "./client.ts";
 
 /**
  * Exécute une opération dans une transaction.

@@ -77,7 +77,7 @@ test("a11y : Drive et formulaires publics", async ({ page }) => {
 
   const [publicPage] = await Promise.all([
     page.waitForEvent("popup"),
-    page.getByRole("button", { name: "Ouvrir" }).click(),
+    page.getByRole("link", { name: "Ouvrir" }).click(),
   ]);
   await publicPage.waitForSelector("html[data-hydrated='true']", { timeout: 40_000 });
   const publicUrl = publicPage.url();

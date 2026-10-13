@@ -2,6 +2,7 @@ import {
   Alert,
   Badge,
   Button,
+  buttonVariants,
   Input,
   Label,
   SegmentedTabs,
@@ -253,10 +254,13 @@ export function FormBuilder({ fileId }: { fileId: string }) {
               <Button size="sm" variant="outline" onClick={copyLink}>
                 Copier
               </Button>
-              <a href={`/f/${detail.slug}`} target="_blank" rel="noreferrer">
-                <Button size="sm" variant="outline">
-                  Ouvrir
-                </Button>
+              <a
+                href={`/f/${detail.slug}`}
+                target="_blank"
+                rel="noreferrer"
+                className={buttonVariants({ variant: "outline", size: "sm" })}
+              >
+                Ouvrir
               </a>
             </div>
           </div>

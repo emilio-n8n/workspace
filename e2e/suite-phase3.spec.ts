@@ -71,10 +71,8 @@ test("sheets : saisie, formule évaluée et persistance après rechargement", as
   // Entrée valide et descend d'une ligne : la cellule suivante est déjà en
   // édition (champ), sinon c'est un bouton au repos — on accepte les deux.
   async function typeCell(ref: string, value: string) {
-    await page
-      .getByRole("button", { name: `Cellule ${ref}` })
-      .or(page.getByRole("textbox", { name: `Cellule ${ref}` }))
-      .click();
+    const button = page.getByRole("button", { name: `Cellule ${ref}` });
+    if ((await button.count()) > 0) await button.first().click();
     const input = page.getByRole("textbox", { name: `Cellule ${ref}` });
     await input.fill(value);
     await input.press("Enter");

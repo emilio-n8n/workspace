@@ -17,7 +17,10 @@ test("chat : canal, message envoyé, compteur de non-lus", async ({ page }) => {
   await page.getByLabel("Nom du canal").fill("produit");
   await page.getByRole("button", { name: "Créer le canal" }).click();
 
-  await page.getByLabel("Message").fill("Bonjour l'équipe");
+  await page
+    .locator("dialog[open]")
+    .getByLabel("Message", { exact: true })
+    .fill("Bonjour l'équipe");
   await page.getByRole("button", { name: "Envoyer" }).click();
   await expect(page.getByText("Bonjour l'équipe")).toBeVisible({ timeout: 15_000 });
   await page.screenshot({ path: "e2e/screenshots/chat.png", fullPage: true });
@@ -151,7 +154,7 @@ test("admin : profil d'organisation, membres, quota et journal", async ({ page }
     .click();
   await expect(page.getByRole("status")).toContainText("Profil mis à jour.");
 
-  await expect(page.getByText(email)).toBeVisible();
+  await expect(page.getByText(email).first()).toBeVisible();
 
   await page.getByLabel("Quota (Go, vide = illimité)").fill("10");
   await page.getByRole("button", { name: "Appliquer" }).click();

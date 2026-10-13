@@ -1,6 +1,6 @@
 import { closeDb } from "@workspace/database";
 import { afterAll, describe, expect, it } from "vitest";
-import { auth } from "../src/auth";
+import { auth, authRateLimitOptions } from "../src/auth";
 
 /**
  * Garde-fous de configuration : la politique de session et de limitation de
@@ -19,15 +19,17 @@ describe("configuration better-auth — session et limitation de débit", () => 
     expect(session?.cookieCache?.enabled).toBe(false);
   });
 
-  it("sign-in/sign-up par e-mail : 3 essais / 30 s (plus strict que le garde global)", () => {
-    const rules = auth.options.rateLimit?.customRules;
-    expect(rules?.["/sign-in/email"]).toEqual({ window: 30, max: 3 });
-    expect(rules?.["/sign-up/email"]).toEqual({ window: 30, max: 3 });
+  it("rate-limit : strict en production, permissif hors production (NAT partagé)", () => {
+    const prod = authRateLimitOptions(true);
+    expect(prod.customRules["/sign-in/email"]).toEqual({ window: 30, max: 3 });
+    expect(prod.customRules["/sign-up/email"]).toEqual({ window: 30, max: 3 });
+    expect(prod.max).toBe(100);
+    expect(prod.window).toBe(60);
 
-    const globalMax = auth.options.rateLimit?.max ?? 0;
-    const globalWindow = auth.options.rateLimit?.window ?? 0;
-    expect(globalMax).toBe(100);
-    expect(globalWindow).toBe(60);
+    // Les CI et les réseaux partagés ne doivent pas bloquer les inscriptions.
+    const dev = authRateLimitOptions(false);
+    expect(dev.customRules["/sign-up/email"].max).toBeGreaterThanOrEqual(100);
+    expect(dev.max).toBeGreaterThanOrEqual(1000);
   });
 
   it("cookie de session : httpOnly et sameSite=lax", () => {
