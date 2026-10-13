@@ -87,12 +87,8 @@
           "name": "sheet_cells_tab_id_sheet_tabs_id_fk",
           "tableFrom": "sheet_cells",
           "tableTo": "sheet_tabs",
-          "columnsFrom": [
-            "tab_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["tab_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -173,12 +169,8 @@
           "name": "sheet_dimensions_tab_id_sheet_tabs_id_fk",
           "tableFrom": "sheet_dimensions",
           "tableTo": "sheet_tabs",
-          "columnsFrom": [
-            "tab_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["tab_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -241,12 +233,8 @@
           "name": "sheet_tabs_spreadsheet_id_spreadsheets_id_fk",
           "tableFrom": "sheet_tabs",
           "tableTo": "spreadsheets",
-          "columnsFrom": [
-            "spreadsheet_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["spreadsheet_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -325,12 +313,8 @@
           "name": "spreadsheets_org_id_organization_id_fk",
           "tableFrom": "spreadsheets",
           "tableTo": "organization",
-          "columnsFrom": [
-            "org_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["org_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -338,12 +322,8 @@
           "name": "spreadsheets_file_id_drive_files_id_fk",
           "tableFrom": "spreadsheets",
           "tableTo": "drive_files",
-          "columnsFrom": [
-            "file_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["file_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }

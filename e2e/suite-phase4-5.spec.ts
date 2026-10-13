@@ -41,7 +41,10 @@ test("mail : brouillon puis envoi conservé avec erreur explicite sans SMTP", as
   await page.getByRole("button", { name: "Écrire" }).click();
   await page.getByLabel("À (séparés par des virgules)").fill("ami@exemple.org");
   await page.getByLabel("Objet").fill("Envoi E2E");
-  await page.getByRole("dialog", { name: "Nouveau message" }).getByLabel("Message", { exact: true }).fill("Un vrai envoi");
+  await page
+    .getByRole("dialog", { name: "Nouveau message" })
+    .getByLabel("Message", { exact: true })
+    .fill("Un vrai envoi");
   await page.getByRole("button", { name: "Envoyer" }).click();
 
   await expect(page.getByRole("alert")).toContainText("SMTP", { timeout: 15_000 });
