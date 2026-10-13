@@ -3,7 +3,12 @@ import type { TokenPrincipal } from "@workspace/auth";
 import { deleteEvent } from "@workspace/calendar";
 import { listMessages as listChatMessages } from "@workspace/chat";
 import { getDb, schema } from "@workspace/database";
-import { getDocumentByFileId, toPlainText } from "@workspace/docs";
+import {
+  getDocumentByFileId,
+  listDocumentVersions,
+  restoreDocumentVersion,
+  toPlainText,
+} from "@workspace/docs";
 import {
   createTextFile,
   deleteEntry,
@@ -315,6 +320,67 @@ export function registerTools(server: McpServer, principal: TokenPrincipal): voi
                 null,
                 2,
               ),
+            },
+          ],
+        };
+      }),
+  );
+
+  server.registerTool(
+    "docs.list_versions",
+    {
+      title: "Lister les versions d'un document",
+      description:
+        "Historique des versions d'un document Workspace autorisé (numéro, date, auteur), de la plus récente à la plus ancienne. Scope requis : docs:read.",
+      inputSchema: {
+        fileId: z.string().uuid(),
+      },
+    },
+    async ({ fileId }) =>
+      withAudit(principal, "docs.list_versions", async () => {
+        requireScope(principal, "docs:read");
+
+        const versions = await listDocumentVersions(actor, fileId);
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify(
+                versions.map((version) => ({
+                  version: version.version,
+                  createdAt: version.createdAt.toISOString(),
+                  createdBy: version.createdBy,
+                })),
+                null,
+                2,
+              ),
+            },
+          ],
+        };
+      }),
+  );
+
+  server.registerTool(
+    "docs.restore_version",
+    {
+      title: "Restaurer une version d'un document",
+      description:
+        "Restaure une version existante d'un document accessible en écriture : son contenu est recopié dans une NOUVELLE version (l'historique n'est jamais réécrit, la restauration est donc réversible). Retourne le numéro de la version créée. Scope requis : docs:write.",
+      inputSchema: {
+        fileId: z.string().uuid(),
+        version: z.number().int().min(1),
+      },
+    },
+    async ({ fileId, version }) =>
+      withAudit(principal, "docs.restore_version", async () => {
+        requireScope(principal, "docs:write");
+
+        const restored = await restoreDocumentVersion(actor, fileId, version);
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify({ fileId, version: restored.version }, null, 2),
             },
           ],
         };

@@ -112,7 +112,7 @@ afterAll(async () => {
 });
 
 describe("serveur MCP — intégration réelle (stdio)", () => {
-  it("liste les vingt-sept outils de la suite et répond à me.whoami avec le bon principal", async () => {
+  it("liste les vingt-neuf outils de la suite et répond à me.whoami avec le bon principal", async () => {
     const f = await fixtures(["drive:read"]);
     const { client, transport } = await connectClient(f.token);
     try {
@@ -127,7 +127,9 @@ describe("serveur MCP — intégration réelle (stdio)", () => {
         "chat.read",
         "chat.send",
         "classroom.list",
+        "docs.list_versions",
         "docs.read",
+        "docs.restore_version",
         "files.delete",
         "files.read",
         "files.search",
@@ -396,6 +398,76 @@ describe("serveur MCP — intégration réelle (stdio)", () => {
         arguments: { fileId: entry.id },
       });
       expect(read.isError).toBe(true);
+    } finally {
+      await client.close();
+      await transport.close();
+    }
+  });
+
+  it("docs.list_versions + docs.restore_version : liste l'historique puis restaure une version", async () => {
+    const f = await fixtures(["docs:read", "docs:write"]);
+    const actor = { userId: f.userId, orgId: f.orgId };
+
+    const { entry } = await createDocument(actor, { title: "Historique MCP" });
+    await saveDocument(actor, entry.id, {
+      content: {
+        type: "doc",
+        content: [{ type: "paragraph", content: [{ type: "text", text: "Version deux" }] }],
+      },
+      mode: "append",
+    });
+
+    const { client, transport } = await connectClient(f.token);
+    try {
+      const listed = await client.callTool({
+        name: "docs.list_versions",
+        arguments: { fileId: entry.id },
+      });
+      expect(listed.isError).toBeFalsy();
+      const versions = payloadOf(listed) as unknown as {
+        version: number;
+        createdAt: string;
+        createdBy: string;
+      }[];
+      expect(versions.map((version) => version.version)).toEqual([2, 1]);
+      expect(versions[1]?.createdBy).toBe(f.userId);
+      expect(Number.isNaN(Date.parse(versions[0]?.createdAt ?? ""))).toBe(false);
+
+      const restored = await client.callTool({
+        name: "docs.restore_version",
+        arguments: { fileId: entry.id, version: 1 },
+      });
+      expect(restored.isError).toBeFalsy();
+      expect(payloadOf(restored).version).toBe(3);
+
+      // La restauration crée une NOUVELLE version, visible dans l'historique.
+      const after = await client.callTool({
+        name: "docs.list_versions",
+        arguments: { fileId: entry.id },
+      });
+      expect(after.isError).toBeFalsy();
+      const afterVersions = payloadOf(after) as unknown as { version: number }[];
+      expect(afterVersions.map((version) => version.version)).toEqual([3, 2, 1]);
+    } finally {
+      await client.close();
+      await transport.close();
+    }
+  });
+
+  it("docs.restore_version : version inconnue → erreur métier propre", async () => {
+    const f = await fixtures(["docs:read", "docs:write"]);
+    const actor = { userId: f.userId, orgId: f.orgId };
+    const { entry } = await createDocument(actor, { title: "Sans version 42" });
+
+    const { client, transport } = await connectClient(f.token);
+    try {
+      const denied = await client.callTool({
+        name: "docs.restore_version",
+        arguments: { fileId: entry.id, version: 42 },
+      });
+      expect(denied.isError).toBe(true);
+      const content = (denied as { content: { text: string }[] }).content;
+      expect(content[0]?.text).toBe("Version introuvable.");
     } finally {
       await client.close();
       await transport.close();
