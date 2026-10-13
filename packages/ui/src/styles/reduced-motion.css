@@ -1,0 +1,36 @@
+/*
+ * Workspace — respect de prefers-reduced-motion (fichier additif)
+ *
+ * Sous `prefers-reduced-motion: reduce`, les transitions et animations
+ * décoratives sont neutralisées ; seuls les indicateurs d'activité (spinner,
+ * pulsation) continuent de vivre, assez lentement pour ne pas gêner.
+ *
+ * Cet utilitaire est la ceinture de sécurité globale : les primitifs préfèrent
+ * la variante Tailwind `motion-reduce:` quand l'animation doit céder la place
+ * à un état stable (voir Tooltip).
+ *
+ * À importer après les tokens :
+ *   @import "@workspace/ui/styles/reduced-motion.css";
+ */
+
+@media (prefers-reduced-motion: reduce) {
+  :where(*, *::before, *::after) {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  /* Indicateurs d'activité : animés, mais lents et réguliers. */
+  .animate-spin {
+    animation-duration: 2s !important;
+    animation-timing-function: linear !important;
+    animation-iteration-count: infinite !important;
+  }
+
+  .animate-pulse {
+    animation-duration: 2.4s !important;
+    animation-timing-function: ease-in-out !important;
+    animation-iteration-count: infinite !important;
+  }
+}
