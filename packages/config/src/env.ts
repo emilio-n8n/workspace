@@ -97,6 +97,12 @@ function formatIssues(issues: ReadonlyArray<{ path: PropertyKey[]; message: stri
  * définies dans l'environnement du processus.
  */
 export function loadDotEnv(fromDir: string = process.cwd()): string | null {
+  // Garde-fou navigateur : `node:fs` est externalisé par Vite côté client et
+  // lève à l'accès. Appelée depuis un bundle client (page qui importe un
+  // barrel tirant la config), cette fonction faisait planter l'application
+  // entière (« Module node:fs has been externalized »). Côté navigateur, les
+  // variables viennent de `import.meta.env` : il n'y a rien à charger.
+  if (typeof window !== "undefined") return null;
   let dir = resolve(fromDir);
   for (;;) {
     const candidate = join(dir, ".env");

@@ -17,10 +17,7 @@ test("chat : canal, message envoyé, compteur de non-lus", async ({ page }) => {
   await page.getByLabel("Nom du canal").fill("produit");
   await page.getByRole("button", { name: "Créer le canal" }).click();
 
-  await page
-    .locator("dialog[open]")
-    .getByLabel("Message", { exact: true })
-    .fill("Bonjour l'équipe");
+  await page.getByRole("textbox", { name: "Message", exact: true }).fill("Bonjour l'équipe");
   await page.getByRole("button", { name: "Envoyer" }).click();
   await expect(page.getByText("Bonjour l'équipe")).toBeVisible({ timeout: 15_000 });
   await page.screenshot({ path: "e2e/screenshots/chat.png", fullPage: true });
@@ -34,14 +31,17 @@ test("mail : brouillon puis envoi conservé avec erreur explicite sans SMTP", as
   await page.getByRole("button", { name: "Écrire" }).click();
   await page.getByLabel("À (séparés par des virgules)").fill("ami@exemple.org");
   await page.getByLabel("Objet").fill("Test E2E");
-  await page.getByLabel("Message").fill("Corps du message E2E");
+  await page
+    .getByRole("dialog", { name: "Nouveau message" })
+    .getByLabel("Message", { exact: true })
+    .fill("Corps du message E2E");
   await page.getByRole("button", { name: "Enregistrer en brouillon" }).click();
   await expect(page.getByText("Brouillons").first()).toBeVisible();
 
   await page.getByRole("button", { name: "Écrire" }).click();
   await page.getByLabel("À (séparés par des virgules)").fill("ami@exemple.org");
   await page.getByLabel("Objet").fill("Envoi E2E");
-  await page.getByLabel("Message").fill("Un vrai envoi");
+  await page.getByRole("dialog", { name: "Nouveau message" }).getByLabel("Message", { exact: true }).fill("Un vrai envoi");
   await page.getByRole("button", { name: "Envoyer" }).click();
 
   await expect(page.getByRole("alert")).toContainText("SMTP", { timeout: 15_000 });

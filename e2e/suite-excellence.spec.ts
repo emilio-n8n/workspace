@@ -52,8 +52,8 @@ test("recherche globale : trouve fichiers, formulaires, tâches et événements"
   // Un événement « Point Alpha ».
   await openApp(page, `${CALENDAR}/`);
   await page.getByRole("button", { name: "Nouvel événement" }).first().click();
-  await expect(page.getByLabel("Titre", { exact: true })).toBeVisible({ timeout: 15_000 });
-  await page.getByLabel("Titre", { exact: true }).fill("Point Alpha");
+  await expect(page.getByLabel("Titre de l'événement")).toBeVisible({ timeout: 15_000 });
+  await page.getByLabel("Titre de l'événement").fill("Point Alpha");
   await page.getByRole("button", { name: "Créer l'événement" }).click();
   await expect(page.getByRole("button", { name: /Point Alpha/ }).first()).toBeVisible({
     timeout: 15_000,

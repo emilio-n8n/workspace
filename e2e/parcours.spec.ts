@@ -221,6 +221,8 @@ test("jetons d'API : création (affiché une seule fois), liste, révocation", a
   await expect(row.getByText("Actif")).toBeVisible();
 
   await row.getByRole("button", { name: /Révoquer/ }).click();
+  // La révocation passe par un dialogue de confirmation (action irréversible).
+  await page.getByRole("dialog").getByRole("button", { name: "Révoquer", exact: true }).click();
   await expect(page.getByRole("row", { name: /Jeton E2E/ }).getByText("Révoqué")).toBeVisible();
 });
 
