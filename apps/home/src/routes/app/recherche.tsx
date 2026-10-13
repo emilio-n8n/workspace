@@ -5,6 +5,8 @@ import { requireActor } from "@workspace/auth";
 import type { SuiteAppKey } from "@workspace/config";
 import { type SearchResult, searchEverything } from "@workspace/search";
 import {
+  Alert,
+  EmptyState,
   IconCalendar,
   IconCheckSquare,
   IconClipboard,
@@ -155,13 +157,24 @@ function SearchPage() {
       </div>
 
       {trimmed.length < 2 ? (
-        <p className="text-sm text-muted-foreground">Tapez au moins 2 caractères</p>
+        <p className="text-sm text-muted-foreground">
+          Tapez au moins deux caractères pour lancer la recherche.
+        </p>
       ) : failed ? (
-        <p className="text-sm text-destructive">Recherche impossible — réessayez.</p>
+        <Alert tone="danger" title="Recherche impossible">
+          La recherche n'a pas abouti. Réessayez dans un instant.
+        </Alert>
       ) : results === null ? (
-        <p className="text-sm text-muted-foreground">{loading ? "Recherche…" : ""}</p>
+        // Chargement : la région est annoncée, la liste garde sa place.
+        <p role="status" className="text-sm text-muted-foreground">
+          {loading ? "Recherche…" : ""}
+        </p>
       ) : results.length === 0 ? (
-        <p className="text-sm text-muted-foreground">Aucun résultat pour « {trimmed} »</p>
+        <EmptyState
+          icon={<IconSearch />}
+          title={`Aucun résultat pour « ${trimmed} »`}
+          hint="Vérifiez l'orthographe, ou essayez un mot plus court ou plus général."
+        />
       ) : (
         <ul className="flex flex-col divide-y divide-border overflow-hidden rounded-xl border border-border bg-card shadow-soft">
           {results.map((result) => (

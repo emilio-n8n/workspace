@@ -1,31 +1,25 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import type { SuiteAppKey } from "@workspace/config";
 import { type DriveEntryView, listRecentFn } from "@workspace/drive/server";
-import { createSpreadsheetFn } from "@workspace/sheets/server";
-import { createPresentationFn } from "@workspace/slides/server";
 import {
-  Alert,
   Badge,
-  buttonVariants,
   Card,
   CardContent,
   CardDescription,
   CardHeader,
   CardTitle,
   cn,
-  FileIcon,
-  IconCalendar,
-  IconCheckSquare,
   IconClose,
   IconFileText,
-  IconGrid,
   IconKey,
-  IconPresentation,
   IconSearch,
   IconSettings,
   resolveSuiteApps,
 } from "@workspace/ui";
-import { type ReactNode, useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+import { formatBytes } from "../../dashboard/format.ts";
+import { ShortcutsSection } from "../../dashboard/quick-actions.tsx";
+import { RecentFilesSection } from "../../dashboard/recent-files.tsx";
 import { getAppUrlsFn, getWorkspaceFn, type WorkspaceInfo } from "../../server/context.ts";
 import { getStorageUsageFn } from "../../server/storage.ts";
 
@@ -33,40 +27,10 @@ export const Route = createFileRoute("/app/")({ component: DashboardPage });
 
 type StorageUsage = { usedBytes: number; fileCount: number; quotaBytes: number | null };
 
-/** Raccourci de création en cours (état d'attente par bouton). */
-type BusyShortcut = "sheet" | "slides";
-
-function formatBytes(size: number): string {
-  if (size < 1024) return `${size} o`;
-  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} Ko`;
-  if (size < 1024 * 1024 * 1024) return `${(size / (1024 * 1024)).toFixed(1)} Mo`;
-  return `${(size / (1024 * 1024 * 1024)).toFixed(2)} Go`;
-}
-
-/** Horodatage relatif court : minutes, heures puis jours. */
-function formatRelativeTime(iso: string): string {
-  const elapsed = Date.now() - Date.parse(iso);
-  if (Number.isNaN(elapsed)) return "récemment";
-  const minutes = Math.max(0, Math.floor(elapsed / 60_000));
-  if (minutes < 1) return "à l'instant";
-  if (minutes < 60) return `il y a ${minutes} min`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `il y a ${hours} h`;
-  return `il y a ${Math.floor(hours / 24)} j`;
-}
-
-const shortcutCardClass = cn(
-  "flex h-full flex-col gap-2 rounded-xl border border-border bg-card p-4 text-left shadow-soft transition-colors hover:bg-muted",
-  "disabled:cursor-wait disabled:opacity-60",
-);
-
-/** Au-delà, l'espace n'est plus considéré comme « nouveau ». */
+/** Démarrage guidé — masqué localement dès que l'utilisateur le ferme. */
 const NEW_WORKSPACE_MAX_FILES = 3;
-
-/** Clé locale de masquage du démarrage guidé (valeur « 1 »). */
 const ONBOARDING_DISMISSED_KEY = "workspace-onboarding-dismissed";
 
-/** Étape du démarrage guidé. */
 type OnboardingStep = {
   label: string;
   description: string;
@@ -96,7 +60,8 @@ function StepMarker({ done }: { done: boolean }) {
 
 /** Action d'une étape : lien interne, lien inter-application, ou bouton en attente des URLs. */
 function StepAction({ step }: { step: OnboardingStep }) {
-  const className = buttonVariants({ variant: "outline", size: "sm" });
+  const className =
+    "inline-flex h-8 items-center rounded-md border border-border px-3 text-sm transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background motion-reduce:transition-none";
   if (step.to) {
     return (
       <Link to={step.to} className={className}>
@@ -177,7 +142,7 @@ function OnboardingCard({
           type="button"
           onClick={onDismiss}
           aria-label="Fermer"
-          className="-mr-1 -mt-1 grid size-8 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+          className="-mr-1 -mt-1 grid size-8 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background motion-reduce:transition-none"
         >
           <IconClose className="size-4" />
         </button>
@@ -204,62 +169,14 @@ function OnboardingCard({
   );
 }
 
-/** Carte de raccourci : lien de navigation ou action serveur avec état d'attente. */
-function ShortcutCard({
-  icon,
-  label,
-  description,
-  href,
-  onAction,
-  busy = false,
-  disabled = false,
-}: {
-  icon: ReactNode;
-  label: string;
-  description: string;
-  href?: string;
-  onAction?: () => void;
-  busy?: boolean;
-  disabled?: boolean;
-}) {
-  const body = (
-    <>
-      {icon}
-      <span className="font-display text-sm font-semibold">{label}</span>
-      <span className="text-xs text-muted-foreground">{busy ? "Création…" : description}</span>
-    </>
-  );
-
-  if (href) {
-    return (
-      <a href={href} className={shortcutCardClass}>
-        {body}
-      </a>
-    );
-  }
-
-  return (
-    <button
-      type="button"
-      onClick={onAction}
-      disabled={disabled}
-      aria-busy={busy}
-      className={shortcutCardClass}
-    >
-      {body}
-    </button>
-  );
-}
-
 function DashboardPage() {
   const [workspace, setWorkspace] = useState<WorkspaceInfo>(null);
   const [urls, setUrls] = useState<Record<SuiteAppKey, string> | null>(null);
   const [storage, setStorage] = useState<StorageUsage | null>(null);
   const [recent, setRecent] = useState<DriveEntryView[] | null>(null);
-  const [busyShortcut, setBusyShortcut] = useState<BusyShortcut | null>(null);
-  const [shortcutError, setShortcutError] = useState<string | null>(null);
+  /** `true` quand la liste « Reprendre » échoue : le reste de la page tient. */
+  const [recentFailed, setRecentFailed] = useState(false);
   const [onboardingDismissed, setOnboardingDismissed] = useState(false);
-
   const [loadError, setLoadError] = useState(false);
 
   useEffect(() => {
@@ -279,16 +196,23 @@ function DashboardPage() {
     })();
   }, []);
 
-  // Bonus, jamais bloquant : un échec masque simplement la section « Reprendre ».
-  useEffect(() => {
-    void (async () => {
-      try {
-        setRecent(await listRecentFn({ data: { limit: 5 } }));
-      } catch {
-        setRecent([]);
-      }
-    })();
+  /**
+   * Fichiers récents — chargement séparé et jamais bloquant : un échec vide la
+   * liste et arme l'état d'erreur, le reste du tableau de bord s'affiche.
+   */
+  const reloadRecent = useCallback(async () => {
+    try {
+      setRecent(await listRecentFn({ data: { limit: 50 } }));
+      setRecentFailed(false);
+    } catch {
+      setRecent([]);
+      setRecentFailed(true);
+    }
   }, []);
+
+  useEffect(() => {
+    void reloadRecent();
+  }, [reloadRecent]);
 
   // Lecture paresseuse côté client uniquement : le rendu SSR ne touche jamais à window.
   useEffect(() => {
@@ -316,7 +240,7 @@ function DashboardPage() {
         <button
           type="button"
           onClick={() => window.location.reload()}
-          className="rounded-md border border-border bg-card px-3 py-1.5 text-sm hover:bg-muted"
+          className="rounded-md border border-border bg-card px-3 py-1.5 text-sm hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
         >
           Réessayer
         </button>
@@ -324,7 +248,11 @@ function DashboardPage() {
     );
   }
 
-  const apps = urls ? resolveSuiteApps(urls) : [];
+  if (!workspace || !urls) {
+    return <p className="p-8 text-sm text-muted-foreground">Chargement…</p>;
+  }
+
+  const apps = resolveSuiteApps(urls);
 
   // Espace « nouveau » : aucune organisation partagée (proxy du nombre de membres,
   // absent de l'état existant) et au plus trois fichiers.
@@ -334,57 +262,21 @@ function DashboardPage() {
     workspace.organizations.length <= 1 &&
     storage.fileCount <= NEW_WORKSPACE_MAX_FILES;
 
-  async function onCreateSpreadsheet(): Promise<void> {
-    if (!urls || busyShortcut !== null) return;
-    setBusyShortcut("sheet");
-    setShortcutError(null);
-    try {
-      const created = await createSpreadsheetFn({
-        data: { parentFolderId: null, title: "Feuille sans titre" },
-      });
-      window.location.assign(`${urls.sheets}/sheet/${created.fileId}`);
-    } catch (caught) {
-      setShortcutError(
-        caught instanceof Error ? caught.message : "Création de la feuille impossible.",
-      );
-    } finally {
-      setBusyShortcut(null);
-    }
-  }
-
-  async function onCreatePresentation(): Promise<void> {
-    if (!urls || busyShortcut !== null) return;
-    setBusyShortcut("slides");
-    setShortcutError(null);
-    try {
-      const created = await createPresentationFn({
-        data: { parentFolderId: null, title: "Présentation sans titre" },
-      });
-      window.location.assign(`${urls.slides}/slide/${created.fileId}`);
-    } catch (caught) {
-      setShortcutError(
-        caught instanceof Error ? caught.message : "Création de la présentation impossible.",
-      );
-    } finally {
-      setBusyShortcut(null);
-    }
-  }
-
   return (
     <div className="mx-auto flex max-w-5xl flex-col gap-6">
       <header className="flex flex-col gap-1">
         <h1 className="font-display text-3xl font-semibold tracking-tight">
-          {workspace ? `Bonjour ${workspace.user.name.split(" ")[0]}` : "Chargement…"}
+          {`Bonjour ${workspace.user.name.split(" ")[0]}`}
         </h1>
         <p className="text-sm text-muted-foreground">
           Votre espace de travail
-          {workspace?.activeOrganization ? ` — ${workspace.activeOrganization.name}` : ""}.
+          {workspace.activeOrganization ? ` — ${workspace.activeOrganization.name}` : ""}.
         </p>
       </header>
 
       <Link
         to="/app/recherche"
-        className="flex h-9 items-center gap-2 rounded-lg border border-input bg-background px-3 text-sm text-muted-foreground hover:bg-muted"
+        className="flex h-9 items-center gap-2 rounded-lg border border-input bg-background px-3 text-sm text-muted-foreground transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background motion-reduce:transition-none"
       >
         <IconSearch className="size-4" />
         Rechercher dans toute la suite…
@@ -398,83 +290,15 @@ function DashboardPage() {
         />
       ) : null}
 
-      <section aria-label="Raccourcis" className="flex flex-col gap-3">
-        <h2 className="text-xs font-medium uppercase tracking-widest text-muted-foreground">
-          Raccourcis
-        </h2>
-        <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-          <ShortcutCard
-            icon={<IconGrid className="size-5 text-app-sheets" />}
-            label="Nouvelle feuille de calcul"
-            description="Tableur collaboratif"
-            onAction={() => void onCreateSpreadsheet()}
-            busy={busyShortcut === "sheet"}
-            disabled={urls === null || busyShortcut !== null}
-          />
-          <ShortcutCard
-            icon={<IconPresentation className="size-5 text-app-slides" />}
-            label="Nouvelle présentation"
-            description="Diaporama collaboratif"
-            onAction={() => void onCreatePresentation()}
-            busy={busyShortcut === "slides"}
-            disabled={urls === null || busyShortcut !== null}
-          />
-          <ShortcutCard
-            icon={<IconCalendar className="size-5 text-app-calendar" />}
-            label="Nouvel événement"
-            description="Ouvrir l'agenda"
-            href={urls ? `${urls.calendar}/` : undefined}
-            disabled={urls === null}
-          />
-          <ShortcutCard
-            icon={<IconCheckSquare className="size-5 text-app-tasks" />}
-            label="Nouvelle tâche"
-            description="Ouvrir les tâches"
-            href={urls ? `${urls.tasks}/` : undefined}
-            disabled={urls === null}
-          />
-        </div>
-        {shortcutError ? (
-          <Alert tone="danger" title="Création impossible">
-            {shortcutError}
-          </Alert>
-        ) : null}
-      </section>
+      <ShortcutsSection urls={urls} />
 
-      {recent === null || urls === null ? (
-        <section aria-label="Reprendre" className="flex flex-col gap-3">
-          <h2 className="text-xs font-medium uppercase tracking-widest text-muted-foreground">
-            Reprendre
-          </h2>
-          <div className="flex flex-col gap-2">
-            <div className="h-9 animate-pulse rounded-md bg-muted" />
-            <div className="h-9 animate-pulse rounded-md bg-muted" />
-            <div className="h-9 animate-pulse rounded-md bg-muted" />
-          </div>
-        </section>
-      ) : recent.length > 0 ? (
-        <section aria-label="Reprendre" className="flex flex-col gap-3">
-          <h2 className="text-xs font-medium uppercase tracking-widest text-muted-foreground">
-            Reprendre
-          </h2>
-          <ul className="flex flex-col gap-2">
-            {recent.map((entry) => (
-              <li key={entry.id}>
-                <a
-                  href={`${urls.drive}/`}
-                  className="flex h-9 items-center gap-2 rounded-md border border-border bg-card px-3 text-sm transition-colors hover:bg-muted"
-                >
-                  <FileIcon kind={entry.kind} mimeType={entry.mimeType} name={entry.name} />
-                  <span className="truncate font-medium">{entry.name}</span>
-                  <span className="ml-auto shrink-0 text-xs tabular-nums text-muted-foreground">
-                    modifié {formatRelativeTime(entry.updatedAt)}
-                  </span>
-                </a>
-              </li>
-            ))}
-          </ul>
-        </section>
-      ) : null}
+      <RecentFilesSection
+        entries={recent}
+        loading={recent === null}
+        failed={recentFailed}
+        onRetry={() => void reloadRecent()}
+        urls={urls}
+      />
 
       <section aria-label="Applications" className="flex flex-col gap-3">
         <h2 className="text-xs font-medium uppercase tracking-widest text-muted-foreground">
@@ -486,7 +310,7 @@ function DashboardPage() {
               {app.shipped && app.href ? (
                 <a
                   href={app.href}
-                  className="flex h-full flex-col gap-2 rounded-xl border border-border bg-card p-4 shadow-soft transition-colors hover:bg-muted"
+                  className="flex h-full flex-col gap-2 rounded-xl border border-border bg-card p-4 shadow-soft transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background motion-reduce:transition-none"
                 >
                   <app.Icon className={cn("size-5", app.toneClass)} />
                   <span className="font-display text-sm font-semibold">{app.name}</span>
@@ -547,7 +371,7 @@ function DashboardPage() {
           <CardContent>
             <Link
               to="/app/settings/tokens"
-              className="text-sm font-medium text-primary underline-offset-4 hover:underline"
+              className="rounded-sm text-sm font-medium text-primary underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
             >
               Gérer les jetons →
             </Link>
@@ -564,7 +388,7 @@ function DashboardPage() {
           <CardContent>
             <Link
               to="/app/notifications"
-              className="text-sm font-medium text-primary underline-offset-4 hover:underline"
+              className="rounded-sm text-sm font-medium text-primary underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
             >
               Voir l'historique →
             </Link>
