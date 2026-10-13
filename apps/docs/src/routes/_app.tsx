@@ -74,11 +74,10 @@ function AppLayout() {
     }
   }, []);
 
-  // Recharge les notifications au montage puis toutes les 60 secondes.
+  // Recharge les notifications au montage ; le rafraîchissement périodique
+  // est assuré par l'AppShell (SSE temps réel + repli polling).
   useEffect(() => {
     void refreshNotifications();
-    const interval = window.setInterval(() => void refreshNotifications(), 60_000);
-    return () => window.clearInterval(interval);
   }, [refreshNotifications]);
 
   useEffect(() => {
