@@ -323,6 +323,47 @@ export async function listDocumentVersions(actor: Actor, fileId: string): Promis
     .orderBy(desc(docsVersions.version));
 }
 
+/** Version d'un document avec son contenu — lecture seule (aperçu d'historique). */
+export type DocumentVersionView = {
+  version: number;
+  content: PmNode;
+  createdAt: string;
+  createdBy: string;
+};
+
+/**
+ * Contenu d'une version précise, en lecture : un viewer y a accès (aucun
+ * contrôle de rôle supplémentaire, `requireDocument` s'en charge), et cette
+ * lecture n'est pas journalisée (pas d'audit pour une simple consultation).
+ */
+export async function getDocumentVersion(
+  actor: Actor,
+  fileId: string,
+  version: number,
+): Promise<DocumentVersionView> {
+  const { document } = await requireDocument(actor, fileId);
+
+  const [row] = await db()
+    .select({
+      version: docsVersions.version,
+      content: docsVersions.content,
+      createdAt: docsVersions.createdAt,
+      createdBy: docsVersions.createdBy,
+    })
+    .from(docsVersions)
+    .where(and(eq(docsVersions.documentId, document.id), eq(docsVersions.version, version)))
+    .limit(1);
+
+  if (!row) throw new DocsError("not_found", "Version introuvable.");
+
+  return {
+    version: row.version,
+    content: row.content as PmNode,
+    createdAt: row.createdAt.toISOString(),
+    createdBy: row.createdBy,
+  };
+}
+
 /**
  * Restaure une version : son contenu est recopié dans une NOUVELLE version
  * (sémantique append) — l'historique n'est jamais réécrit, une restauration

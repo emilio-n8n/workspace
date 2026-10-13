@@ -13,6 +13,7 @@ import {
   EMPTY_DOC,
   exportDocument,
   getDocumentByFileId,
+  getDocumentVersion,
   listComments,
   listDocuments,
   listDocumentVersions,
@@ -563,7 +564,7 @@ describe("docs — audit (mutations notables uniquement)", () => {
     expect(added?.metadata).toEqual({ commentId: comment.id });
   });
 
-  it("l'autosave, l'export et la liste des versions ne produisent aucune entrée", async () => {
+  it("l'autosave, l'export et la lecture des versions ne produisent aucune entrée", async () => {
     const { entry } = await createDocument(f.actorAlice, { title: "Brouillon" });
     const before = await auditEntries();
     expect(before.map((row) => row.action)).toEqual(["docs.document.create"]);
@@ -571,6 +572,7 @@ describe("docs — audit (mutations notables uniquement)", () => {
     await saveDocument(f.actorAlice, entry.id, { content: contentV2, mode: "replace-latest" });
     await saveDocument(f.actorAlice, entry.id, { content: contentV3, mode: "append" });
     await listDocumentVersions(f.actorAlice, entry.id);
+    await getDocumentVersion(f.actorAlice, entry.id, 1);
     await exportDocument(f.actorAlice, entry.id, "md");
 
     const after = await auditEntries();
@@ -730,6 +732,65 @@ describe("docs — restauration de versions", () => {
 
     // Rien n'a changé.
     expect(await listDocumentVersions(f.actorAlice, entry.id)).toHaveLength(2);
+    expect((await getDocumentByFileId(f.actorAlice, entry.id)).content).toEqual(contentV2);
+  });
+});
+
+describe("docs — lecture d'une version", () => {
+  it("retourne le contenu exact d'une version ancienne sans toucher au document", async () => {
+    const { entry } = await createDocument(f.actorAlice, { title: "Historique" });
+    await saveDocument(f.actorAlice, entry.id, { content: contentV2, mode: "append" });
+    await saveDocument(f.actorAlice, entry.id, { content: contentV3, mode: "append" });
+
+    const first = await getDocumentVersion(f.actorAlice, entry.id, 1);
+    expect(first.version).toBe(1);
+    expect(first.content).toEqual(EMPTY_DOC);
+    expect(first.createdBy).toBe(f.alice);
+    expect(typeof first.createdAt).toBe("string");
+    expect(Number.isNaN(new Date(first.createdAt).getTime())).toBe(false);
+
+    const second = await getDocumentVersion(f.actorAlice, entry.id, 2);
+    expect(second.version).toBe(2);
+    expect(second.content).toEqual(contentV2);
+    expect(second.createdBy).toBe(f.alice);
+
+    // Consulter une version est une lecture : la version courante reste intacte.
+    const current = await getDocumentByFileId(f.actorAlice, entry.id);
+    expect(current.content).toEqual(contentV3);
+    expect(current.document.currentVersion).toBe(3);
+  });
+
+  it("version inconnue : not_found", async () => {
+    const { entry } = await createDocument(f.actorAlice, { title: "Inconnue" });
+    await saveDocument(f.actorAlice, entry.id, { content: contentV2, mode: "append" });
+
+    await expect(getDocumentVersion(f.actorAlice, entry.id, 42)).rejects.toMatchObject({
+      name: "DocsError",
+      code: "not_found",
+      message: "Version introuvable.",
+    });
+    await expect(getDocumentVersion(f.actorAlice, entry.id, 0)).rejects.toMatchObject({
+      code: "not_found",
+    });
+  });
+
+  it("un viewer prévisualise une version mais ne peut pas la restaurer", async () => {
+    const { entry } = await createDocument(f.actorAlice, { title: "Partagé" });
+    await saveDocument(f.actorAlice, entry.id, { content: contentV2, mode: "append" });
+    const grant = await shareEntry(f.actorAlice, entry.id, {
+      subject: { kind: "user", id: f.bruno },
+      role: "viewer",
+    });
+    if (!grant) throw new Error("grant viewer attendu");
+
+    // Lecture d'une version : autorisée au viewer.
+    const preview = await getDocumentVersion(f.actorBruno, entry.id, 2);
+    expect(preview.content).toEqual(contentV2);
+
+    // Restauration : réservée au rôle write.
+    await expect(restoreDocumentVersion(f.actorBruno, entry.id, 2)).rejects.toMatchObject({
+      code: "forbidden",
+    });
     expect((await getDocumentByFileId(f.actorAlice, entry.id)).content).toEqual(contentV2);
   });
 });

@@ -14,6 +14,7 @@ import {
   DocsError,
   deleteComment,
   getDocumentByFileId,
+  getDocumentVersion,
   listComments,
   listDocuments,
   listDocumentVersions,
@@ -128,7 +129,30 @@ export const listDocumentVersionsFn = createServerFn({ method: "GET" })
       id: version.id,
       version: version.version,
       createdAt: version.createdAt.toISOString(),
+      // Auteur de la version : l'UI affiche un identifiant court (pas de join).
+      createdBy: version.createdBy,
     }));
+  });
+
+export const getDocumentVersionFn = createServerFn({ method: "POST" })
+  .validator((input: unknown) =>
+    z
+      .object({
+        fileId: z.string().uuid(),
+        version: z.number().int().min(1),
+      })
+      .parse(input),
+  )
+  .handler(async ({ data }) => {
+    const { actor } = await requireActor(getRequest().headers);
+    const version = await getDocumentVersion(actor, data.fileId, data.version);
+    return {
+      version: version.version,
+      // Contenu JSON ProseMirror : structure validée par le service, sûr à sérialiser.
+      content: version.content as never,
+      createdAt: version.createdAt,
+      createdBy: version.createdBy,
+    };
   });
 
 export const restoreDocumentVersionFn = createServerFn({ method: "POST" })

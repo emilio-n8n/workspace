@@ -1,4 +1,4 @@
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { createFileRoute, Link, useRouter } from "@tanstack/react-router";
 import type { CommentView } from "@workspace/docs";
 import {
   addCommentFn,
@@ -6,11 +6,10 @@ import {
   getCollabTokenFn,
   getDocumentFn,
   listCommentsFn,
-  listDocumentVersionsFn,
   renameDocumentFn,
   resolveCommentFn,
 } from "@workspace/docs/server";
-import { DocumentEditor } from "@workspace/docs/ui";
+import { DocumentEditor, VersionHistory } from "@workspace/docs/ui";
 import {
   Alert,
   Badge,
@@ -23,7 +22,7 @@ import {
   IconFileText,
   Input,
 } from "@workspace/ui";
-import { type FormEvent, useEffect, useState } from "react";
+import { type FormEvent, useCallback, useEffect, useRef, useState } from "react";
 
 export const Route = createFileRoute("/_app/doc/$fileId")({ component: DocumentPage });
 
@@ -55,18 +54,14 @@ function formatRelativeTime(iso: string): string {
 
 function DocumentPage() {
   const { fileId } = Route.useParams();
+  const router = useRouter();
   const [doc, setDoc] = useState<Loaded | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [title, setTitle] = useState("");
   const [savingTitle, setSavingTitle] = useState(false);
-  const [versions, setVersions] = useState<
-    { id: string; version: number; createdAt: string }[] | null
-  >(null);
-  const [versionsLoading, setVersionsLoading] = useState(false);
-  const [versionsError, setVersionsError] = useState<string | null>(null);
   /**
    * Collaboration temps réel : `null` = aucune session (serveur non configuré,
-   * jeton refusé, réseau…). Résolu une seule fois au chargement, puis statique.
+   * jeton refusé, réseau…). Résolu au chargement, puis statique.
    */
   const [collab, setCollab] = useState<{ url: string; token: string } | null>(null);
 
@@ -80,29 +75,39 @@ function DocumentPage() {
   const [busyCommentId, setBusyCommentId] = useState<string | null>(null);
   const [commentToDelete, setCommentToDelete] = useState<CommentView | null>(null);
 
-  useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      // Jeton de collaboration demandé en parallèle du document ; toute erreur
-      // (serveur non configuré, droits, réseau) laisse simplement l'éditeur local.
-      const collabToken = getCollabTokenFn({ data: { fileId } }).catch(() => null);
-      try {
-        const [loaded, token] = await Promise.all([
-          getDocumentFn({ data: { fileId } }),
-          collabToken,
-        ]);
-        if (cancelled) return;
-        setCollab(token?.url ? { url: token.url, token: token.token } : null);
-        setDoc(loaded);
-        setTitle(loaded.title);
-      } catch {
-        if (!cancelled) setError("Document introuvable ou accès refusé.");
+  /** Génération de chargement : invalide les réponses en vol périmées. */
+  const loadGeneration = useRef(0);
+
+  /**
+   * Charge (ou recharge) le document et son jeton de collaboration. Appelé au
+   * montage/changement de document et après une restauration de version.
+   */
+  const loadDocument = useCallback(async () => {
+    const generation = ++loadGeneration.current;
+    setError(null);
+    // Jeton de collaboration demandé en parallèle du document ; toute erreur
+    // (serveur non configuré, droits, réseau) laisse simplement l'éditeur local.
+    const collabToken = getCollabTokenFn({ data: { fileId } }).catch(() => null);
+    try {
+      const [loaded, token] = await Promise.all([getDocumentFn({ data: { fileId } }), collabToken]);
+      if (generation !== loadGeneration.current) return;
+      setCollab(token?.url ? { url: token.url, token: token.token } : null);
+      setDoc(loaded);
+      setTitle(loaded.title);
+    } catch {
+      if (generation === loadGeneration.current) {
+        setError("Document introuvable ou accès refusé.");
       }
-    })();
-    return () => {
-      cancelled = true;
-    };
+    }
   }, [fileId]);
+
+  useEffect(() => {
+    void loadDocument();
+    return () => {
+      // Invalide une réponse en vol (démontage ou changement de document).
+      loadGeneration.current += 1;
+    };
+  }, [loadDocument]);
 
   async function onRename(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -121,23 +126,6 @@ function DocumentPage() {
       setTitle(doc.title);
     } finally {
       setSavingTitle(false);
-    }
-  }
-
-  async function onLoadVersions() {
-    if (versions !== null) {
-      setVersions(null);
-      setVersionsError(null);
-      return;
-    }
-    setVersionsLoading(true);
-    setVersionsError(null);
-    try {
-      setVersions(await listDocumentVersionsFn({ data: { fileId } }));
-    } catch {
-      setVersionsError("Impossible de charger l'historique des versions.");
-    } finally {
-      setVersionsLoading(false);
     }
   }
 
@@ -270,14 +258,16 @@ function DocumentPage() {
           >
             Commentaires
           </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            loading={versionsLoading}
-            onClick={() => void onLoadVersions()}
-          >
-            Historique
-          </Button>
+          <VersionHistory
+            fileId={fileId}
+            canEdit={doc.canEdit}
+            onRestored={() => {
+              // Rafraîchit les données de route puis recharge le document :
+              // l'éditeur est remonté avec le contenu restauré (clé = révision).
+              void router.invalidate();
+              void loadDocument();
+            }}
+          />
           <Button type="button" variant="outline" size="sm" onClick={() => window.print()}>
             Imprimer
           </Button>
@@ -294,42 +284,10 @@ function DocumentPage() {
         </div>
       </header>
 
-      {versionsError ? (
-        <div className="border-b border-border bg-muted/40 px-3 py-2 print-hide">
-          <p role="alert" className="text-xs text-destructive">
-            {versionsError}
-          </p>
-        </div>
-      ) : null}
-
-      {versions ? (
-        <div className="border-b border-border bg-muted/40 px-3 py-2 print-hide">
-          <p className="mb-1 text-xs font-medium uppercase tracking-widest text-muted-foreground">
-            Versions
-          </p>
-          {versions.length === 0 ? (
-            <p className="text-xs text-muted-foreground">Aucune version enregistrée.</p>
-          ) : (
-            <ul className="flex flex-wrap gap-2">
-              {versions.map((version) => (
-                <li key={version.id}>
-                  <Badge variant="outline">
-                    v{version.version} ·{" "}
-                    {new Date(version.createdAt).toLocaleString("fr-FR", {
-                      dateStyle: "short",
-                      timeStyle: "short",
-                    })}
-                  </Badge>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-      ) : null}
-
       <div className="flex min-h-0 flex-1 print-surface">
         <div className="flex min-h-0 flex-1 flex-col">
           <DocumentEditor
+            key={doc.revision}
             fileId={fileId}
             initialRevision={doc.revision}
             initialContent={doc.content}
