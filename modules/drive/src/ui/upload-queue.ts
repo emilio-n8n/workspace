@@ -18,6 +18,12 @@ export type UploadItem = {
   message?: string;
   /** Taille en octets, si connue (reprise d'un même fichier). */
   size?: number;
+  /**
+   * Progression réelle de l'envoi, de 0 à 1 — renseignée par les événements
+   * `upload.onprogress` de la requête, jamais simulée. Absente tant que l'envoi
+   * n'a pas commencé.
+   */
+  progress?: number;
 };
 
 /** Message par défaut quand l'échec n'est pas explicable. */
@@ -35,23 +41,49 @@ export function enqueueUploads(state: UploadItem[], files: UploadItem[]): Upload
       status: "pending",
       message: undefined,
       size: previous?.size ?? file.size,
+      progress: undefined,
     });
   }
   return [...known.values()];
 }
 
-/** Passe un ou plusieurs fichiers à l'état « envoi en cours ». */
+/**
+ * Borne une progression à l'intervalle [0, 1] ; une valeur non finie (division
+ * par zéro d'un `lengthComputable` douteux) retombe à 0 plutôt que d'afficher
+ * une barre cassée.
+ */
+export function clampProgress(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.min(Math.max(value, 0), 1);
+}
+
+/** Passe un ou plusieurs fichiers à l'état « envoi en cours » (progression remise à zéro). */
 export function markUploading(state: UploadItem[], ids: readonly string[]): UploadItem[] {
   const targets = new Set(ids);
   return state.map((item) =>
-    targets.has(item.id) ? { ...item, status: "uploading", message: undefined } : item,
+    targets.has(item.id) ? { ...item, status: "uploading", message: undefined, progress: 0 } : item,
   );
 }
 
-/** Marque un fichier comme envoyé. */
+/**
+ * Enregistre la progression réelle d'un envoi. Ignore un identifiant inconnu :
+ * un événement tardif (fichier retiré de la file) ne recrée pas de ligne.
+ */
+export function markUploadProgress(
+  state: UploadItem[],
+  id: string,
+  progress: number,
+): UploadItem[] {
+  const value = clampProgress(progress);
+  return state.map((item) =>
+    item.id === id && item.status === "uploading" ? { ...item, progress: value } : item,
+  );
+}
+
+/** Marque un fichier comme envoyé (progression complète). */
 export function markUploaded(state: UploadItem[], id: string): UploadItem[] {
   return state.map((item) =>
-    item.id === id ? { ...item, status: "done", message: undefined } : item,
+    item.id === id ? { ...item, status: "done", message: undefined, progress: 1 } : item,
   );
 }
 
@@ -63,6 +95,22 @@ export function markUploadFailed(
 ): UploadItem[] {
   const text = message.trim().length > 0 ? message : FALLBACK_ERROR;
   return state.map((item) => (item.id === id ? { ...item, status: "error", message: text } : item));
+}
+
+/** Pourcentage entier (0..100) d'un envoi, pour la barre de progression. */
+export function uploadPercent(item: UploadItem): number {
+  if (item.status === "done") return 100;
+  return Math.round(clampProgress(item.progress ?? 0) * 100);
+}
+
+/** Libellé français de la progression (« 42 % »), accordé à l'affichage. */
+export function uploadPercentLabel(item: UploadItem): string {
+  return `${uploadPercent(item)} %`;
+}
+
+/** Vrai si un envoi en cours a une progression réelle à montrer (barre déterminée). */
+export function hasKnownProgress(item: UploadItem): boolean {
+  return item.status === "uploading" && item.progress !== undefined;
 }
 
 /** Identifiants des fichiers à relancer : en attente ou en échec. */

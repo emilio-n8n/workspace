@@ -15,6 +15,8 @@ import {
   DriveError,
   deleteEntry,
   driveFiles,
+  type EmptyTrashResult,
+  emptyTrash,
   getAncestors,
   getEntry,
   listEntries,
@@ -217,6 +219,17 @@ export const purgeEntryFn = createServerFn({ method: "POST" })
     await purge(actor, data.entryId);
     return { ok: true };
   });
+
+/**
+ * Vide la corbeille personnelle : purge définitive de toutes les entrées en
+ * corbeille de l'acteur, refus isolés par élément dans la réponse.
+ */
+export const emptyTrashFn = createServerFn({ method: "POST" }).handler(
+  async (): Promise<EmptyTrashResult> => {
+    const { actor } = await requireActor(getRequest().headers);
+    return emptyTrash(actor);
+  },
+);
 
 const deleteEntryInput = z.object({
   entryId: z.string().uuid(),

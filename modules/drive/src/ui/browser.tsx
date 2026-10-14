@@ -50,6 +50,15 @@ import { remainingNameChars, validateEntryName } from "./entry-name.ts";
 import { clampCursor, cursorAnnouncement, gridActionForKey, listAnnouncement } from "./grid-nav.ts";
 import { isLinkedMime, MAX_BULK_DOWNLOAD } from "./linked-files.ts";
 import {
+  imagePreviewErrorMessage,
+  type PreviewMode,
+  previewModeFor,
+  previewUrl,
+  TEXT_PREVIEW_LIMIT,
+  textPreviewErrorMessage,
+  truncatedNotice,
+} from "./preview.ts";
+import {
   deselectId,
   downloadableEntries,
   EMPTY_SELECTION,
@@ -63,11 +72,16 @@ import { MoveDialog, SelectionActionBar } from "./selection-bar.tsx";
 import { ShareDialog } from "./share-dialog.tsx";
 import {
   enqueueUploads,
+  hasKnownProgress,
   markUploaded,
   markUploadFailed,
   markUploading,
+  markUploadProgress,
   pendingUploadIds,
+  retryLabel,
   type UploadItem,
+  uploadPercent,
+  uploadPercentLabel,
   uploadSummary,
 } from "./upload-queue.ts";
 import { SortableColumn, ViewControls, ViewControlsHint } from "./view-controls.tsx";
@@ -109,9 +123,6 @@ type DetailsState = {
   entry: DriveEntryView;
   versions: { id: string; version: number; sizeBytes: number; createdAt: string }[];
 };
-
-/** Modes d'aperçu intégré (les autres fichiers passent par le dialogue de détails). */
-type PreviewMode = "image" | "pdf" | "text";
 
 type PreviewState = {
   entry: DriveEntryView;
@@ -159,31 +170,6 @@ const LINKED_LABELS: Record<string, string> = {
 /** Types connus → libellés français (badges et dialogue de détails). */
 const MIME_LABELS: Record<string, string> = { ...LINKED_LABELS, [SITES_MIME]: "Site" };
 
-/** Plafond du texte chargé pour l'aperçu (200 Kio) : le flux est coupé à cette taille. */
-const TEXT_PREVIEW_LIMIT = 200 * 1024;
-
-/** Mimes texte sans préfixe `text/` (JSON, Markdown, YAML) affichables dans l'aperçu. */
-const EXTRA_TEXT_MIMES = new Set([
-  "application/json",
-  "application/markdown",
-  "application/x-yaml",
-  "application/yaml",
-]);
-
-/** Mode d'aperçu intégré selon le type MIME, ou null si le fichier n'est pas prévisualisable. */
-function previewModeFor(mimeType: string | null): PreviewMode | null {
-  if (mimeType === null) return null;
-  if (mimeType.startsWith("image/")) return "image";
-  if (mimeType === "application/pdf") return "pdf";
-  if (mimeType.startsWith("text/") || EXTRA_TEXT_MIMES.has(mimeType)) return "text";
-  return null;
-}
-
-/** URL d'aperçu en ligne : l'API répond en `content-disposition: inline`. */
-function previewUrl(id: string): string {
-  return `/api/drive/download/${id}?inline=1`;
-}
-
 /**
  * Lit le corps d'une réponse en s'arrêtant au plafond de l'aperçu (sans charger
  * un fichier entier) ; renvoie le texte UTF-8 décodé et le drapeau de troncature.
@@ -220,6 +206,64 @@ async function readTextPreview(response: Response): Promise<{ text: string; trun
   // Coupe la connexion dès que la suite du fichier n'est plus utile.
   if (truncated) await reader.cancel().catch(() => undefined);
   return { text, truncated };
+}
+
+/** Corps d'erreur de l'API d'upload : message français, sinon repli nommé. */
+function uploadErrorMessage(responseText: string, fileName: string): string {
+  try {
+    const payload = JSON.parse(responseText) as { message?: unknown };
+    if (typeof payload.message === "string" && payload.message.trim().length > 0) {
+      return payload.message;
+    }
+  } catch {
+    // réponse non JSON : on garde le message générique.
+  }
+  return `Échec de l'envoi de « ${fileName} ».`;
+}
+
+/**
+ * Téléverse un fichier en rapportant la progression réelle de l'envoi.
+ *
+ * `XMLHttpRequest` est utilisé volontairement : c'est le seul moyen aujourd'hui
+ * d'obtenir `upload.onprogress` de façon fiable (`fetch` n'expose pas la
+ * progression montante). La progression rapportée vient donc de l'octet
+ * réellement transmis, jamais d'une animation simulée.
+ */
+function uploadFileWithProgress(
+  file: File,
+  parentId: string | null,
+  onProgress: (fraction: number) => void,
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const form = new FormData();
+    form.append("file", file);
+    if (parentId) form.append("parentId", parentId);
+
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", "/api/drive/upload");
+
+    xhr.upload.onprogress = (event) => {
+      if (event.lengthComputable && event.total > 0) {
+        onProgress(event.loaded / event.total);
+      }
+    };
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        onProgress(1);
+        resolve();
+        return;
+      }
+      reject(new Error(uploadErrorMessage(xhr.responseText, file.name)));
+    };
+    xhr.onerror = () => {
+      reject(new Error(`Échec de l'envoi de « ${file.name} » : connexion interrompue.`));
+    };
+    xhr.onabort = () => {
+      reject(new Error(`Envoi de « ${file.name} » interrompu.`));
+    };
+
+    xhr.send(form);
+  });
 }
 
 type CreationKind = "doc" | "sheet" | "slide" | "form";
@@ -373,6 +417,8 @@ export function DriveBrowser({
   const [details, setDetails] = useState<DetailsState | null>(null);
   const [preview, setPreview] = useState<PreviewState | null>(null);
   const [previewText, setPreviewText] = useState<TextPreviewState>({ status: "loading" });
+  // Chargement des images : distinct du texte, l'image se charge via <img>.
+  const [previewImage, setPreviewImage] = useState<"loading" | "ready" | "error">("loading");
 
   // Curseur de la navigation clavier : index de la ligne focalisée.
   const [cursor, setCursor] = useState<number | null>(null);
@@ -438,6 +484,12 @@ export function DriveBrowser({
     })();
 
     return () => controller.abort();
+  }, [preview]);
+
+  // Image : repart de l'état « chargement » à chaque ouverture ; le <img>
+  // signale ensuite son sort via onLoad/onError (jamais un succès optimiste).
+  useEffect(() => {
+    if (preview?.mode === "image") setPreviewImage("loading");
   }, [preview]);
 
   const visibleEntries = useMemo(() => {
@@ -527,16 +579,10 @@ export function DriveBrowser({
       const file = uploadFilesRef.current.get(id);
       if (!file) continue;
 
-      const form = new FormData();
-      form.append("file", file);
-      if (folderId) form.append("parentId", folderId);
-
       try {
-        const response = await fetch("/api/drive/upload", { method: "POST", body: form });
-        if (!response.ok) {
-          const payload = (await response.json().catch(() => null)) as { message?: string } | null;
-          throw new Error(payload?.message ?? `Échec de l'envoi de « ${file.name} ».`);
-        }
+        await uploadFileWithProgress(file, folderId, (fraction) => {
+          setUploads((current) => markUploadProgress(current, id, fraction));
+        });
         setUploads((current) => markUploaded(current, id));
       } catch (caught) {
         setUploads((current) =>
@@ -1034,7 +1080,7 @@ export function DriveBrowser({
                 onClick={onRetryUploads}
                 disabled={uploadActive || bulkBusy}
               >
-                {uploadFailed === 1 ? "Réessayer l'envoi" : `Réessayer les ${uploadFailed} envois`}
+                {retryLabel(uploadFailed)}
               </Button>
             ) : null}
             <Button
@@ -1052,35 +1098,51 @@ export function DriveBrowser({
           </div>
           <ul className="flex flex-col divide-y divide-border/60 text-sm">
             {uploads.map((item) => (
-              <li key={item.id} className="flex flex-wrap items-center gap-2 py-1">
-                <span
-                  className={cn(
-                    "w-24 shrink-0 text-xs",
-                    item.status === "error" ? "text-destructive" : "text-muted-foreground",
-                  )}
-                >
-                  {item.status === "done"
-                    ? "Envoyé"
-                    : item.status === "error"
-                      ? "Échec"
-                      : item.status === "uploading"
-                        ? "Envoi…"
-                        : "En attente"}
-                </span>
-                <span className="min-w-0 flex-1 truncate">{item.name}</span>
-                {item.status === "error" ? (
-                  <>
-                    <span className="text-xs text-destructive">{item.message}</span>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      disabled={uploadActive}
-                      onClick={() => onRetryUploads()}
-                      aria-label={`Réessayer l'envoi de « ${item.name} »`}
-                    >
-                      Réessayer
-                    </Button>
-                  </>
+              <li key={item.id} className="flex flex-col gap-1 py-1">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span
+                    className={cn(
+                      "w-24 shrink-0 text-xs",
+                      item.status === "error" ? "text-destructive" : "text-muted-foreground",
+                    )}
+                  >
+                    {item.status === "done"
+                      ? "Envoyé"
+                      : item.status === "error"
+                        ? "Échec"
+                        : item.status === "uploading"
+                          ? "Envoi…"
+                          : "En attente"}
+                  </span>
+                  <span className="min-w-0 flex-1 truncate">{item.name}</span>
+                  {item.status === "uploading" ? (
+                    <span className="text-xs tabular-nums text-muted-foreground">
+                      {uploadPercentLabel(item)}
+                    </span>
+                  ) : null}
+                  {item.status === "error" ? (
+                    <>
+                      <span className="text-xs text-destructive">{item.message}</span>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        disabled={uploadActive}
+                        onClick={() => onRetryUploads()}
+                        aria-label={`Réessayer l'envoi de « ${item.name} »`}
+                      >
+                        Réessayer
+                      </Button>
+                    </>
+                  ) : null}
+                </div>
+                {/* Progression réelle, alimentée par les événements d'envoi. */}
+                {hasKnownProgress(item) ? (
+                  <progress
+                    value={uploadPercent(item)}
+                    max={100}
+                    aria-label={`Progression de l'envoi de « ${item.name} » : ${uploadPercentLabel(item)}`}
+                    className="h-1.5 w-full overflow-hidden rounded-full [&::-moz-progress-bar]:bg-primary [&::-webkit-progress-bar]:bg-muted [&::-webkit-progress-value]:bg-primary"
+                  />
                 ) : null}
               </li>
             ))}
@@ -1590,13 +1652,32 @@ export function DriveBrowser({
       >
         {preview ? (
           preview.mode === "image" ? (
-            <div className="flex items-center justify-center rounded-md bg-muted p-2">
-              <img
-                src={previewUrl(preview.entry.id)}
-                alt={preview.entry.name}
-                className="max-h-[70vh] w-full object-contain"
-              />
-            </div>
+            // L'image n'annonce jamais un succès optimiste : elle reste voilée
+            // tant que le navigateur n'a pas confirmé le chargement (`onLoad`),
+            // et un échec de décodage bascule sur un message avec issue.
+            previewImage === "error" ? (
+              <Alert tone="danger" title="Aperçu impossible">
+                {imagePreviewErrorMessage()}
+              </Alert>
+            ) : (
+              <div className="relative flex min-h-40 items-center justify-center rounded-md bg-muted p-2">
+                <img
+                  src={previewUrl(preview.entry.id)}
+                  alt={preview.entry.name}
+                  onLoad={() => setPreviewImage("ready")}
+                  onError={() => setPreviewImage("error")}
+                  className={cn(
+                    "max-h-[70vh] w-full object-contain",
+                    previewImage === "loading" ? "opacity-0" : undefined,
+                  )}
+                />
+                {previewImage === "loading" ? (
+                  <p className="absolute inset-0 grid place-items-center text-sm text-muted-foreground">
+                    Chargement de l'aperçu…
+                  </p>
+                ) : null}
+              </div>
+            )
           ) : preview.mode === "pdf" ? (
             <iframe
               src={previewUrl(preview.entry.id)}
@@ -1609,7 +1690,7 @@ export function DriveBrowser({
             </p>
           ) : previewText.status === "error" ? (
             <Alert tone="danger" title="Aperçu impossible">
-              Le contenu n'a pas pu être chargé. Vous pouvez télécharger le fichier.
+              {textPreviewErrorMessage()}
             </Alert>
           ) : (
             <div className="flex flex-col gap-2">
@@ -1617,9 +1698,7 @@ export function DriveBrowser({
                 {previewText.text}
               </pre>
               {previewText.truncated ? (
-                <p className="text-xs text-muted-foreground">
-                  Aperçu tronqué : seuls les 200 premiers Kio sont affichés.
-                </p>
+                <p className="text-xs text-muted-foreground">{truncatedNotice()}</p>
               ) : null}
             </div>
           )

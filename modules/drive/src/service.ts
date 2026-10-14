@@ -1244,6 +1244,36 @@ export async function trashEntries(
   return result;
 }
 
+/** Une corbeille vidée élément par élément : succès et refus détaillés. */
+export type EmptyTrashResult = { purged: string[]; failures: BulkFailure[] };
+
+/**
+ * Vide la corbeille personnelle de l'acteur : purge définitive, un élément à la
+ * fois, des entrées en corbeille dont il est propriétaire. Chaque élément suit
+ * les garde-fous de `purge` (rôle « delete », contenu, versions et grants) et un
+ * refus n'interrompt pas le reste. Borné à une page (500 entrées) : au-delà,
+ * l'utilisateur relance — cela évite de tenir une longue boucle destructive.
+ */
+export async function emptyTrash(actor: Actor): Promise<EmptyTrashResult> {
+  const rows = await listTrash(actor, { limit: PAGE_SIZE_MAX });
+  const result: EmptyTrashResult = { purged: [], failures: [] };
+
+  for (const row of rows) {
+    try {
+      await purge(actor, row.id);
+      result.purged.push(row.id);
+    } catch (error) {
+      result.failures.push({
+        id: row.id,
+        message:
+          error instanceof Error && error.message ? error.message : "Suppression impossible.",
+      });
+    }
+  }
+
+  return result;
+}
+
 /** Ascendance d'un élément, lui-même inclus (du plus proche au plus haut). */
 async function collectAscendance(orgId: string, entryId: string): Promise<string[]> {
   const chain: string[] = [entryId];

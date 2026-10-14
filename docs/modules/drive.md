@@ -72,3 +72,7 @@ Le coffre-fort de fichiers de la suite : dossiers, uploads, aperçus, partages, 
 - **MCP `files.write` / `files.delete`** : création de fichiers texte (mime allowlist, ≤ 2 Mo, quota appliqué) et suppression — corbeille par défaut, suppression définitive réservée au propriétaire d'un élément **déjà en corbeille**, confirmation littérale « SUPPRIMER » exigée côté agent.
 - **Visionneuse intégrée** : images, PDF (iframe) et texte (≤ 200 Ko en flux) s'ouvrent en dialogue avec `?inline=1` (cache privé 5 min, `content-disposition: inline`).
 - **Rétention des versions** (90 j par défaut, réglable Admin) et **partage externe** configurables et réellement appliqués.
+
+## Vague « aperçu et corbeille » (14 oct. 2026)
+- **Aperçu intégré** : panneau d'aperçu des fichiers (image, texte, PDF, audio/vidéo, repli par type) ouvert depuis la liste, avec actions (ouvrir, télécharger) — logique d'URL et de mode purs (`preview.ts`), rendu dans le navigateur.
+- **Corbeille dédiée** : route `/app/trash` avec restauration et suppression définitive, confirmées ; regroupement et messages clairs (`ui/trash.ts`).
