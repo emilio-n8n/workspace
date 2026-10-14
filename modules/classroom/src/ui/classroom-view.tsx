@@ -28,6 +28,8 @@ import { AssignmentDialog } from "./assignment-dialog.tsx";
 import { AttachmentLinks } from "./attachment-links.tsx";
 import { CourseFeed } from "./course-feed.tsx";
 import { formatDate, formatDateTime } from "./format.ts";
+import { GradesPanel } from "./grades-panel.tsx";
+import { MembersDialog } from "./members-dialog.tsx";
 import { StatusBadge } from "./status-badge.tsx";
 import { SubmissionDialog } from "./submission-dialog.tsx";
 import { SubmissionsDialog, type SubmissionTarget } from "./submissions-dialog.tsx";
@@ -246,6 +248,8 @@ export function CoursePage({ courseId }: { courseId: string }) {
   const [submitting, setSubmitting] = useState<string | null>(null);
   /** Copies consultées par l'enseignant. */
   const [submissionsFor, setSubmissionsFor] = useState<SubmissionTarget | null>(null);
+  /** Gestion des membres (liste, retrait, code d'invitation). */
+  const [membersOpen, setMembersOpen] = useState(false);
   const { toasts, push, dismiss } = useToasts();
 
   const refresh = useCallback(async () => {
@@ -326,6 +330,9 @@ export function CoursePage({ courseId }: { courseId: string }) {
               Nouveau devoir
             </Button>
           ) : null}
+          <Button size="sm" variant="outline" onClick={() => setMembersOpen(true)}>
+            Membres ({course?.members.length ?? 0})
+          </Button>
         </div>
       </header>
 
@@ -450,13 +457,22 @@ export function CoursePage({ courseId }: { courseId: string }) {
                       ) : null}
 
                       {!teacher && assignment.mySubmission ? (
-                        <div className="flex flex-col gap-1">
+                        <div className="flex flex-col gap-2">
                           <p className="text-xs text-muted-foreground">
                             Rendue le {formatDateTime(assignment.mySubmission.submittedAt)}
-                            {assignment.mySubmission.feedback
-                              ? ` · Commentaire : ${assignment.mySubmission.feedback}`
-                              : ""}
                           </p>
+                          {/* Commentaire privé du professeur : séparé du fil
+                              public, visible par cet élève et son enseignant. */}
+                          {assignment.mySubmission.feedback ? (
+                            <div className="rounded-md border border-border bg-muted/40 px-3 py-2">
+                              <p className="text-xs font-medium text-muted-foreground">
+                                Commentaire privé de votre professeur
+                              </p>
+                              <p className="whitespace-pre-wrap text-sm">
+                                {assignment.mySubmission.feedback}
+                              </p>
+                            </div>
+                          ) : null}
                           <AttachmentLinks attachments={assignment.mySubmission.attachments} />
                         </div>
                       ) : null}
@@ -466,6 +482,10 @@ export function CoursePage({ courseId }: { courseId: string }) {
               </ul>
             )}
           </section>
+
+          {/* Côté élève : sa moyenne du cours. Côté enseignant : le carnet de
+              la classe. Le panneau choisit sa vue selon ce qui lui est fourni. */}
+          <GradesPanel myGrades={course.myGrades} classGrades={course.classGrades} />
         </>
       ) : null}
 
@@ -503,6 +523,21 @@ export function CoursePage({ courseId }: { courseId: string }) {
         >
           <SubmissionsDialog assignment={submissionsFor} notify={push} />
         </Dialog>
+      ) : null}
+
+      {course ? (
+        <MembersDialog
+          open={membersOpen}
+          onClose={() => setMembersOpen(false)}
+          courseId={course.id}
+          courseName={course.name}
+          members={course.members}
+          canManage={teacher}
+          ownerId={course.ownerId}
+          joinCode={course.joinCode}
+          onRemoved={refresh}
+          onRegenerated={refresh}
+        />
       ) : null}
 
       <ConfirmDialog

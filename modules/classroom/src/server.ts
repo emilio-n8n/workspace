@@ -20,6 +20,8 @@ import {
   MAX_ATTACHMENT_BYTES,
   MAX_ATTACHMENTS,
   MAX_COMMENT_BODY,
+  regenerateJoinCode,
+  removeMember,
   removeSubmissionAttachment,
   submitAssignment,
   updateAssignment,
@@ -31,10 +33,14 @@ export type {
   AnnouncementView,
   AssignmentCounts,
   AssignmentView,
+  ClassGrades,
   CourseDetail,
   CourseRole,
   CourseSummary,
+  GradeSummary,
   MemberView,
+  StudentGradeRow,
+  StudentGradeSummary,
   SubmissionAttachmentMeta,
   SubmissionAttachmentToken,
   TeacherSubmissionView,
@@ -197,6 +203,32 @@ export const removeSubmissionAttachmentFn = createServerFn({ method: "POST" })
     const { actor } = await requireActor(getRequest().headers);
     await removeSubmissionAttachment(actor, data.attachmentId);
     return { ok: true };
+  });
+
+/**
+ * Retrait d'un membre du cours, par un enseignant. Les copies déjà déposées
+ * et leurs notes sont conservées (le travail corrigé ne disparaît pas) ;
+ * l'élève perd simplement l'accès au cours.
+ */
+export const removeMemberFn = createServerFn({ method: "POST" })
+  .validator((input: unknown) =>
+    z.object({ courseId: z.string().uuid(), userId: z.string().min(1) }).parse(input),
+  )
+  .handler(async ({ data }) => {
+    const { actor } = await requireActor(getRequest().headers);
+    await removeMember(actor, data.courseId, data.userId);
+    return { ok: true };
+  });
+
+/**
+ * Régénère le code d'invitation d'un cours (enseignants seuls). L'ancien code
+ * ne fonctionne plus : la réponse porte le nouveau, à communiquer aux élèves.
+ */
+export const regenerateJoinCodeFn = createServerFn({ method: "POST" })
+  .validator((input: unknown) => z.object({ courseId: z.string().uuid() }).parse(input))
+  .handler(async ({ data }) => {
+    const { actor } = await requireActor(getRequest().headers);
+    return regenerateJoinCode(actor, data.courseId);
   });
 
 export const listAnnouncementsFn = createServerFn({ method: "GET" })

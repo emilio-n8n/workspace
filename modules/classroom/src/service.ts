@@ -20,6 +20,12 @@ import type { Actor } from "@workspace/permissions";
 import { getStorage } from "@workspace/storage";
 import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import {
+  type GradeSummary,
+  type StudentGradeSummary,
+  summarizeGrades,
+  summarizeGradesByStudent,
+} from "./grades.ts";
+import {
   type ClassroomAnnouncementRow,
   type ClassroomCourseRow,
   type ClassroomSubmissionRow,
@@ -128,9 +134,32 @@ export type CourseDetail = {
   section: string | null;
   joinCode: string | null;
   role: CourseRole;
+  /** Enseignant qui a créé le cours — exposé aux enseignants seulement. */
+  ownerId: string | null;
   members: MemberView[];
   assignments: AssignmentView[];
+  /**
+   * Notes de l'élève connecté (moyenne du cours, son point de vue) ; `null`
+   * pour un enseignant, qui n'a pas de copie.
+   */
+  myGrades: GradeSummary | null;
+  /**
+   * Carnet de notes de la classe — moyenne générale et moyennes par élève ;
+   * `null` pour un élève : les notes des autres ne le regardent pas.
+   */
+  classGrades: ClassGrades | null;
 };
+
+/** Carnet de notes d'un cours, réservé aux enseignants. */
+export type ClassGrades = {
+  /** Moyenne de toute la classe, toutes les copies corrigées ensemble. */
+  summary: GradeSummary;
+  /** Moyenne de chaque élève, triée par nom, avec son nom. */
+  students: StudentGradeRow[];
+};
+
+/** Moyenne d'un élève, nom résolu — ce que lit l'interface. */
+export type StudentGradeRow = StudentGradeSummary & { name: string };
 
 const db = () => getDb();
 
@@ -444,8 +473,12 @@ export async function getCourse(actor: Actor, courseId: string): Promise<CourseD
   const mySubmissions = new Map<string, ClassroomSubmissionRow>();
   /** Suivi des copies, agrégé pour les enseignants seulement. */
   const tracked = new Map<string, { onTime: number; late: number; graded: number }>();
+  /** Notes du cours, indexées `élève:devoir` — le carnet de l'enseignant. */
+  const gradeByKey = new Map<string, number | null>();
   let myAttachments = new Map<string, SubmissionAttachmentMeta[]>();
-  const studentCount = memberRows.filter((member) => member.role !== "teacher").length;
+  const students = memberRows.filter((member) => member.role === "student");
+  const studentCount = students.length;
+  const studentNames = new Map(students.map((member) => [member.userId, member.name]));
 
   if (assignmentIds.length > 0) {
     const [counts, mine] = await Promise.all([
@@ -474,12 +507,15 @@ export async function getCourse(actor: Actor, courseId: string): Promise<CourseD
 
     // Une troisième requête, réservée aux enseignants, suffit à départager les
     // copies rendues dans les temps, en retard et notées (mêmes priorités que
-    // `submissionStatus`, jamais une table de vérité séparée).
+    // `submissionStatus`, jamais une table de vérité séparée), et à nourrir le
+    // carnet de notes (une ligne par copie, avec le barème de son devoir).
     if (role === "teacher") {
       const rows = await db()
         .select({
           assignmentId: classroomSubmissions.assignmentId,
+          studentId: classroomSubmissions.studentId,
           grade: classroomSubmissions.grade,
+          points: classroomAssignments.points,
           submittedAt: classroomSubmissions.submittedAt,
           dueAt: classroomAssignments.dueAt,
         })
@@ -500,6 +536,7 @@ export async function getCourse(actor: Actor, courseId: string): Promise<CourseD
         else if (code === "late") bucket.late += 1;
         else bucket.onTime += 1;
         tracked.set(row.assignmentId, bucket);
+        gradeByKey.set(`${row.studentId}:${row.assignmentId}`, row.grade);
       }
     }
   }
@@ -542,12 +579,51 @@ export async function getCourse(actor: Actor, courseId: string): Promise<CourseD
     };
   });
 
+  // --- Notes ---------------------------------------------------------------
+  // Élève : sa moyenne, devoir par devoir (y compris ceux qu'il n'a pas
+  // rendus — ils comptent dans le total, pas dans les points possibles).
+  const myGrades: GradeSummary | null =
+    role === "student"
+      ? summarizeGrades(
+          assignmentRows.map((assignment) => ({
+            grade: mySubmissions.get(assignment.id)?.grade ?? null,
+            points: assignment.points,
+          })),
+        )
+      : null;
+
+  // Enseignant : le carnet complet — chaque élève confronté à chaque devoir,
+  // pour qu'un devoir non rendu apparaisse comme tel et non comme un oubli.
+  const classGradeEntries = () =>
+    students.flatMap((student) =>
+      assignmentRows.map((assignment) => {
+        const key = `${student.userId}:${assignment.id}`;
+        return {
+          studentId: student.userId,
+          grade: gradeByKey.get(key) ?? null,
+          points: assignment.points,
+        };
+      }),
+    );
+
+  const classGrades: ClassGrades | null =
+    role === "teacher"
+      ? {
+          summary: summarizeGrades(classGradeEntries()),
+          students: summarizeGradesByStudent(classGradeEntries(), studentNames).map((row) => ({
+            ...row,
+            name: studentNames.get(row.studentId) ?? "Élève inconnu",
+          })),
+        }
+      : null;
+
   return {
     id: course.id,
     name: course.name,
     section: course.section,
     joinCode: role === "teacher" ? course.joinCode : null,
     role,
+    ownerId: role === "teacher" ? course.ownerId : null,
     members: memberRows.map((member) => ({
       userId: member.userId,
       name: member.name,
@@ -555,7 +631,83 @@ export async function getCourse(actor: Actor, courseId: string): Promise<CourseD
       role: member.role === "teacher" ? "teacher" : "student",
     })),
     assignments,
+    myGrades,
+    classGrades,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Membres
+// ---------------------------------------------------------------------------
+
+/**
+ * Retire un membre du cours. L'enseignant garde ses copies et leurs notes
+ * (retirer un élève n'efface pas son travail déjà corrigé) ; l'élève, lui,
+ * perd tout accès au cours. Trois refus, tous explicites : se retirer
+ * soi-même, retirer l'enseignant propriétaire, retirer un inconnu.
+ */
+export async function removeMember(actor: Actor, courseId: string, userId: string): Promise<void> {
+  const { course } = await requireTeacher(actor, courseId);
+
+  if (userId === actor.userId) {
+    throw new ClassroomError("validation", "Vous ne pouvez pas vous retirer vous-même du cours.");
+  }
+  if (userId === course.ownerId) {
+    throw new ClassroomError(
+      "forbidden",
+      "L'enseignant qui a créé le cours ne peut pas en être retiré.",
+    );
+  }
+
+  const [member] = await db()
+    .select({ id: classroomMembers.id })
+    .from(classroomMembers)
+    .where(and(eq(classroomMembers.courseId, courseId), eq(classroomMembers.userId, userId)))
+    .limit(1);
+  if (!member) {
+    throw new ClassroomError("not_found", "Ce membre ne fait pas partie du cours.");
+  }
+
+  await db().delete(classroomMembers).where(eq(classroomMembers.id, member.id));
+
+  await recordAudit({
+    orgId: actor.orgId,
+    actorUserId: actor.userId,
+    action: "classroom.member.remove",
+    resourceType: "member",
+    resourceId: userId,
+    result: "success",
+    metadata: { courseId },
+  });
+}
+
+/**
+ * Régénère le code d'invitation d'un cours. L'ancien code cesse aussitôt de
+ * fonctionner et un nouveau lui succède (jamais deux cours sur le même code) ;
+ * les membres déjà inscrits gardent leur accès — le code n'est qu'une porte
+ * d'entrée. Réservé aux enseignants.
+ */
+export async function regenerateJoinCode(
+  actor: Actor,
+  courseId: string,
+): Promise<{ joinCode: string }> {
+  await requireTeacher(actor, courseId);
+
+  // `generateJoinCode` vérifie l'unicité dans toute la table : le code rendu
+  // ne peut pas être celui qui vient d'être remplacé.
+  const joinCode = await generateJoinCode();
+  await db().update(classroomCourses).set({ joinCode }).where(eq(classroomCourses.id, courseId));
+
+  await recordAudit({
+    orgId: actor.orgId,
+    actorUserId: actor.userId,
+    action: "classroom.course.regenerate_code",
+    resourceType: "course",
+    resourceId: courseId,
+    result: "success",
+  });
+
+  return { joinCode };
 }
 
 // ---------------------------------------------------------------------------

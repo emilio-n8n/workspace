@@ -244,9 +244,18 @@ export function SubmissionsDialog({
                       }
                       className="h-8 w-24"
                     />
+                    <p className="text-xs text-muted-foreground">
+                      {selected.grade !== null
+                        ? `Note actuelle : ${selected.grade}/${selected.points}`
+                        : "Copie pas encore notée"}
+                    </p>
                   </div>
                   <div className="flex min-w-40 flex-1 flex-col gap-1">
-                    <Label htmlFor={`feedback-${selected.id}`}>Commentaire (facultatif)</Label>
+                    {/* Commentaire PRIVÉ : distinct des commentaires publics du
+                        fil, visible par l'enseignant et cet élève seulement. */}
+                    <Label htmlFor={`feedback-${selected.id}`}>
+                      Commentaire privé (facultatif)
+                    </Label>
                     <Input
                       id={`feedback-${selected.id}`}
                       value={feedbacks[selected.id] ?? ""}
@@ -259,6 +268,9 @@ export function SubmissionsDialog({
                       placeholder="Ce qui est bien, ce qui doit être revu"
                       className="h-8"
                     />
+                    <p className="text-xs text-muted-foreground">
+                      Seul {selected.studentName} et vous le verrez.
+                    </p>
                   </div>
                   <Button
                     size="sm"
@@ -266,7 +278,7 @@ export function SubmissionsDialog({
                     disabled={savingId !== null}
                     onClick={() => void save(selected)}
                   >
-                    Noter
+                    {selected.grade !== null ? "Modifier la note" : "Noter"}
                   </Button>
                 </div>
               </>
