@@ -117,6 +117,44 @@ body {
 }
 
 /* ---------------------------------------------------------------------------
+ * Recherche dans le document (décorations ProseMirror).
+ * Toutes les occurrences sont teintées ; l'occurrence active ressort. Double
+ * repère — fond et couleur de texte — pour rester lisible sans la couleur.
+ * ------------------------------------------------------------------------- */
+
+.workspace-editor .workspace-search-hit {
+  background-color: var(--attention);
+  border-radius: 0.15em;
+  box-decoration-break: clone;
+}
+
+.workspace-editor .workspace-search-hit-active {
+  background-color: var(--primary);
+  color: var(--primary-foreground);
+}
+
+/* ---------------------------------------------------------------------------
+ * Mode focus (bouton « Mode focus », persistance localStorage, `Échap` pour
+ * sortir). Seule la coque applicative disparaît — rail d'applications et barre
+ * supérieure — pour ne laisser que la page du document. La page garde son
+ * propre en-tête : le titre, les badges et les boutons de document restent.
+ * ------------------------------------------------------------------------- */
+
+body.workspace-docs-focus nav[aria-label="Applications de la suite"] {
+  display: none !important;
+}
+
+/* La barre supérieure est le `header` qui précède `main#contenu` : on la cible
+   par cette fratrie, jamais l'en-tête du document lui-même. */
+body.workspace-docs-focus div:has(> header + main#contenu) > header {
+  display: none !important;
+}
+
+body.workspace-docs-focus main#contenu {
+  padding: 0 !important;
+}
+
+/* ---------------------------------------------------------------------------
  * Impression / export PDF (Ctrl+P).
  * Seule la surface du document sort sur le papier : `.print-hide` masque le
  * chrome applicatif, `.print-flow` / `.print-surface` marquent le contenu dans
@@ -141,7 +179,12 @@ body {
   .print-flow,
   .print-surface,
   .print-surface > div,
-  .print-surface > div > :last-child {
+  .print-surface > div > :last-child,
+  /* Colonne de l'éditeur et zone de défilement, désormais un niveau sous la
+     surface : ciblées par classe pour rester juste quel que soit l'habillage
+     (panneau « Plan », barre de recherche, pied de statistiques). */
+  .print-surface > div > div,
+  .print-surface .workspace-editor-scroll {
     display: block !important;
     height: auto !important;
     min-height: 0 !important;
@@ -166,10 +209,11 @@ body {
   }
 
   /* Cadre de page de l'éditeur : plus de largeur max ni de padding écran.
-     Le second sélecteur couvre la colonne encadrée par le panneau « Plan » :
-     le cadre de page y est un niveau plus bas sans que le document rétrécisse. */
-  .print-surface > div > :last-child > :first-child,
-  .print-surface > div > :last-child > :last-child > :first-child {
+     Ciblé par classe : le cadre n'est plus l'unique enfant de la zone de
+     défilement depuis que la barre de recherche et le pied de statistiques
+     sont venus l'encadrer, et un sélecteur par position casserait au prochain
+     ajout. */
+  .print-surface .workspace-editor-page {
     max-width: none !important;
     margin: 0 !important;
     padding: 0 !important;
@@ -233,5 +277,11 @@ body {
   /* Le libellé « Commencez à écrire… » ne doit pas finir sur le papier. */
   .workspace-editor p.is-editor-empty:first-child::before {
     content: none;
+  }
+
+  /* Le surlignage de recherche est un repère d'écran : il ne s'imprime pas. */
+  .workspace-editor .workspace-search-hit {
+    background: none !important;
+    color: inherit !important;
   }
 }

@@ -5,11 +5,16 @@ import StarterKit from "@tiptap/starter-kit";
 import { Alert, Button, cn } from "@workspace/ui";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { type CollabSession, createCollabSession } from "../collab-client.ts";
+import { type DocumentStats, documentStats, formatStats } from "../document-stats.ts";
+import { toPlainText } from "../export.ts";
 import { saveDocumentFn } from "../server.ts";
+import { DocumentSearch } from "./document-search.tsx";
 import { FORMAT_ACTIONS, type FormatActionId, matchFormatAction } from "./format-actions.ts";
-import { OutlineIcon } from "./icons.tsx";
+import { FocusIcon, OutlineIcon, SearchIcon } from "./icons.tsx";
 import { OutlinePanel } from "./outline-panel.tsx";
+import { SearchHighlight } from "./search-plugin.ts";
 import { onToolbarArrowKeys, ToolbarButton, ToolbarSeparator } from "./toolbar.tsx";
+import { useFocusMode } from "./use-focus-mode.ts";
 
 type Props = {
   fileId: string;
@@ -35,6 +40,14 @@ const AUTOSAVE_DELAY_MS = 1200;
 const COLLAB_FIELD = "content";
 /** Couleur du curseur distant (hexadécimal à 6 chiffres : seule forme acceptée). */
 const COLLAB_CURSOR_COLOR = "#2f5d54";
+
+/** Statistiques d'un document vide, avant tout calcul. */
+const EMPTY_STATS: DocumentStats = {
+  words: 0,
+  characters: 0,
+  charactersWithoutSpaces: 0,
+  readingMinutes: 0,
+};
 
 /**
  * Applique une action de mise en forme — exactement la commande utilisée par la
@@ -154,12 +167,18 @@ function EditorSurface({
   const latestRef = useRef<unknown>(null);
   /** Panneau « Plan » (titres du document) : ouvert ou fermé. */
   const [outlineOpen, setOutlineOpen] = useState(false);
+  /** Barre de recherche du document : ouverte ou fermée. */
+  const [searchOpen, setSearchOpen] = useState(false);
   /** Zone de défilement du document : repère de la position courante dans le plan. */
   const scrollRef = useRef<HTMLDivElement>(null);
   /** Dernière révision connue (chargement ou réponse de sauvegarde). */
   const revisionRef = useRef<string | undefined>(initialRevision);
   /** Après un conflit, on n'écrase plus rien : rechargez la page. */
   const conflictRef = useRef(false);
+  /** Mode focus : masque l'interface autour de la page, préférence mémorisée. */
+  const { active: focusActive, toggle: toggleFocus, exit: exitFocus } = useFocusMode();
+  /** Statistiques du document (mots, caractères, temps de lecture). */
+  const [stats, setStats] = useState<DocumentStats>(EMPTY_STATS);
 
   /** Étiquette du curseur distant — purement cosmétique. */
   const collabUserName = collab?.userName ?? "Vous";
@@ -235,18 +254,22 @@ function EditorSurface({
   );
 
   const editor = useEditor({
-    extensions: session
-      ? [
-          // La collaboration gère son propre historique : celui de StarterKit
-          // est désactivé pour éviter deux gestionnaires concurrents.
-          StarterKit.configure({ undoRedo: false }),
-          Collaboration.configure({ document: session.doc, field: COLLAB_FIELD }),
-          CollaborationCaret.configure({
-            provider: session.provider,
-            user: { name: collabUserName, color: COLLAB_CURSOR_COLOR },
-          }),
-        ]
-      : [StarterKit],
+    extensions: [
+      // La collaboration gère son propre historique : celui de StarterKit est
+      // désactivé pour éviter deux gestionnaires concurrents.
+      ...(session
+        ? [
+            StarterKit.configure({ undoRedo: false }),
+            Collaboration.configure({ document: session.doc, field: COLLAB_FIELD }),
+            CollaborationCaret.configure({
+              provider: session.provider,
+              user: { name: collabUserName, color: COLLAB_CURSOR_COLOR },
+            }),
+          ]
+        : [StarterKit]),
+      // Recherche : décorations de vue seulement, sans effet sur le document.
+      SearchHighlight,
+    ],
     // En collaboration, Yjs fait foi : ne jamais injecter `content` d'emblée
     // (il serait fusionné à la salle), l'amorçage se fait après `sync`.
     content: session ? undefined : (initialContent as JSONContent),
@@ -311,6 +334,36 @@ function EditorSurface({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [editor, canEdit]);
 
+  // Ctrl/⌘ + F ouvre la recherche du document — la recherche du navigateur
+  // n'a pas accès au texte d'un éditeur riche.
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if ((event.ctrlKey || event.metaKey) && (event.key === "f" || event.key === "F")) {
+        event.preventDefault();
+        setSearchOpen(true);
+      }
+    }
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+
+  // Échap : la recherche d'abord, puis le mode focus. Sortie progressive, dans
+  // l'ordre inverse de ce que l'utilisateur a ouvert.
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key !== "Escape") return;
+      if (searchOpen) {
+        setSearchOpen(false);
+        return;
+      }
+      if (focusActive) exitFocus();
+    }
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [searchOpen, focusActive, exitFocus]);
+
   // Fermeture de l'onglet : avertissement tant que des modifications ne sont pas enregistrées.
   useEffect(() => {
     function onBeforeUnload(event: BeforeUnloadEvent) {
@@ -336,6 +389,20 @@ function EditorSurface({
       void persist(content, "replace-latest").catch(() => undefined);
     };
   }, [persist]);
+
+  // Statistiques : recalculées aux seuls changements de document (frappe,
+  // collaborateur). `update` ne part pas sur un simple déplacement de curseur,
+  // et `useEditor` re-rendit à chaque transaction : hors de ce garde-fou, on
+  // ressortirait tout le document à chaque mouvement de sélection.
+  useEffect(() => {
+    if (!editor) return;
+    const sync = () => setStats(documentStats(toPlainText(editor.getJSON())));
+    sync();
+    editor.on("update", sync);
+    return () => {
+      editor.off("update", sync);
+    };
+  }, [editor]);
 
   if (!editor) {
     return <p className="px-6 py-8 text-sm text-muted-foreground">Chargement de l'éditeur…</p>;
@@ -380,6 +447,17 @@ function EditorSurface({
             onClick={() => setOutlineOpen((current) => !current)}
           >
             <OutlineIcon />
+          </ToolbarButton>
+          <ToolbarButton
+            label="Rechercher"
+            shortcutKey="f"
+            pressed={searchOpen}
+            onClick={() => setSearchOpen((current) => !current)}
+          >
+            <SearchIcon />
+          </ToolbarButton>
+          <ToolbarButton label="Mode focus" pressed={focusActive} onClick={toggleFocus}>
+            <FocusIcon />
           </ToolbarButton>
 
           <ToolbarSeparator />
@@ -535,6 +613,8 @@ function EditorSurface({
           </div>
         </div>
 
+        <DocumentSearch editor={editor} open={searchOpen} onOpenChange={setSearchOpen} />
+
         {status === "conflict" ? (
           <div className="border-b border-border px-3 py-2">
             <Alert
@@ -558,11 +638,19 @@ function EditorSurface({
           </div>
         ) : null}
 
-        <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto">
-          <div className="mx-auto w-full max-w-3xl px-6 py-8">
+        <div ref={scrollRef} className="workspace-editor-scroll min-h-0 flex-1 overflow-y-auto">
+          <div className="workspace-editor-page mx-auto w-full max-w-3xl px-6 py-8">
             <EditorContent editor={editor} />
           </div>
         </div>
+
+        {/* Statistiques : information d'ambiance, délibérément hors région
+            live — un `aria-live` ici annoncerait le compteur à chaque mot
+            frappé. Le compteur qui demande une annonce est celui de la
+            recherche, qui ne change que sur action explicite. */}
+        <p className="print-hide border-t border-border px-3 py-1.5 text-xs text-muted-foreground">
+          {formatStats(stats)}
+        </p>
       </div>
     </div>
   );
