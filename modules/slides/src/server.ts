@@ -8,9 +8,14 @@ import {
   listPresentations,
   renamePresentation,
   savePresentation,
-} from "./index.ts";
+  updatePresentationSetting,
+} from "./service.ts";
+import { SLIDE_ASPECT_IDS } from "./slide-aspect.ts";
+import { SLIDE_THEME_IDS } from "./slide-theme.ts";
 
 export type { ElementView, PresentationDetail, SlideView } from "./index.ts";
+export type { SlideAspectId } from "./slide-aspect.ts";
+export type { SlideThemeId } from "./slide-theme.ts";
 
 const elementSchema = z.object({
   id: z.string().optional(),
@@ -94,4 +99,25 @@ export const renamePresentationFn = createServerFn({ method: "POST" })
     const { actor } = await requireActor(getRequest().headers);
     const entry = await renamePresentation(actor, data.fileId, data.title);
     return { title: entry.name };
+  });
+
+export const updatePresentationSettingFn = createServerFn({ method: "POST" })
+  .validator((input: unknown) =>
+    z
+      .object({
+        fileId: z.string().uuid(),
+        aspect: z.enum(SLIDE_ASPECT_IDS).optional(),
+        theme: z.enum(SLIDE_THEME_IDS).optional(),
+      })
+      .refine((data) => data.aspect !== undefined || data.theme !== undefined, {
+        message: "Aucun réglage à modifier.",
+      })
+      .parse(input),
+  )
+  .handler(async ({ data }) => {
+    const { actor } = await requireActor(getRequest().headers);
+    return updatePresentationSetting(actor, data.fileId, {
+      aspect: data.aspect,
+      theme: data.theme,
+    });
   });

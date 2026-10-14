@@ -12,6 +12,8 @@ import {
   uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
+import { DEFAULT_SLIDE_ASPECT, type SlideAspectId } from "./slide-aspect.ts";
+import { DEFAULT_SLIDE_THEME, type SlideThemeId } from "./slide-theme.ts";
 
 /**
  * Schéma du module Slides — voir docs/modules/slides.md.
@@ -34,6 +36,10 @@ export const presentations = pgTable(
       .references(() => driveFiles.id, { onDelete: "cascade" }),
     /** Compteur optimiste : incrémenté à chaque sauvegarde acceptée. */
     revision: integer("revision").notNull().default(1),
+    /** Format de la diapositive (« 16:9 » ou « 4:3 ») — conversion à la demande. */
+    aspect: text("aspect").$type<SlideAspectId>().notNull().default(DEFAULT_SLIDE_ASPECT),
+    /** Thème de la diapositive (« papier », « encre », « accent »). */
+    theme: text("theme").$type<SlideThemeId>().notNull().default(DEFAULT_SLIDE_THEME),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (table) => [

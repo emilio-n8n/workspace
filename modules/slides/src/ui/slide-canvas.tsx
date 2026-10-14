@@ -7,6 +7,19 @@ import {
   type ElementGeometry,
   round1,
 } from "../editor-model.ts";
+import {
+  aspectRatioCss,
+  DEFAULT_SLIDE_ASPECT,
+  normalizeAspect,
+  type SlideAspectId,
+} from "../slide-aspect.ts";
+import {
+  DEFAULT_SLIDE_THEME,
+  normalizeTheme,
+  type SlideThemeId,
+  themeCanvasClass,
+  themeShapeClass,
+} from "../slide-theme.ts";
 
 export type SlideCanvasProps = {
   slide: EditorSlide;
@@ -16,6 +29,10 @@ export type SlideCanvasProps = {
   selectedElementKey?: string | null;
   onSelectElement?: (key: string | null) => void;
   onGeometryChange?: (key: string, patch: Partial<ElementGeometry>) => void;
+  /** Format de la diapositive (défaut : écran large). */
+  aspect?: SlideAspectId;
+  /** Thème construit sur les jetons sémantiques (défaut : papier). */
+  theme?: SlideThemeId;
   className?: string;
 };
 
@@ -35,8 +52,12 @@ export function SlideCanvas({
   selectedElementKey = null,
   onSelectElement,
   onGeometryChange,
+  aspect = DEFAULT_SLIDE_ASPECT,
+  theme = DEFAULT_SLIDE_THEME,
   className,
 }: SlideCanvasProps) {
+  const format = normalizeAspect(aspect);
+  const palette = normalizeTheme(theme);
   const canvasRef = useRef<HTMLDivElement>(null);
 
   function startElementDrag(event: React.PointerEvent<HTMLButtonElement>, element: EditorElement) {
@@ -104,16 +125,29 @@ export function SlideCanvas({
       onPointerDown={() => {
         if (interactive) onSelectElement?.(null);
       }}
-      style={{ containerType: "inline-size", "--slide-design-width": "960" } as React.CSSProperties}
+      style={
+        {
+          containerType: "inline-size",
+          "--slide-design-width": "960",
+          // Le rapport est calculé au runtime : une valeur en ligne est fiable,
+          // là où Tailwind (v4, sources littérales) n'émettrait pas de classe
+          // arbitraire dynamique.
+          aspectRatio: aspectRatioCss(format),
+        } as React.CSSProperties
+      }
       className={cn(
-        "relative aspect-[16/9] w-full overflow-hidden rounded-xl border border-border bg-card text-foreground shadow-soft",
+        // Le format et le thème viennent d'ici : un seul canevas pour l'édition,
+        // les vignettes, la présentation et l'impression.
+        "relative w-full overflow-hidden rounded-xl border shadow-soft",
+        themeCanvasClass(palette),
         className,
       )}
     >
       {slide.elements.map((element) => {
         const className = cn(
           "absolute select-none whitespace-pre-wrap rounded",
-          element.kind === "shape" && "border border-border bg-accent",
+          // Les formes suivent le thème de la diapositive (jetons sémantiques).
+          element.kind === "shape" && themeShapeClass(palette),
           element.kind === "image" && "bg-muted",
         );
         const style = {

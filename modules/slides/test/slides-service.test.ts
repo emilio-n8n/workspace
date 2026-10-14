@@ -14,9 +14,12 @@ import {
   MAX_SLIDE_IMAGE_BYTES,
   renamePresentation,
   SLIDES_MIME,
+  type SlideAspectId,
   type SlideInput,
   SlidesError,
+  type SlideThemeId,
   savePresentation,
+  updatePresentationSetting,
   uploadSlideImage,
 } from "../src/index.ts";
 
@@ -596,6 +599,82 @@ describe("slides — images", () => {
       getSlideImage(f.actorAlice, b.entry.id, `slides/${b.presentation.id}/absent.webp`),
       "not_found",
     );
+  });
+});
+
+describe("slides — réglages de présentation", () => {
+  it("change le format et le thème, les persiste et les journalise", async () => {
+    const { entry } = await createPresentation(f.actorAlice, { title: "Réglages" });
+    const initial = await getPresentation(f.actorAlice, entry.id);
+    expect(initial.aspect).toBe("16:9");
+    expect(initial.theme).toBe("papier");
+
+    const updated = await updatePresentationSetting(f.actorAlice, entry.id, {
+      aspect: "4:3",
+      theme: "encre",
+    });
+    expect(updated.aspect).toBe("4:3");
+    expect(updated.theme).toBe("encre");
+    // Le réglage ne touche pas à la scène : la conversion est faite côté client.
+    expect(updated.slides).toHaveLength(1);
+
+    const reloaded = await getPresentation(f.actorAlice, entry.id);
+    expect(reloaded.aspect).toBe("4:3");
+    expect(reloaded.theme).toBe("encre");
+
+    const rows = await auditEventsFor(f.orgId, "slides.presentation.settings");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      orgId: f.orgId,
+      actorUserId: f.actorAlice.userId,
+      resourceType: "presentation",
+      resourceId: entry.id,
+      result: "success",
+      metadata: { aspect: "4:3", theme: "encre" },
+    });
+  });
+
+  it("n'applique que le réglage fourni et refuse un réglage vide", async () => {
+    const { entry } = await createPresentation(f.actorAlice, { title: "Partiel" });
+    const onlyTheme = await updatePresentationSetting(f.actorAlice, entry.id, { theme: "accent" });
+    expect(onlyTheme.theme).toBe("accent");
+    expect(onlyTheme.aspect).toBe("16:9");
+
+    await expectSlidesError(updatePresentationSetting(f.actorAlice, entry.id, {}), "validation");
+  });
+
+  it("refuse un format ou un thème inconnu sans rien écrire", async () => {
+    const { entry } = await createPresentation(f.actorAlice, { title: "Inconnu" });
+    await expectSlidesError(
+      updatePresentationSetting(f.actorAlice, entry.id, {
+        aspect: "3:2" as unknown as SlideAspectId,
+      }),
+      "validation",
+    );
+    await expectSlidesError(
+      updatePresentationSetting(f.actorAlice, entry.id, {
+        theme: "violet" as unknown as SlideThemeId,
+      }),
+      "validation",
+    );
+
+    const detail = await getPresentation(f.actorAlice, entry.id);
+    expect(detail.aspect).toBe("16:9");
+    expect(detail.theme).toBe("papier");
+    expect(await auditEventsFor(f.orgId, "slides.presentation.settings")).toHaveLength(0);
+  });
+
+  it("interdit le réglage à un lecteur sans droit d'écriture", async () => {
+    const { entry } = await createPresentation(f.actorAlice, { title: "Lecture seule" });
+    await shareEntry(f.actorAlice, entry.id, {
+      subject: { kind: "user", id: f.actorBruno.userId },
+      role: "viewer",
+    });
+    await expectSlidesError(
+      updatePresentationSetting(f.actorBruno, entry.id, { aspect: "4:3" }),
+      "forbidden",
+    );
+    expect((await getPresentation(f.actorAlice, entry.id)).aspect).toBe("16:9");
   });
 });
 

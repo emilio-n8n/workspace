@@ -73,7 +73,8 @@ body {
     page-break-after: auto;
   }
 
-  /* Le canevas 16:9 est mis à l'échelle pour tenir dans la page. */
+  /* Le canevas est mis à l'échelle pour tenir dans la page, quel que soit le
+     format (16:9 ou 4:3) — le rapport est appliqué en ligne par le canevas. */
   .print-slide > * {
     max-width: 96vw;
     max-height: 96vh;

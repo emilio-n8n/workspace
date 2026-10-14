@@ -1,6 +1,7 @@
 import { cn, Kbd } from "@workspace/ui";
 import { useEffect, useId, useRef, useState } from "react";
 import { type EditorSlide, slideTitle } from "../editor-model.ts";
+import { DEFAULT_SLIDE_ASPECT, type SlideAspectId } from "../slide-aspect.ts";
 import { slideNavigationAnnouncement } from "../slide-navigation.ts";
 import {
   dropIndex,
@@ -10,6 +11,7 @@ import {
   reorderAnnouncement,
   type StripItem,
 } from "../slide-order.ts";
+import { DEFAULT_SLIDE_THEME, type SlideThemeId } from "../slide-theme.ts";
 import { SlideCanvas } from "./slide-canvas.tsx";
 
 /** Déplacement minimal (px) avant qu'un glisser ne devienne un réordonnancement. */
@@ -32,6 +34,9 @@ export type SlideFilmstripProps = {
   fileId: string;
   onSelect: (index: number) => void;
   onMove: (from: number, to: number) => void;
+  /** Format et thème de la présentation : les vignettes sont fidèles au rendu. */
+  aspect?: SlideAspectId;
+  theme?: SlideThemeId;
 };
 
 /**
@@ -50,6 +55,8 @@ export function SlideFilmstrip({
   fileId,
   onSelect,
   onMove,
+  aspect = DEFAULT_SLIDE_ASPECT,
+  theme = DEFAULT_SLIDE_THEME,
 }: SlideFilmstripProps) {
   const baseId = useId();
   const hintId = `${baseId}-hint`;
@@ -209,7 +216,7 @@ export function SlideFilmstrip({
           )}
         >
           <span aria-hidden className="block">
-            <SlideCanvas slide={slide} fileId={fileId} />
+            <SlideCanvas slide={slide} fileId={fileId} aspect={aspect} theme={theme} />
             <span className="mt-1 flex items-baseline gap-1 text-[11px] font-medium">
               <span className="text-muted-foreground">{index + 1}</span>
               <span className="truncate">{slideTitle(slide, index)}</span>

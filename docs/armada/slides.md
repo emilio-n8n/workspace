@@ -2,12 +2,12 @@
 
 ## Missions
 
-- [ ] TASK-001 : Bande de vignettes (sélection, réordonnancement)
-- [ ] TASK-002 : Navigation clavier entre diapositives
-- [ ] TASK-003 : Notes du présentateur par diapositive
-- [ ] TASK-004 : Mode présentation local plein écran
-- [ ] TASK-005 : Choix du format 4:3/16:9 avec conversion de la scène
-- [ ] TASK-006 : Thèmes (2-3) construits sur les tokens
+- [x] TASK-001 : Bande de vignettes (sélection, réordonnancement)
+- [x] TASK-002 : Navigation clavier entre diapositives
+- [x] TASK-003 : Notes du présentateur par diapositive
+- [x] TASK-004 : Mode présentation local plein écran
+- [x] TASK-005 : Choix du format 4:3/16:9 avec conversion de la scène
+- [x] TASK-006 : Thèmes (2-3) construits sur les tokens
 - [ ] TASK-007 : Dupliquer/supprimer une diapositive avec annulation
 - [ ] TASK-008 : Formes de base (rectangle, ellipse, ligne) redimensionnables
 - [ ] TASK-009 : Ordre z des éléments (avant/arrière-plan)

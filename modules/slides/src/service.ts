@@ -17,7 +17,9 @@ import {
   presentations,
   slideElements,
 } from "./schema.ts";
+import { normalizeAspect, SLIDE_ASPECT_IDS, type SlideAspectId } from "./slide-aspect.ts";
 import { MAX_NOTES_CHARS, notesForSave } from "./slide-notes.ts";
+import { normalizeTheme, SLIDE_THEME_IDS, type SlideThemeId } from "./slide-theme.ts";
 
 /** Type MIME du pointeur Drive d'une présentation Workspace. */
 export const SLIDES_MIME = "application/vnd.workspace.slides+json";
@@ -91,6 +93,10 @@ export type PresentationDetail = {
   canEdit: boolean;
   /** Révision courante (contrôle optimiste des sauvegardes). */
   revision: number;
+  /** Format de la diapositive (« 16:9 » ou « 4:3 »). */
+  aspect: SlideAspectId;
+  /** Thème construit sur les jetons sémantiques. */
+  theme: SlideThemeId;
   slides: SlideView[];
 };
 
@@ -244,7 +250,13 @@ function assertSlides(input: unknown): SlideInput[] {
 async function requirePresentation(
   actor: Actor,
   fileId: string,
-): Promise<{ entry: DriveEntry; presentationId: string; revision: number }> {
+): Promise<{
+  entry: DriveEntry;
+  presentationId: string;
+  revision: number;
+  aspect: SlideAspectId;
+  theme: SlideThemeId;
+}> {
   const entry = await getEntry(actor, fileId);
   if (entry.mimeType !== SLIDES_MIME) {
     throw new SlidesError("not_found", "Présentation introuvable.");
@@ -257,7 +269,13 @@ async function requirePresentation(
   if (!row || row.orgId !== actor.orgId) {
     throw new SlidesError("not_found", "Présentation introuvable.");
   }
-  return { entry, presentationId: row.id, revision: row.revision };
+  return {
+    entry,
+    presentationId: row.id,
+    revision: row.revision,
+    aspect: normalizeAspect(row.aspect),
+    theme: normalizeTheme(row.theme),
+  };
 }
 
 async function loadSlides(presentationId: string): Promise<SlideView[]> {
@@ -349,15 +367,83 @@ export async function createPresentation(
 }
 
 export async function getPresentation(actor: Actor, fileId: string): Promise<PresentationDetail> {
-  const { entry, presentationId, revision } = await requirePresentation(actor, fileId);
+  const { entry, presentationId, revision, aspect, theme } = await requirePresentation(
+    actor,
+    fileId,
+  );
   const role = await effectiveRole(actor, fileId);
   return {
     fileId: entry.id,
     title: entry.name,
     canEdit: roleSatisfies(role, "write"),
     revision,
+    aspect,
+    theme,
     slides: await loadSlides(presentationId),
   };
+}
+
+/**
+ * Valide un réglage de présentation (format ou thème) : les identifiants
+ * inconnus sont refusés, jamais silencieusement remplacés — l'appelant sait
+ * ainsi qu'il doit corriger sa valeur.
+ */
+function assertSetting<T extends string>(value: unknown, allowed: readonly T[], label: string): T {
+  if (typeof value !== "string" || !allowed.includes(value as T)) {
+    throw new SlidesError("validation", `${label} inconnu.`);
+  }
+  return value as T;
+}
+
+/**
+ * Change un réglage de présentation (format de la diapositive, thème).
+ * Ces réglages voyagent avec la scène : ils sont vérifiés ici puis
+ * journalisés, car ils modifient l'aspect de toute la présentation.
+ */
+export async function updatePresentationSetting(
+  actor: Actor,
+  fileId: string,
+  input: { aspect?: SlideAspectId; theme?: SlideThemeId },
+): Promise<PresentationDetail> {
+  const { presentationId } = await requirePresentation(actor, fileId);
+  const role = await effectiveRole(actor, fileId);
+  if (!roleSatisfies(role, "write")) {
+    throw new SlidesError("forbidden", "Permission insuffisante pour modifier cette présentation.");
+  }
+
+  const aspect =
+    input.aspect === undefined
+      ? undefined
+      : assertSetting(input.aspect, SLIDE_ASPECT_IDS, "Format de diapositive");
+  const theme =
+    input.theme === undefined ? undefined : assertSetting(input.theme, SLIDE_THEME_IDS, "Thème");
+  if (aspect === undefined && theme === undefined) {
+    throw new SlidesError("validation", "Aucun réglage à modifier.");
+  }
+
+  await db()
+    .update(presentations)
+    .set({
+      ...(aspect === undefined ? {} : { aspect }),
+      ...(theme === undefined ? {} : { theme }),
+    })
+    .where(eq(presentations.id, presentationId));
+
+  // Un seul événement, avec les réglages effectivement modifiés.
+  await recordAudit({
+    orgId: actor.orgId,
+    actorUserId: actor.userId,
+    action: "slides.presentation.settings",
+    resourceType: "presentation",
+    resourceId: fileId,
+    result: "success",
+    metadata: {
+      ...(aspect === undefined ? {} : { aspect }),
+      ...(theme === undefined ? {} : { theme }),
+    },
+  });
+
+  return getPresentation(actor, fileId);
 }
 
 /**

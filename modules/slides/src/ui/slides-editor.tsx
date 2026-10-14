@@ -14,7 +14,17 @@ import {
   getPresentationFn,
   renamePresentationFn,
   savePresentationFn,
+  updatePresentationSettingFn,
 } from "../server.ts";
+import {
+  aspectLabel,
+  conversionSummary,
+  convertScene,
+  DEFAULT_SLIDE_ASPECT,
+  normalizeAspect,
+  SLIDE_ASPECT_IDS,
+  type SlideAspectId,
+} from "../slide-aspect.ts";
 import {
   isInsideModal,
   isTypingTarget,
@@ -23,6 +33,22 @@ import {
 } from "../slide-navigation.ts";
 import { formatElapsed } from "../slide-notes.ts";
 import { canMoveSlide, moveTarget, reorderSlides } from "../slide-order.ts";
+import {
+  presentationExitMessage,
+  presentationHelp,
+  presentationLabel,
+  presentationProgress,
+  presentationShouldContinue,
+  presentationSummary,
+} from "../slide-presentation.ts";
+import {
+  DEFAULT_SLIDE_THEME,
+  normalizeTheme,
+  SLIDE_THEME_IDS,
+  type SlideThemeId,
+  themeLabel,
+  themeSwatchClass,
+} from "../slide-theme.ts";
 import { SlideCanvas } from "./slide-canvas.tsx";
 import { SlideFilmstrip } from "./slide-filmstrip.tsx";
 import { PresenterNotes, SlideNotesField } from "./slide-notes-panel.tsx";
@@ -38,6 +64,8 @@ type SaveStatus = "idle" | "saving" | "saved" | "error";
 export function SlidesEditor({ fileId }: { fileId: string }) {
   const [title, setTitle] = useState("");
   const [canEdit, setCanEdit] = useState(false);
+  const [aspect, setAspect] = useState<SlideAspectId>(DEFAULT_SLIDE_ASPECT);
+  const [theme, setTheme] = useState<SlideThemeId>(DEFAULT_SLIDE_THEME);
   const [slides, setSlides] = useState<EditorSlide[]>([]);
   const [selectedSlide, setSelectedSlide] = useState(0);
   const [selectedElementKey, setSelectedElementKey] = useState<string | null>(null);
@@ -47,6 +75,9 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
   const [loading, setLoading] = useState(true);
   const [presenting, setPresenting] = useState(false);
   const [presentIndex, setPresentIndex] = useState(0);
+  /** Vrai quand le mode présentation a demandé le plein écran. */
+  const fullscreenRequestedRef = useRef(false);
+  const stageRef = useRef<HTMLDivElement>(null);
   const [notesOpen, setNotesOpen] = useState(false);
   const [elapsed, setElapsed] = useState(0);
   const [printToken, setPrintToken] = useState(0);
@@ -69,6 +100,8 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
       setTitle(data.title);
       setCanEdit(data.canEdit);
       canEditRef.current = data.canEdit;
+      setAspect(normalizeAspect(data.aspect));
+      setTheme(normalizeTheme(data.theme));
       revisionRef.current = data.revision;
       setSlides(toEditor(data.slides));
       setError(null);
@@ -267,6 +300,53 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
     schedule();
   }
 
+  /**
+   * Enregistre un réglage de présentation (format, thème) de façon optimiste :
+   * l'interface change tout de suite, le serveur confirme, et un échec rend sa
+   * valeur précédente au réglage.
+   */
+  async function persistSetting(patch: { aspect?: SlideAspectId; theme?: SlideThemeId }) {
+    if (!canEditRef.current) return;
+    try {
+      const saved = await updatePresentationSettingFn({ data: { fileId, ...patch } });
+      setAspect(normalizeAspect(saved.aspect));
+      setTheme(normalizeTheme(saved.theme));
+      setError(null);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Réglage impossible.");
+      // Retour à la valeur serveur : l'interface ne ment jamais longtemps.
+      void load();
+    }
+  }
+
+  /**
+   * Change le format de la diapositive et convertit la scène : les positions
+   * sont recalculées par la logique pure de `slide-aspect.ts`, puis
+   * enregistrées par l'autosave (les éléments font partie du même état) et le
+   * réglage par son propre appel.
+   */
+  function changeAspect(next: SlideAspectId) {
+    if (next === aspect || !canEdit) return;
+    const from = aspect;
+    setSlides((current) =>
+      current.map((slide) => ({
+        ...slide,
+        elements: convertScene(slide.elements, from, next).elements,
+      })),
+    );
+    setAspect(next);
+    setAnnouncement(conversionSummary(from, next, slides[selectedSlide]?.elements.length ?? 0));
+    schedule();
+    void persistSetting({ aspect: next });
+  }
+
+  function changeTheme(next: SlideThemeId) {
+    if (next === theme || !canEdit) return;
+    setTheme(next);
+    setAnnouncement(`Thème « ${themeLabel(next)} » appliqué à la présentation.`);
+    void persistSetting({ theme: next });
+  }
+
   /** Déplacement d'une diapositive : la sélection la suit. */
   function moveSlideTo(from: number, to: number) {
     if (from === to) return;
@@ -322,6 +402,37 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [presenting, selectSlide, selectedSlide, slides.length]);
 
+  // Plein écran : le navigateur peut aussi rendre la main à l'utilisateur
+  // (Échap, touche dédiée, changement de fenêtre). Dans ce cas la présentation
+  // se referme avec le plein écran, pour ne pas laisser Échap sans effet.
+  useEffect(() => {
+    if (!presenting) return;
+    const sync = () => {
+      if (
+        !presentationShouldContinue({
+          requested: fullscreenRequestedRef.current,
+          fullscreenElement: document.fullscreenElement,
+          container: stageRef.current,
+        })
+      ) {
+        setPresenting(false);
+        setAnnouncement(presentationExitMessage());
+      }
+    };
+    document.addEventListener("fullscreenchange", sync);
+    sync();
+    return () => document.removeEventListener("fullscreenchange", sync);
+  }, [presenting]);
+
+  // En quittant le mode présentation, on rend le plein écran au navigateur.
+  useEffect(() => {
+    if (presenting) return;
+    fullscreenRequestedRef.current = false;
+    if (document.fullscreenElement && document.fullscreenElement === stageRef.current) {
+      void document.exitFullscreen().catch(() => undefined);
+    }
+  }, [presenting]);
+
   // Mode présentation : mêmes raccourcis de déplacement, Échap pour quitter
   // (ou refermer les notes du présentateur).
   useEffect(() => {
@@ -343,6 +454,7 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
       if (next === null) return;
       event.preventDefault();
       setPresentIndex(next);
+      setAnnouncement(presentationLabel(next, slides.length));
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
@@ -434,6 +546,16 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
             onClick={() => {
               setPresentIndex(selectedSlide);
               setNotesOpen(false);
+              // Plein écran local : l'API est demandée dans le geste utilisateur
+              // (obligatoire), et l'échec est sans conséquence — la
+              // présentation reste utilisable dans la page.
+              const stage = stageRef.current;
+              if (stage && typeof stage.requestFullscreen === "function") {
+                fullscreenRequestedRef.current = true;
+                stage.requestFullscreen().catch(() => {
+                  fullscreenRequestedRef.current = false;
+                });
+              }
               setPresenting(true);
             }}
           >
@@ -455,6 +577,8 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
             fileId={fileId}
             onSelect={selectSlide}
             onMove={moveSlideTo}
+            aspect={aspect}
+            theme={theme}
           />
 
           <div className="flex min-w-0 flex-1 flex-col gap-2">
@@ -522,6 +646,47 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
               dernière.
             </p>
 
+            {canEdit ? (
+              <div className="flex flex-wrap items-center gap-4 print-hide">
+                <fieldset className="flex items-center gap-2">
+                  <legend className="sr-only">Format de la diapositive</legend>
+                  <span className="text-xs font-medium text-muted-foreground">Format</span>
+                  {SLIDE_ASPECT_IDS.map((value) => (
+                    <Button
+                      key={value}
+                      size="sm"
+                      variant={aspect === value ? "secondary" : "ghost"}
+                      aria-pressed={aspect === value}
+                      title={aspectLabel(value)}
+                      onClick={() => changeAspect(value)}
+                    >
+                      {value}
+                    </Button>
+                  ))}
+                </fieldset>
+                <fieldset className="flex items-center gap-2">
+                  <legend className="sr-only">Thème de la présentation</legend>
+                  <span className="text-xs font-medium text-muted-foreground">Thème</span>
+                  {SLIDE_THEME_IDS.map((value) => (
+                    <button
+                      key={value}
+                      type="button"
+                      aria-pressed={theme === value}
+                      title={themeLabel(value)}
+                      onClick={() => changeTheme(value)}
+                      className={cn(
+                        "size-6 rounded-md border transition-shadow",
+                        themeSwatchClass(value),
+                        theme === value ? "ring-2 ring-ring" : "hover:ring-1 hover:ring-ring",
+                      )}
+                    >
+                      <span className="sr-only">{themeLabel(value)}</span>
+                    </button>
+                  ))}
+                </fieldset>
+              </div>
+            ) : null}
+
             <SlideCanvas
               slide={current}
               fileId={fileId}
@@ -529,6 +694,8 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
               selectedElementKey={selectedElementKey}
               onSelectElement={setSelectedElementKey}
               onGeometryChange={updateElement}
+              aspect={aspect}
+              theme={theme}
             />
           </div>
 
@@ -674,11 +841,30 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
       </Dialog>
 
       {presenting ? (
-        <div className="fixed inset-0 z-50 flex flex-col bg-rail text-rail-foreground">
+        <div
+          ref={stageRef}
+          className="fixed inset-0 z-50 flex flex-col bg-rail text-rail-foreground"
+        >
+          {/* Avancement annoncé aux lecteurs d'écran et visible en fond de barre. */}
+          <div
+            role="progressbar"
+            aria-label="Avancement de la présentation"
+            aria-valuenow={presentationProgress(presentIndex, slides.length)}
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuetext={presentationLabel(presentIndex, slides.length)}
+            className="h-0.5 w-full bg-rail-active"
+          >
+            <div
+              className="h-full bg-primary transition-[width] duration-200"
+              style={{ width: `${presentationProgress(presentIndex, slides.length)}%` }}
+            />
+          </div>
           <div className="flex flex-wrap items-center gap-2 px-4 py-2 text-sm">
             <span className="tabular-nums">
               {presentIndex + 1} / {slides.length}
             </span>
+            <span className="text-rail-foreground/70">{presentationSummary(slides.length)}</span>
             {slides[presentIndex]?.title.trim() ? (
               <span className="max-w-48 truncate text-rail-foreground/70">
                 {slides[presentIndex]?.title}
@@ -705,15 +891,30 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
             <button
               type="button"
               className="ml-auto rounded-md px-2 py-1 hover:bg-rail-active focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              onClick={() => setPresenting(false)}
+              onClick={() => {
+                setPresenting(false);
+                setAnnouncement(presentationExitMessage());
+              }}
             >
               ✕ Quitter (Échap)
             </button>
           </div>
           <div className="flex flex-1 items-center justify-center gap-4 overflow-auto p-6">
-            <div className={cn("w-full", notesOpen ? "max-w-3xl" : "max-w-5xl")}>
+            <div
+              className={cn(
+                "w-full",
+                notesOpen ? "max-w-3xl" : "max-w-5xl",
+                // Le canevas se remplit l'écran en plein écran, sans dépasser.
+                "max-h-full",
+              )}
+            >
               {slides[presentIndex] ? (
-                <SlideCanvas slide={slides[presentIndex]} fileId={fileId} />
+                <SlideCanvas
+                  slide={slides[presentIndex]}
+                  fileId={fileId}
+                  aspect={aspect}
+                  theme={theme}
+                />
               ) : null}
             </div>
             {notesOpen && slides[presentIndex] ? (
@@ -724,6 +925,9 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
               />
             ) : null}
           </div>
+          <p className="px-4 text-center text-[11px] text-rail-foreground/70">
+            {presentationHelp()}
+          </p>
           <div className="flex justify-center gap-2 pb-4">
             <Button
               variant="outline"
@@ -759,7 +963,7 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
             <div id="slides-print-root">
               {slides.map((slide) => (
                 <div key={slide.key} className="print-slide">
-                  <SlideCanvas slide={slide} fileId={fileId} />
+                  <SlideCanvas slide={slide} fileId={fileId} aspect={aspect} theme={theme} />
                 </div>
               ))}
             </div>,
