@@ -247,7 +247,7 @@ test("drive : dossiers, téléversement, corbeille et document (app Docs)", asyn
 
   // Vues agrégées
   await page.getByRole("link", { name: "Récents" }).click();
-  await expect(page.getByText("notes.txt")).toBeVisible();
+  await expect(page.getByRole("button", { name: "notes.txt", exact: true })).toBeVisible();
   await page.getByRole("link", { name: "Partagés avec moi" }).click();
   await expect(page.getByText("Rien ne vous a été partagé pour le moment")).toBeVisible();
   await page.getByRole("link", { name: "Mon Drive" }).click();
@@ -261,7 +261,7 @@ test("drive : dossiers, téléversement, corbeille et document (app Docs)", asyn
   await expect(page.getByRole("button", { name: "notes.txt", exact: true })).toHaveCount(0);
 
   await page.getByRole("link", { name: "Corbeille" }).click();
-  await expect(page.getByText("notes.txt")).toBeVisible();
+  await expect(page.getByRole("button", { name: "notes.txt", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Restaurer" }).click();
   await expect(page.getByText("La corbeille est vide.")).toBeVisible();
 
@@ -358,11 +358,11 @@ test("tâches : liste, ajout rapide, terminer, filtres et édition", async ({ pa
 
   await page.getByLabel("Ajouter une tâche").fill("Relire la roadmap");
   await page.keyboard.press("Enter");
-  await expect(page.getByText("Relire la roadmap")).toBeVisible();
+  await expect(page.getByText("Relire la roadmap", { exact: true })).toBeVisible();
 
   await page.getByRole("checkbox", { name: /Marquer « Relire la roadmap »/ }).check();
   await page.getByRole("button", { name: "Terminées" }).click();
-  await expect(page.getByText("Relire la roadmap")).toBeVisible();
+  await expect(page.getByText("Relire la roadmap", { exact: true })).toBeVisible();
 
   await page.getByText("Relire la roadmap").click();
   await page.getByLabel("Priorité", { exact: true }).selectOption("high");

@@ -30,13 +30,16 @@ test("mail : brouillon puis envoi conservé avec erreur explicite sans SMTP", as
   await openApp(page, `${MAIL}/`);
   await page.getByRole("button", { name: "Écrire", exact: true }).click();
   await page.getByLabel("À (séparés par des virgules)").fill("ami@exemple.org");
+  await page.keyboard.press("Enter"); // valide la puce destinataire
   await page.getByLabel("Objet").fill("Test E2E");
   await page
     .getByRole("dialog", { name: "Nouveau message" })
     .getByLabel("Message", { exact: true })
     .fill("Corps du message E2E");
   await page.getByRole("button", { name: "Enregistrer en brouillon" }).click();
-  await expect(page.getByText("Brouillons").first()).toBeVisible();
+  await expect(page.getByRole("button", { name: /^Brouillons 1/ })).toBeVisible({
+    timeout: 15_000,
+  });
   // Selon l'état, le compositeur peut rester ouvert après l'enregistrement :
   // on le referme (Échap, dialogue natif) avant de recommencer un message.
   if (
@@ -51,6 +54,7 @@ test("mail : brouillon puis envoi conservé avec erreur explicite sans SMTP", as
 
   await page.getByRole("button", { name: "Écrire", exact: true }).click();
   await page.getByLabel("À (séparés par des virgules)").fill("ami@exemple.org");
+  await page.keyboard.press("Enter"); // valide la puce destinataire
   await page.getByLabel("Objet").fill("Envoi E2E");
   await page
     .getByRole("dialog", { name: "Nouveau message" })
@@ -58,10 +62,11 @@ test("mail : brouillon puis envoi conservé avec erreur explicite sans SMTP", as
     .fill("Un vrai envoi");
   await page.getByRole("button", { name: "Envoyer" }).click();
 
-  await expect(page.getByText(/SMTP non configuré/)).toBeVisible({
+  await expect(page.getByRole("button", { name: /^Envoyés 1/ })).toBeVisible({
     timeout: 15_000,
   });
-  await expect(page.getByText("Envoi E2E")).toBeVisible();
+  await expect(page.getByText(/SMTP non configuré/).first()).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText("Envoi E2E").first()).toBeVisible();
   await page.screenshot({ path: "e2e/screenshots/mail.png", fullPage: true });
 });
 

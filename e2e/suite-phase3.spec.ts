@@ -75,8 +75,8 @@ test("sheets : saisie, formule évaluée et persistance après rechargement", as
   // Entrée valide et descend d'une ligne : la cellule suivante est déjà en
   // édition (champ), sinon c'est un bouton au repos — on accepte les deux.
   async function typeCell(ref: string, value: string) {
-    const button = page.getByRole("button", { name: `Cellule ${ref}` });
-    const input = page.getByRole("textbox", { name: `Cellule ${ref}` });
+    const button = page.getByRole("button", { name: `Cellule ${ref}`, exact: true });
+    const input = page.getByRole("textbox", { name: `Cellule ${ref}`, exact: true });
     // Course d'hydratation (canEdit arrive avec le détail serveur) : on retente
     // le clic jusqu'à ce que l'éditeur de cellule s'ouvre réellement.
     await expect(async () => {
@@ -90,7 +90,7 @@ test("sheets : saisie, formule évaluée et persistance après rechargement", as
   await typeCell("A1", "2");
   await typeCell("A2", "3");
   await typeCell("A3", "=SUM(A1:A2)");
-  await expect(page.getByRole("button", { name: "Cellule A3" })).toHaveText("5", {
+  await expect(page.getByRole("button", { name: "Cellule A3", exact: true })).toHaveText("5", {
     timeout: 10_000,
   });
   await expect(page.getByRole("status").filter({ hasText: "Enregistré" })).toBeVisible({
@@ -99,7 +99,7 @@ test("sheets : saisie, formule évaluée et persistance après rechargement", as
 
   await page.reload();
   await page.waitForSelector("html[data-hydrated='true']", { timeout: 40_000 });
-  await expect(page.getByRole("button", { name: "Cellule A3" })).toHaveText("5", {
+  await expect(page.getByRole("button", { name: "Cellule A3", exact: true })).toHaveText("5", {
     timeout: 15_000,
   });
   await page.screenshot({ path: "e2e/screenshots/sheets.png", fullPage: true });
