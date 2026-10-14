@@ -78,6 +78,7 @@ Prouver de bout en bout : authentification → stockage → permissions → édi
 - Vagues « excellence opérationnelle » et « temps réel » (2026-10-13) : audit web exhaustif (10 modules), recherche plein texte française avec dossiers, pièces jointes Mail/Chat, conformité RGPD (export/effacement), mise en forme Sheets, impression Slides, **collaboration Docs temps réel (Yjs : serveur dédié + client Tiptap, dégradation locale propre)**, restauration de versions Docs.
 - Vague « collaboration & confort » (2026-10-13) : notifications temps réel (SSE par organisation et utilisateur, cloche instantanée avec repli polling), historique des versions Docs (aperçu, restauration auditée), pièces jointes aux rendus Classroom.
 - Vague « agents & propreté » (2026-10-13) : 29 outils MCP (versions Docs: lister/restaurer), polling de notifications unifié sur le SSE, page d'audit admin filtrable et paginée.
+- Armada « 200 missions » (2026-10-14, ~100 livrées) : refonte des 14 apps au niveau produit (landing, Drive, Docs éditeur, Sheets, Slides, Calendar, Tasks, Forms, Mail, Chat, Meet, Sites, Classroom, design system), 29 outils MCP, notifications SSE, correctifs produit majeurs (classroom inter-organisations, crash navigateur Sheets). Rapport complet : docs/RAPPORT-ARMADA.md.
 ## Risques majeurs suivis
 
 - **Moteurs bureautiques** : fidélité OOXML partielle assumée ; POC de conversion exigés avant développement (Docs/Sheets/Slides).
