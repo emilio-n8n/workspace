@@ -4,7 +4,6 @@ import {
   ConfirmDialog,
   cn,
   IconMail,
-  Input,
   PageHeader,
   SegmentedTabs,
   Toasts,
@@ -19,18 +18,32 @@ import {
   getMailboxFn,
   getMessageFn,
   listFoldersFn,
+  listLabelCountsFn,
+  listLabelsFn,
   listMessagesFn,
   listThreadMessagesFn,
+  type MailLabel,
   type MessageDetail,
   type MessageSummary,
+  markThreadReadFn,
   restoreMessageFn,
+  setMessageLabelsFn,
   type ThreadSummary,
   toggleStarFn,
   trashMessageFn,
 } from "../server.ts";
 import { formatFileSize } from "./attachments.ts";
 import { ComposerDialog, type ComposerSeed, EMPTY_SEED } from "./composer.tsx";
-import { MessageList, MessageListEmpty, type MessageListItem } from "./message-list.tsx";
+import { FilterBar } from "./filter-bar.tsx";
+import { EMPTY_FILTERS, type MailFilters } from "./filters.ts";
+import { LabelChip } from "./label-chip.tsx";
+import { LabelAssignment, LabelsPanel, ManageLabelsDialog } from "./labels-panel.tsx";
+import {
+  type ExpandedMessage,
+  MessageList,
+  MessageListEmpty,
+  type MessageListItem,
+} from "./message-list.tsx";
 import { quoteOriginal, replyAllCopies, replyAllRecipients, replySubject } from "./reply.ts";
 import { clampIndex, type MailAction, stepIndex, useMailShortcuts } from "./shortcuts.ts";
 import { ShortcutsHelp } from "./shortcuts-help.tsx";
@@ -92,6 +105,7 @@ function threadToItem(thread: ThreadSummary, folder: FolderKey): MessageListItem
     count: thread.messageCount,
     attachmentCount: latest.attachmentCount,
     sendError: latest.sendError,
+    labels: thread.labels,
   };
 }
 
@@ -110,21 +124,41 @@ function messageToItem(message: MessageSummary, folder: FolderKey): MessageListI
     starred: message.starred,
     attachmentCount: message.attachmentCount,
     sendError: message.sendError,
+    labels: message.labels,
+  };
+}
+
+function toExpandedMessage(message: MessageDetail, folder: FolderKey): ExpandedMessage {
+  return {
+    id: message.id,
+    title:
+      folder === "sent" || folder === "drafts"
+        ? message.toAddresses.join(", ") || "(sans destinataire)"
+        : (message.fromName ?? message.fromAddress),
+    subject: message.subject,
+    snippet: message.snippet,
+    date: fmtDate(message.createdAt),
+    unread: !message.read,
+    starred: message.starred,
   };
 }
 
 /**
- * Mail — boîtes locales par utilisateur, dossiers, recherche, brouillons,
- * envoi (SMTP optionnel, l'échec est toujours visible sur le message), fils de
- * discussion et raccourcis clavier (j/k, n, e, r, s, ?, /).
- */ export function MailView() {
+ * Mail — boîtes locales par utilisateur, dossiers, filtres, libellés
+ * personnels, conversations dépliables, brouillons, envoi (SMTP optionnel,
+ * l'échec est toujours visible sur le message) et raccourcis clavier
+ * (j/k, n, e, r, s, ?, /).
+ */
+export function MailView() {
   const [address, setAddress] = useState("");
   const [folders, setFolders] = useState<FolderCounts | null>(null);
   const [folder, setFolder] = useState<FolderKey>("inbox");
   const [mode, setMode] = useState<ViewMode>("conversations");
-  const [query, setQuery] = useState("");
-  const [unreadOnly, setUnreadOnly] = useState(false);
-  const [starredOnly, setStarredOnly] = useState(false);
+  const [filters, setFilters] = useState<MailFilters>(EMPTY_FILTERS);
+  const [labels, setLabels] = useState<MailLabel[]>([]);
+  const [labelCounts, setLabelCounts] = useState<Record<string, { total: number; unread: number }>>(
+    {},
+  );
   const [messages, setMessages] = useState<MessageSummary[]>([]);
   const [threads, setThreads] = useState<ThreadSummary[]>([]);
   const [selected, setSelected] = useState<MessageDetail | null>(null);
@@ -139,6 +173,9 @@ function messageToItem(message: MessageSummary, folder: FolderKey): MessageListI
   const [busy, setBusy] = useState(false);
   const [confirmDeleteForever, setConfirmDeleteForever] = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
+  const [showLabels, setShowLabels] = useState(false);
+  const [expandedKey, setExpandedKey] = useState<string | null>(null);
+  const [expandedMessages, setExpandedMessages] = useState<ExpandedMessage[] | null>(null);
   const { toasts, push, dismiss } = useToasts();
   const searchRef = useRef<HTMLInputElement>(null);
 
@@ -146,32 +183,56 @@ function messageToItem(message: MessageSummary, folder: FolderKey): MessageListI
     setFolders(await listFoldersFn());
   }, []);
 
+  const refreshLabels = useCallback(async () => {
+    const [list, counts] = await Promise.all([listLabelsFn(), listLabelCountsFn()]);
+    setLabels(list);
+    setLabelCounts(counts);
+  }, []);
+
   const refreshList = useCallback(async () => {
+    const data = {
+      folder,
+      query: filters.query,
+      from: filters.from,
+      to: filters.to,
+      unreadOnly: filters.unreadOnly,
+      starredOnly: filters.starredOnly,
+      hasAttachment: filters.hasAttachment,
+      labelId: filters.labelId ?? undefined,
+    };
     if (mode === "conversations") {
-      const list = await listMessagesFn({
-        data: { folder, query, unreadOnly, starredOnly, threaded: true },
-      });
+      const list = await listMessagesFn({ data: { ...data, threaded: true } });
       // threaded: true → le serveur renvoie des fils (listMessages).
       setThreads(list as ThreadSummary[]);
     } else {
-      const list = await listMessagesFn({ data: { folder, query, unreadOnly, starredOnly } });
+      const list = await listMessagesFn({ data });
       setMessages(list as MessageSummary[]);
     }
-  }, [folder, query, unreadOnly, starredOnly, mode]);
+  }, [
+    folder,
+    filters.query,
+    filters.from,
+    filters.to,
+    filters.unreadOnly,
+    filters.starredOnly,
+    filters.hasAttachment,
+    filters.labelId,
+    mode,
+  ]);
 
   useEffect(() => {
     void (async () => {
       try {
         const mailbox = await getMailboxFn();
         setAddress(mailbox.address);
-        await refreshFolders();
+        await Promise.all([refreshFolders(), refreshLabels()]);
       } catch (caught) {
         push("danger", caught instanceof Error ? caught.message : "Chargement impossible.");
       } finally {
         setLoading(false);
       }
     })();
-  }, [refreshFolders, push]);
+  }, [refreshFolders, refreshLabels, push]);
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -189,8 +250,8 @@ function messageToItem(message: MessageSummary, folder: FolderKey): MessageListI
   }, [refreshList, refreshFolders]);
 
   const refreshAll = useCallback(async () => {
-    await Promise.all([refreshList(), refreshFolders()]);
-  }, [refreshList, refreshFolders]);
+    await Promise.all([refreshList(), refreshFolders(), refreshLabels()]);
+  }, [refreshList, refreshFolders, refreshLabels]);
 
   // -------------------------------------------------------------------------
   // Lecture
@@ -211,6 +272,14 @@ function messageToItem(message: MessageSummary, folder: FolderKey): MessageListI
   useEffect(() => {
     setActiveIndex((current) => clampIndex(current, items.length));
   }, [items.length]);
+
+  // Un fil disparu de la liste (archivé, filtré) ne reste pas déplié.
+  useEffect(() => {
+    if (expandedKey !== null && !items.some((item) => item.key === expandedKey)) {
+      setExpandedKey(null);
+      setExpandedMessages(null);
+    }
+  }, [expandedKey, items]);
 
   const selectedKey =
     mode === "conversations" ? (selectedThread?.threadKey ?? null) : (selected?.id ?? null);
@@ -251,7 +320,28 @@ function messageToItem(message: MessageSummary, folder: FolderKey): MessageListI
         void openMessage(item.messageId);
       }
     },
-    [mode, threads, openThread, openMessage],
+    [mode, threads, openMessage, openThread],
+  );
+
+  /** Déplie/replie une conversation et charge ses messages au besoin. */
+  const toggleExpand = useCallback(
+    async (item: MessageListItem) => {
+      if (expandedKey === item.key) {
+        setExpandedKey(null);
+        setExpandedMessages(null);
+        return;
+      }
+      setExpandedKey(item.key);
+      setExpandedMessages(null);
+      try {
+        const loaded = await listThreadMessagesFn({ data: { messageId: item.messageId } });
+        setExpandedMessages(loaded.map((message) => toExpandedMessage(message, folder)));
+      } catch (caught) {
+        setExpandedMessages([]);
+        push("danger", caught instanceof Error ? caught.message : "Ouverture du fil impossible.");
+      }
+    },
+    [expandedKey, folder, push],
   );
 
   const openComposer = useCallback((base?: Partial<ComposerSeed>) => {
@@ -295,6 +385,17 @@ function messageToItem(message: MessageSummary, folder: FolderKey): MessageListI
     [push, refreshAll],
   );
 
+  const onDraftSaved = useCallback(() => {
+    void refreshAll();
+  }, [refreshAll]);
+
+  const onComposerError = useCallback(
+    (message: string) => {
+      push("danger", message);
+    },
+    [push],
+  );
+
   // -------------------------------------------------------------------------
   // Actions sur le message affiché
   // -------------------------------------------------------------------------
@@ -318,12 +419,81 @@ function messageToItem(message: MessageSummary, folder: FolderKey): MessageListI
             ),
           });
         }
+        if (expandedKey !== null && expandedMessages !== null) {
+          setExpandedMessages(
+            expandedMessages.map((message) =>
+              message.id === messageId ? { ...message, starred: result.starred } : message,
+            ),
+          );
+        }
       } catch (caught) {
         push("danger", caught instanceof Error ? caught.message : "Action impossible.");
       }
     },
+    [push, refreshAll, selected, selectedThread, expandedKey, expandedMessages],
+  );
+
+  /** Applique un ensemble exact de libellés au message affiché. */
+  const onApplyLabels = useCallback(
+    async (messageId: string, labelIds: string[]) => {
+      setBusy(true);
+      try {
+        const { labels: applied } = await setMessageLabelsFn({
+          data: { messageId, labelIds },
+        });
+        if (selected?.id === messageId) setSelected({ ...selected, labels: applied });
+        if (selectedThread) {
+          setSelectedThread({
+            ...selectedThread,
+            messages: selectedThread.messages.map((message) =>
+              message.id === messageId ? { ...message, labels: applied } : message,
+            ),
+          });
+        }
+        await refreshAll();
+        push(
+          "success",
+          applied.length === 0
+            ? "Libellés retirés."
+            : `Libellé${applied.length > 1 ? "s" : ""} appliqué${applied.length > 1 ? "s" : ""} : ${applied
+                .map((label) => label.name)
+                .join(", ")}.`,
+        );
+      } catch (caught) {
+        push("danger", caught instanceof Error ? caught.message : "Application impossible.");
+      } finally {
+        setBusy(false);
+      }
+    },
     [push, refreshAll, selected, selectedThread],
   );
+
+  /** Marque comme lus tous les messages de la conversation affichée. */
+  const onMarkThreadRead = useCallback(async () => {
+    if (!activeMessage) return;
+    setBusy(true);
+    try {
+      const { updated } = await markThreadReadFn({ data: { messageId: activeMessage.id } });
+      push(
+        "success",
+        updated === 0
+          ? "Cette conversation était déjà lue."
+          : `${updated} message${updated > 1 ? "s" : ""} marqué${updated > 1 ? "s" : ""} comme lu${updated > 1 ? "s" : ""}.`,
+      );
+      if (selectedThread) {
+        setSelectedThread({
+          ...selectedThread,
+          messages: selectedThread.messages.map((message) => ({ ...message, read: true })),
+        });
+      }
+      if (selected) setSelected({ ...selected, read: true });
+      await refreshAll();
+    } catch (caught) {
+      push("danger", caught instanceof Error ? caught.message : "Marquage impossible.");
+    } finally {
+      setBusy(false);
+    }
+  }, [activeMessage, push, refreshAll, selected, selectedThread]);
 
   /** Après une sortie de liste (archive, corbeille) : la sélection reste utile. */
   const keepSelection = useCallback(() => {
@@ -481,25 +651,30 @@ function messageToItem(message: MessageSummary, folder: FolderKey): MessageListI
     ],
   );
 
-  const modalOpen = composer !== null || confirmDeleteForever || showShortcuts;
+  const modalOpen = composer !== null || confirmDeleteForever || showShortcuts || showLabels;
 
   useMailShortcuts(onShortcut, { modalOpen });
 
-  const onDraftSaved = useCallback(() => {
-    void refreshAll();
-  }, [refreshAll]);
-
-  const onComposerError = useCallback(
-    (message: string) => {
-      push("danger", message);
-    },
-    [push],
-  );
-
   const folderEntries = useMemo(() => Object.keys(FOLDER_LABELS) as FolderKey[], []);
+
+  const labelEntries = useMemo(
+    () =>
+      labels.map((label) => ({
+        id: label.id,
+        name: label.name,
+        color: label.color,
+        total: labelCounts[label.id]?.total ?? 0,
+        unread: labelCounts[label.id]?.unread ?? 0,
+      })),
+    [labels, labelCounts],
+  );
 
   const canArchive =
     activeMessage !== null && folder !== "trash" && folder !== "drafts" && folder !== "archive";
+
+  const unreadThread = selectedThread
+    ? selectedThread.messages.filter((message) => !message.read).length
+    : 0;
 
   return (
     <div className="mx-auto flex h-[calc(100vh-8.5rem)] max-w-6xl flex-col gap-3">
@@ -541,8 +716,6 @@ function messageToItem(message: MessageSummary, folder: FolderKey): MessageListI
                     setActiveIndex(-1);
                     setSelected(null);
                     setSelectedThread(null);
-                    setUnreadOnly(false);
-                    setStarredOnly(false);
                   }}
                   className={cn(
                     "flex items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm transition-colors",
@@ -558,23 +731,33 @@ function messageToItem(message: MessageSummary, folder: FolderKey): MessageListI
               );
             })}
           </nav>
+
+          <LabelsPanel
+            labels={labelEntries}
+            activeLabelId={filters.labelId}
+            onSelect={(labelId) => setFilters({ ...filters, labelId })}
+            onManage={() => setShowLabels(true)}
+          />
+
           <div className="mt-auto flex flex-col gap-1 text-xs">
             <button
               type="button"
-              onClick={() => setUnreadOnly((current) => !current)}
+              aria-pressed={filters.unreadOnly}
+              onClick={() => setFilters({ ...filters, unreadOnly: !filters.unreadOnly })}
               className={cn(
                 "rounded-lg px-2 py-1.5 text-left transition-colors",
-                unreadOnly ? "bg-accent text-accent-foreground" : "hover:bg-muted",
+                filters.unreadOnly ? "bg-accent text-accent-foreground" : "hover:bg-muted",
               )}
             >
               Non lus uniquement
             </button>
             <button
               type="button"
-              onClick={() => setStarredOnly((current) => !current)}
+              aria-pressed={filters.starredOnly}
+              onClick={() => setFilters({ ...filters, starredOnly: !filters.starredOnly })}
               className={cn(
                 "rounded-lg px-2 py-1.5 text-left transition-colors",
-                starredOnly ? "bg-accent text-accent-foreground" : "hover:bg-muted",
+                filters.starredOnly ? "bg-accent text-accent-foreground" : "hover:bg-muted",
               )}
             >
               Suivis ★
@@ -593,18 +776,18 @@ function messageToItem(message: MessageSummary, folder: FolderKey): MessageListI
                 setActiveIndex(-1);
                 setSelected(null);
                 setSelectedThread(null);
+                setExpandedKey(null);
+                setExpandedMessages(null);
               }}
             />
-            <Input
-              id="mail-search"
-              ref={searchRef}
-              aria-label="Rechercher dans les messages"
-              placeholder="Rechercher… (touche /)"
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              className="h-8"
-            />
           </div>
+          <FilterBar
+            inputRef={searchRef}
+            filters={filters}
+            resultCount={items.length}
+            labels={labels}
+            onChange={setFilters}
+          />
           <MessageList
             items={items}
             selectedKey={selectedKey}
@@ -615,7 +798,11 @@ function messageToItem(message: MessageSummary, folder: FolderKey): MessageListI
             empty={
               <MessageListEmpty
                 title={mode === "conversations" ? "Aucune conversation." : "Aucun message."}
-                hint={EMPTY_HINTS[folder]}
+                hint={
+                  filters.labelId
+                    ? "Aucun message ne porte ce libellé dans ce dossier."
+                    : EMPTY_HINTS[folder]
+                }
                 action={
                   <Button size="sm" variant="outline" onClick={() => openComposer()}>
                     Écrire un message
@@ -624,6 +811,11 @@ function messageToItem(message: MessageSummary, folder: FolderKey): MessageListI
               />
             }
             onSelect={(item, index) => selectItem(item, index)}
+            expandedKey={mode === "conversations" ? expandedKey : null}
+            expandedMessages={expandedMessages}
+            onToggleExpand={(item) => void toggleExpand(item)}
+            onExpandMessage={(messageId) => void openMessage(messageId)}
+            onStarMessage={(messageId) => void onToggleStar(messageId)}
           />
         </section>
 
@@ -638,7 +830,13 @@ function messageToItem(message: MessageSummary, folder: FolderKey): MessageListI
                   <p className="text-xs text-muted-foreground">
                     {selectedThread.messages.length} message
                     {selectedThread.messages.length > 1 ? "s" : ""} dans la conversation
+                    {threadLatest?.labels.length ? " ·" : ""}
                   </p>
+                  <div className="mt-1 flex flex-wrap items-center gap-1">
+                    {threadLatest?.labels.map((label) => (
+                      <LabelChip key={label.id} label={label} />
+                    ))}
+                  </div>
                 </div>
                 <div className="flex flex-wrap items-center gap-1">
                   <Button
@@ -662,6 +860,16 @@ function messageToItem(message: MessageSummary, folder: FolderKey): MessageListI
                         Répondre à tous
                       </Button>
                     </>
+                  ) : null}
+                  {unreadThread > 0 ? (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      loading={busy}
+                      onClick={() => void onMarkThreadRead()}
+                    >
+                      Tout marquer comme lu
+                    </Button>
                   ) : null}
                   {folder === "drafts" && threadLatest ? (
                     <Button
@@ -784,6 +992,16 @@ function messageToItem(message: MessageSummary, folder: FolderKey): MessageListI
                   </article>
                 ))}
               </div>
+              {threadLatest ? (
+                <div className="border-t border-border p-4">
+                  <LabelAssignment
+                    messageLabels={threadLatest.labels}
+                    allLabels={labels}
+                    busy={busy}
+                    onApply={(labelIds) => void onApplyLabels(threadLatest.id, labelIds)}
+                  />
+                </div>
+              ) : null}
             </>
           ) : selected ? (
             <>
@@ -805,6 +1023,11 @@ function messageToItem(message: MessageSummary, folder: FolderKey): MessageListI
                       ? ` · Cci : ${selected.bccAddresses.join(", ")}`
                       : ""}
                   </p>
+                  <div className="mt-1 flex flex-wrap items-center gap-1">
+                    {selected.labels.map((label) => (
+                      <LabelChip key={label.id} label={label} />
+                    ))}
+                  </div>
                   {selected.sendError ? (
                     <p className="mt-1 rounded-md border border-destructive/40 bg-destructive/5 px-2 py-1 text-xs text-destructive">
                       {selected.sendError}
@@ -920,6 +1143,14 @@ function messageToItem(message: MessageSummary, folder: FolderKey): MessageListI
                   {selected.body || "(message vide)"}
                 </div>
                 <AttachmentLinks attachments={selected.attachments} />
+                <div className="border-t border-border pt-3">
+                  <LabelAssignment
+                    messageLabels={selected.labels}
+                    allLabels={labels}
+                    busy={busy}
+                    onApply={(labelIds) => void onApplyLabels(selected.id, labelIds)}
+                  />
+                </div>
               </div>
             </>
           ) : (
@@ -964,6 +1195,14 @@ function messageToItem(message: MessageSummary, folder: FolderKey): MessageListI
       ) : null}
 
       <ShortcutsHelp open={showShortcuts} onClose={() => setShowShortcuts(false)} />
+
+      <ManageLabelsDialog
+        open={showLabels}
+        onClose={() => setShowLabels(false)}
+        labels={labels}
+        onChanged={() => void refreshLabels()}
+        onError={(message) => push("danger", message)}
+      />
 
       <ConfirmDialog
         open={confirmDeleteForever}

@@ -6,11 +6,21 @@ import type { Actor } from "@workspace/permissions";
 import { getStorage } from "@workspace/storage";
 import { and, asc, desc, eq, ilike, inArray, isNull, or, sql } from "drizzle-orm";
 import {
+  DEFAULT_LABEL_COLOR,
+  isLabelColorKey,
+  MAX_LABEL_NAME_LENGTH,
+  MAX_LABELS_PER_MESSAGE,
+  MAX_LABELS_PER_USER,
+} from "./label-colors.ts";
+import {
   type MailAttachmentRow,
+  type MailLabelRow,
   type MailMailboxRow,
   type MailMessageRow,
   mailAttachments,
+  mailLabels,
   mailMailboxes,
+  mailMessageLabels,
   mailMessages,
 } from "./schema.ts";
 
@@ -57,7 +67,15 @@ export type MessageSummary = {
   sentAt: string | null;
   /** Nombre de pièces jointes — le détail expose la liste complète. */
   attachmentCount: number;
+  /** Libellés personnels appliqués au message. */
+  labels: MessageLabelRef[];
 };
+
+/** Libellé réduit à ce que l'UI affiche (id, nom, couleur). */
+export type MessageLabelRef = { id: string; name: string; color: string };
+
+/** Libellé personnel, tel que renvoyé par la liste de gestion. */
+export type MailLabel = MessageLabelRef & { createdAt: string };
 
 /** Métadonnées d'une pièce jointe exposées à l'UI (jamais la clé de stockage). */
 export type AttachmentMeta = {
@@ -82,13 +100,25 @@ export type ThreadSummary = {
   messageCount: number;
   unreadCount: number;
   latest: MessageSummary;
+  /** Union des libellés des messages du fil. */
+  labels: MessageLabelRef[];
 };
 
 export type ListMessagesInput = {
   folder?: FolderKey;
   query?: string;
+  /** Filtre par expéditeur (contient, insensible à la casse). */
+  from?: string;
+  /** Filtre par destinataire — compare chaque élément de « À ». */
+  to?: string;
+  /** Uniquement les messages non lus. */
   unreadOnly?: boolean;
+  /** Uniquement les messages suivis (étoile). */
   starredOnly?: boolean;
+  /** Uniquement les messages portant au moins une pièce jointe. */
+  hasAttachment?: boolean;
+  /** Uniquement les messages portant ce libellé. */
+  labelId?: string;
 };
 
 export type FolderCounts = Record<FolderKey, { total: number; unread: number }>;
@@ -461,7 +491,11 @@ type MessageSummaryRow = Pick<
   | "sentAt"
 > & { attachmentCount: number };
 
-function toSummary(row: MessageSummaryRow, snippet: string): MessageSummary {
+function toSummary(
+  row: MessageSummaryRow,
+  snippet: string,
+  labels: MessageLabelRef[] = [],
+): MessageSummary {
   return {
     id: row.id,
     folder: row.folder as FolderKey,
@@ -476,17 +510,50 @@ function toSummary(row: MessageSummaryRow, snippet: string): MessageSummary {
     createdAt: row.createdAt.toISOString(),
     sentAt: row.sentAt?.toISOString() ?? null,
     attachmentCount: row.attachmentCount,
+    labels,
   };
 }
 
-function toDetail(row: MailMessageRow, attachments: AttachmentMeta[]): MessageDetail {
+function toDetail(
+  row: MailMessageRow,
+  attachments: AttachmentMeta[],
+  labels: MessageLabelRef[] = [],
+): MessageDetail {
   return {
-    ...toSummary({ ...row, attachmentCount: attachments.length }, row.body),
+    ...toSummary({ ...row, attachmentCount: attachments.length }, row.body, labels),
     body: row.body,
     ccAddresses: row.ccAddresses,
     bccAddresses: row.bccAddresses,
     attachments,
   };
+}
+
+/** Métadonnées des libellés de plusieurs messages (une seule requête). */
+async function labelsByMessage(
+  actor: Actor,
+  messageIds: string[],
+): Promise<Map<string, MessageLabelRef[]>> {
+  const result = new Map<string, MessageLabelRef[]>();
+  if (messageIds.length === 0) return result;
+  const rows = await db()
+    .select({
+      messageId: mailMessageLabels.messageId,
+      id: mailLabels.id,
+      name: mailLabels.name,
+      color: mailLabels.color,
+    })
+    .from(mailMessageLabels)
+    .innerJoin(mailLabels, eq(mailLabels.id, mailMessageLabels.labelId))
+    .where(
+      and(inArray(mailMessageLabels.messageId, messageIds), eq(mailLabels.userId, actor.userId)),
+    )
+    .orderBy(asc(mailLabels.name), asc(mailLabels.id));
+  for (const row of rows) {
+    const list = result.get(row.messageId) ?? [];
+    list.push({ id: row.id, name: row.name, color: row.color });
+    result.set(row.messageId, list);
+  }
+  return result;
 }
 
 /** Métadonnées des pièces jointes de plusieurs messages (une seule requête). */
@@ -544,7 +611,12 @@ export async function listFolders(actor: Actor): Promise<FolderCounts> {
 }
 
 /** Conditions communes aux listes plates et filaires (dossier + filtres). */
-function listConditions(mailboxId: string, folder: FolderKey, input: ListMessagesInput) {
+function listConditions(
+  actor: Actor,
+  mailboxId: string,
+  folder: FolderKey,
+  input: ListMessagesInput,
+) {
   const conditions = [eq(mailMessages.mailboxId, mailboxId), eq(mailMessages.folder, folder)];
   const query = input.query?.trim().slice(0, MAX_SEARCH_QUERY_LENGTH);
   if (query && query.length > 0) {
@@ -556,8 +628,32 @@ function listConditions(mailboxId: string, folder: FolderKey, input: ListMessage
     );
     if (search) conditions.push(search);
   }
+  // Filtre « De » : l'expéditeur, comparé comme la recherche (contient).
+  const from = input.from?.trim().slice(0, MAX_SEARCH_QUERY_LENGTH);
+  if (from && from.length > 0) {
+    conditions.push(ilike(mailMessages.fromAddress, `%${escapeLike(from)}%`));
+  }
+  // Filtre « À » : chaque destinataire est comparé (jsonb → texte par élément).
+  const to = input.to?.trim().slice(0, MAX_SEARCH_QUERY_LENGTH);
+  if (to && to.length > 0) {
+    conditions.push(
+      sql`exists (select 1 from jsonb_array_elements_text(${mailMessages.toAddresses}) as destinataire where destinataire ilike ${`%${escapeLike(to)}%`})`,
+    );
+  }
   if (input.unreadOnly) conditions.push(isNull(mailMessages.readAt));
   if (input.starredOnly) conditions.push(eq(mailMessages.starred, true));
+  if (input.hasAttachment) {
+    conditions.push(
+      sql`exists (select 1 from ${mailAttachments} where ${mailAttachments.messageId} = ${sql.identifier("mail_messages")}.${sql.identifier("id")})`,
+    );
+  }
+  // Filtre par libellé : seuls les libellés de l'utilisateur comptent, la
+  // condition est posée côté jointure (jamais de libellé étranger).
+  if (input.labelId) {
+    conditions.push(
+      sql`exists (select 1 from ${mailMessageLabels} join ${mailLabels} on ${mailLabels.id} = ${mailMessageLabels.labelId} where ${mailMessageLabels.messageId} = ${sql.identifier("mail_messages")}.${sql.identifier("id")} and ${mailMessageLabels.labelId} = ${input.labelId} and ${mailLabels.userId} = ${actor.userId})`,
+    );
+  }
   return conditions;
 }
 
@@ -590,14 +686,24 @@ const summarySelection = {
  */
 function toThreadSummaries(
   rows: (MessageSummaryRow & { threadKey: string | null; snippet: string })[],
+  labelsByKey: Map<string, MessageLabelRef[]>,
 ): ThreadSummary[] {
   const threads = new Map<string, ThreadSummary>();
   for (const row of rows) {
     const key = row.threadKey ?? row.id;
+    // Les libellés sont appliqués par message : un fil porte l'union des
+    // libellés de ses messages, ceux du plus récent d'abord.
+    const labels = new Map<string, MessageLabelRef>();
+    for (const label of labelsByKey.get(row.id) ?? []) labels.set(label.id, label);
     const thread = threads.get(key);
     if (thread) {
       thread.messageCount += 1;
       if (row.readAt === null) thread.unreadCount += 1;
+      for (const label of labels.values()) {
+        if (!thread.labels.some((existing) => existing.id === label.id)) {
+          thread.labels.push(label);
+        }
+      }
       continue;
     }
     threads.set(key, {
@@ -605,7 +711,8 @@ function toThreadSummaries(
       subject: row.subject,
       messageCount: 1,
       unreadCount: row.readAt === null ? 1 : 0,
-      latest: toSummary(row, row.snippet),
+      latest: toSummary(row, row.snippet, [...labels.values()]),
+      labels: [...labels.values()],
     });
   }
   return [...threads.values()].slice(0, MAX_LIST_RESULTS);
@@ -629,7 +736,7 @@ export async function listMessages(
 ): Promise<MessageSummary[] | ThreadSummary[]> {
   const mailbox = await ensureMailbox(actor);
   const folder = input.folder ?? "inbox";
-  const conditions = listConditions(mailbox.id, folder, input);
+  const conditions = listConditions(actor, mailbox.id, folder, input);
 
   if (input.threaded) {
     // Les compteurs par fil doivent être exacts : on lit les résumés du dossier
@@ -639,7 +746,11 @@ export async function listMessages(
       .from(mailMessages)
       .where(and(...conditions))
       .orderBy(desc(mailMessages.createdAt), desc(mailMessages.id));
-    return toThreadSummaries(rows);
+    const labels = await labelsByMessage(
+      actor,
+      rows.map((row) => row.id),
+    );
+    return toThreadSummaries(rows, labels);
   }
 
   const rows = await db()
@@ -648,7 +759,11 @@ export async function listMessages(
     .where(and(...conditions))
     .orderBy(desc(mailMessages.createdAt))
     .limit(MAX_LIST_RESULTS);
-  return rows.map((row) => toSummary(row, row.snippet));
+  const labels = await labelsByMessage(
+    actor,
+    rows.map((row) => row.id),
+  );
+  return rows.map((row) => toSummary(row, row.snippet, labels.get(row.id) ?? []));
 }
 
 /**
@@ -678,7 +793,11 @@ export async function listThreadMessages(
     )
     .orderBy(asc(mailMessages.createdAt), asc(mailMessages.id));
   const attachments = await attachmentsByMessage(rows.map((row) => row.id));
-  return rows.map((row) => toDetail(row, attachments.get(row.id) ?? []));
+  const labels = await labelsByMessage(
+    actor,
+    rows.map((row) => row.id),
+  );
+  return rows.map((row) => toDetail(row, attachments.get(row.id) ?? [], labels.get(row.id) ?? []));
 }
 
 export async function getMessage(actor: Actor, messageId: string): Promise<MessageDetail> {
@@ -691,7 +810,8 @@ export async function getMessage(actor: Actor, messageId: string): Promise<Messa
     message.readAt = new Date();
   }
   const attachments = await attachmentsByMessage([message.id]);
-  return toDetail(message, attachments.get(message.id) ?? []);
+  const labels = await labelsByMessage(actor, [message.id]);
+  return toDetail(message, attachments.get(message.id) ?? [], labels.get(message.id) ?? []);
 }
 
 export async function toggleStar(actor: Actor, messageId: string): Promise<{ starred: boolean }> {
@@ -708,6 +828,259 @@ export async function toggleStar(actor: Actor, messageId: string): Promise<{ sta
 export async function markRead(actor: Actor, messageId: string): Promise<void> {
   await requireOwnedMessage(actor, messageId);
   await db().update(mailMessages).set({ readAt: new Date() }).where(eq(mailMessages.id, messageId));
+}
+
+/**
+ * Marque comme lus tous les messages du fil auquel appartient `messageId`
+ * (même boîte, même dossier, même clé). Un message sans clé ne marque que
+ * lui. Retourne le nombre de messages réellement modifiés — un fil déjà lu
+ * renvoie 0, ce n'est pas une erreur.
+ */
+export async function markThreadRead(
+  actor: Actor,
+  messageId: string,
+): Promise<{ updated: number }> {
+  const { mailbox, message } = await requireOwnedMessage(actor, messageId);
+  if (message.threadKey === null) {
+    if (message.readAt !== null) return { updated: 0 };
+    await db()
+      .update(mailMessages)
+      .set({ readAt: new Date() })
+      .where(eq(mailMessages.id, messageId));
+    return { updated: 1 };
+  }
+  const updated = await db()
+    .update(mailMessages)
+    .set({ readAt: new Date() })
+    .where(
+      and(
+        eq(mailMessages.mailboxId, mailbox.id),
+        eq(mailMessages.folder, message.folder),
+        eq(mailMessages.threadKey, message.threadKey),
+        isNull(mailMessages.readAt),
+      ),
+    )
+    .returning({ id: mailMessages.id });
+  return { updated: updated.length };
+}
+
+// ---------------------------------------------------------------------------
+// Libellés personnels
+// ---------------------------------------------------------------------------
+
+function labelView(row: MailLabelRow): MailLabel {
+  return { id: row.id, name: row.name, color: row.color, createdAt: row.createdAt.toISOString() };
+}
+
+function labelRef(row: { id: string; name: string; color: string }): MessageLabelRef {
+  return { id: row.id, name: row.name, color: row.color };
+}
+
+function assertLabelName(value: unknown): string {
+  if (typeof value !== "string") {
+    throw new MailError("validation", "Nom de libellé invalide.");
+  }
+  const name = value.trim().replace(/\s+/g, " ");
+  if (name.length === 0) {
+    throw new MailError("validation", "Le nom du libellé ne peut pas être vide.");
+  }
+  if (name.length > MAX_LABEL_NAME_LENGTH) {
+    throw new MailError(
+      "validation",
+      `Le nom du libellé ne peut pas dépasser ${MAX_LABEL_NAME_LENGTH} caractères.`,
+    );
+  }
+  return name;
+}
+
+function assertLabelColor(value: unknown): string {
+  if (!isLabelColorKey(value)) {
+    throw new MailError("validation", "Couleur de libellé inconnue.");
+  }
+  return value;
+}
+
+async function requireOwnLabel(actor: Actor, labelId: string): Promise<MailLabelRow> {
+  const [row] = await db()
+    .select()
+    .from(mailLabels)
+    .where(and(eq(mailLabels.id, labelId), eq(mailLabels.userId, actor.userId)))
+    .limit(1);
+  if (!row) throw new MailError("not_found", "Libellé introuvable.");
+  return row;
+}
+
+/** Libellés de l'utilisateur, triés par nom (ordre stable et lisible). */
+export async function listLabels(actor: Actor): Promise<MailLabel[]> {
+  const rows = await db()
+    .select()
+    .from(mailLabels)
+    .where(eq(mailLabels.userId, actor.userId))
+    .orderBy(asc(mailLabels.name));
+  return rows.map(labelView);
+}
+
+/** Nombre de messages par libellé (total, puis non lus de la boîte). */
+export async function listLabelCounts(
+  actor: Actor,
+): Promise<Record<string, { total: number; unread: number }>> {
+  const mailbox = await ensureMailbox(actor);
+  const rows = await db()
+    .select({
+      labelId: mailMessageLabels.labelId,
+      total: sql<number>`count(*)`.mapWith(Number),
+      unread:
+        sql<number>`count(*) filter (where ${mailMessages.readAt} is null and ${mailMessages.folder} = 'inbox')`.mapWith(
+          Number,
+        ),
+    })
+    .from(mailMessageLabels)
+    .innerJoin(mailMessages, eq(mailMessages.id, mailMessageLabels.messageId))
+    .innerJoin(mailLabels, eq(mailLabels.id, mailMessageLabels.labelId))
+    .where(and(eq(mailLabels.userId, actor.userId), eq(mailMessages.mailboxId, mailbox.id)))
+    .groupBy(mailMessageLabels.labelId);
+
+  const counts: Record<string, { total: number; unread: number }> = {};
+  for (const row of rows) {
+    counts[row.labelId] = { total: row.total, unread: row.unread };
+  }
+  return counts;
+}
+
+export async function createLabel(
+  actor: Actor,
+  input: { name: string; color?: string },
+): Promise<MailLabel> {
+  const name = assertLabelName(input.name);
+  const color = assertLabelColor(input.color ?? DEFAULT_LABEL_COLOR);
+  await ensureMailbox(actor);
+
+  const existing = await db()
+    .select({ id: mailLabels.id })
+    .from(mailLabels)
+    .where(eq(mailLabels.userId, actor.userId));
+  if (existing.length >= MAX_LABELS_PER_USER) {
+    throw new MailError(
+      "validation",
+      `${MAX_LABELS_PER_USER} libellés au maximum — supprimez-en un avant d'en créer un nouveau.`,
+    );
+  }
+
+  const [created] = await db()
+    .insert(mailLabels)
+    .values({ orgId: actor.orgId, userId: actor.userId, name, color })
+    .onConflictDoNothing()
+    .returning();
+  if (!created) {
+    throw new MailError("conflict", `Vous avez déjà un libellé « ${name} ».`);
+  }
+  await recordAudit({
+    orgId: actor.orgId,
+    actorUserId: actor.userId,
+    action: "mail.label.create",
+    resourceType: "mail_label",
+    resourceId: created.id,
+    result: "success",
+    metadata: { color },
+  });
+  return labelView(created);
+}
+
+/** Renomme un libellé et/ou change sa couleur. */
+export async function updateLabel(
+  actor: Actor,
+  input: { id: string; name?: string; color?: string },
+): Promise<MailLabel> {
+  const label = await requireOwnLabel(actor, input.id);
+  const name = input.name === undefined ? label.name : assertLabelName(input.name);
+  const color = input.color === undefined ? label.color : assertLabelColor(input.color);
+
+  if (name === label.name && color === label.color) return labelView(label);
+
+  let updated: MailLabelRow | undefined;
+  try {
+    [updated] = await db()
+      .update(mailLabels)
+      .set({ name, color })
+      .where(eq(mailLabels.id, label.id))
+      .returning();
+  } catch (caught) {
+    // Violation d'unicité (user_id, name) : le libellé existe déjà.
+    if (isUniqueViolation(caught)) {
+      throw new MailError("conflict", `Vous avez déjà un libellé « ${name} ».`);
+    }
+    throw caught;
+  }
+  if (!updated) throw new MailError("not_found", "Libellé introuvable.");
+  await recordAudit({
+    orgId: actor.orgId,
+    actorUserId: actor.userId,
+    action: "mail.label.update",
+    resourceType: "mail_label",
+    resourceId: label.id,
+    result: "success",
+  });
+  return labelView(updated);
+}
+
+/**
+ * Supprime un libellé : les couples message/libellé disparaissent avec lui
+ * (cascade), les messages restent intacts.
+ */
+export async function deleteLabel(actor: Actor, labelId: string): Promise<void> {
+  const label = await requireOwnLabel(actor, labelId);
+  await db().delete(mailLabels).where(eq(mailLabels.id, label.id));
+  await recordAudit({
+    orgId: actor.orgId,
+    actorUserId: actor.userId,
+    action: "mail.label.delete",
+    resourceType: "mail_label",
+    resourceId: label.id,
+    result: "success",
+  });
+}
+
+/**
+ * Remplace la liste des libellés d'un message : l'ensemble exact est appliqué
+ * (ajouts et retraits en une seule opération), l'appelant n'a pas à savoir
+ * lesquels étaient déjà là.
+ */
+export async function setMessageLabels(
+  actor: Actor,
+  messageId: string,
+  labelIds: string[],
+): Promise<MessageLabelRef[]> {
+  await requireOwnedMessage(actor, messageId);
+  const requested = [...new Set(labelIds)];
+  if (requested.length > MAX_LABELS_PER_MESSAGE) {
+    throw new MailError("validation", `${MAX_LABELS_PER_MESSAGE} libellés au maximum par message.`);
+  }
+
+  const owned =
+    requested.length === 0
+      ? []
+      : await db()
+          .select({ id: mailLabels.id, name: mailLabels.name, color: mailLabels.color })
+          .from(mailLabels)
+          .where(and(eq(mailLabels.userId, actor.userId), inArray(mailLabels.id, requested)));
+  if (owned.length !== requested.length) {
+    throw new MailError("validation", "Un des libellés choisis n'existe pas.");
+  }
+
+  await withTransaction(async (tx) => {
+    await tx.delete(mailMessageLabels).where(eq(mailMessageLabels.messageId, messageId));
+    if (owned.length > 0) {
+      await tx
+        .insert(mailMessageLabels)
+        .values(owned.map((label) => ({ messageId, labelId: label.id })));
+    }
+  });
+
+  // Ordre d'affichage stable, aligné sur la liste des libellés (par nom).
+  return owned
+    .slice()
+    .sort((left, right) => left.name.localeCompare(right.name, "fr"))
+    .map(labelRef);
 }
 
 // ---------------------------------------------------------------------------

@@ -119,3 +119,57 @@ export const mailAttachments = pgTable(
 export type MailMailboxRow = typeof mailMailboxes.$inferSelect;
 export type MailMessageRow = typeof mailMessages.$inferSelect;
 export type MailAttachmentRow = typeof mailAttachments.$inferSelect;
+
+/**
+ * Libellés personnels : un utilisateur colore et nomme ses propres libellés
+ * (aucun partage, aucune valeur imposée). La suppression du libellé retire
+ * simplement l'étiquette des messages — jamais les messages.
+ */
+export const mailLabels = pgTable(
+  "mail_labels",
+  {
+    id: uuid("id").primaryKey().default(sql`uuidv7()`),
+    orgId: text("org_id")
+      .notNull()
+      .references(() => core.organization.id, { onDelete: "cascade" }),
+    userId: text("user_id")
+      .notNull()
+      .references(() => core.user.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    /** Clé de couleur sémantique (voir LABEL_COLORS), jamais une couleur libre. */
+    color: text("color").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    // Deux libellés homonymes chez le même utilisateur n'auraient aucun sens.
+    uniqueIndex("mail_labels_user_name_uidx").on(table.userId, table.name),
+    index("mail_labels_org_user_idx").on(table.orgId, table.userId),
+  ],
+);
+
+/**
+ * Libellés appliqués à un message : une ligne par couple. Le message ou le
+ * libellé peut disparaître, l'autre reste (suppression en cascade du couple
+ * seul).
+ */
+export const mailMessageLabels = pgTable(
+  "mail_message_labels",
+  {
+    id: uuid("id").primaryKey().default(sql`uuidv7()`),
+    messageId: uuid("message_id")
+      .notNull()
+      .references(() => mailMessages.id, { onDelete: "cascade" }),
+    labelId: uuid("label_id")
+      .notNull()
+      .references(() => mailLabels.id, { onDelete: "cascade" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex("mail_message_labels_unique_idx").on(table.messageId, table.labelId),
+    // Filtre « par libellé » : on part du libellé vers les messages.
+    index("mail_message_labels_label_idx").on(table.labelId),
+  ],
+);
+
+export type MailLabelRow = typeof mailLabels.$inferSelect;
+export type MailMessageLabelRow = typeof mailMessageLabels.$inferSelect;

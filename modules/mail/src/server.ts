@@ -4,20 +4,27 @@ import { requireActor } from "@workspace/auth";
 import { z } from "zod";
 import {
   archiveMessage,
+  createLabel,
+  deleteLabel,
   deleteMessage,
   ensureMailbox,
   getMessage,
   listFolders,
+  listLabelCounts,
+  listLabels,
   listMessages,
   listThreadMessages,
   MAX_ATTACHMENT_BYTES,
   MAX_ATTACHMENTS,
+  markThreadRead,
   restoreMessage,
   saveDraft,
   sendMail,
+  setMessageLabels,
   toggleStar,
   trashMessage,
   unarchiveMessage,
+  updateLabel,
   uploadMailAttachment,
 } from "./index.ts";
 
@@ -26,7 +33,9 @@ export type {
   AttachmentToken,
   FolderCounts,
   FolderKey,
+  MailLabel,
   MessageDetail,
+  MessageLabelRef,
   MessageSummary,
   ThreadSummary,
 } from "./index.ts";
@@ -73,8 +82,16 @@ export const listMessagesFn = createServerFn({ method: "GET" })
       .object({
         folder: folderSchema.optional(),
         query: z.string().max(200).optional(),
+        /** Filtre par expéditeur (« De »). */
+        from: z.string().max(200).optional(),
+        /** Filtre par destinataire (« À »). */
+        to: z.string().max(200).optional(),
         unreadOnly: z.boolean().optional(),
         starredOnly: z.boolean().optional(),
+        /** Uniquement les messages portant une pièce jointe. */
+        hasAttachment: z.boolean().optional(),
+        /** Uniquement les messages portant ce libellé. */
+        labelId: z.string().uuid().optional(),
         /** true → résumés de fils de discussion au lieu des messages plats. */
         threaded: z.boolean().optional(),
       })
@@ -104,6 +121,74 @@ export const toggleStarFn = createServerFn({ method: "POST" })
   .handler(async ({ data }) => {
     const { actor } = await requireActor(getRequest().headers);
     return toggleStar(actor, data.messageId);
+  });
+
+/** Marque comme lus tous les messages d'une conversation. */
+export const markThreadReadFn = createServerFn({ method: "POST" })
+  .validator((input: unknown) => z.object({ messageId: z.string().uuid() }).parse(input))
+  .handler(async ({ data }) => {
+    const { actor } = await requireActor(getRequest().headers);
+    return markThreadRead(actor, data.messageId);
+  });
+
+export const listLabelsFn = createServerFn({ method: "GET" }).handler(async () => {
+  const { actor } = await requireActor(getRequest().headers);
+  return listLabels(actor);
+});
+
+export const listLabelCountsFn = createServerFn({ method: "GET" }).handler(async () => {
+  const { actor } = await requireActor(getRequest().headers);
+  return listLabelCounts(actor);
+});
+
+export const createLabelFn = createServerFn({ method: "POST" })
+  .validator((input: unknown) =>
+    z
+      .object({ name: z.string().min(1).max(40), color: z.string().min(1).max(20).optional() })
+      .parse(input),
+  )
+  .handler(async ({ data }) => {
+    const { actor } = await requireActor(getRequest().headers);
+    return createLabel(actor, data);
+  });
+
+export const updateLabelFn = createServerFn({ method: "POST" })
+  .validator((input: unknown) =>
+    z
+      .object({
+        id: z.string().uuid(),
+        name: z.string().min(1).max(40).optional(),
+        color: z.string().min(1).max(20).optional(),
+      })
+      .parse(input),
+  )
+  .handler(async ({ data }) => {
+    const { actor } = await requireActor(getRequest().headers);
+    return updateLabel(actor, data);
+  });
+
+export const deleteLabelFn = createServerFn({ method: "POST" })
+  .validator((input: unknown) => z.object({ id: z.string().uuid() }).parse(input))
+  .handler(async ({ data }) => {
+    const { actor } = await requireActor(getRequest().headers);
+    await deleteLabel(actor, data.id);
+    return { ok: true };
+  });
+
+/** Applique l'ensemble exact des libellés d'un message (ajouts et retraits). */
+export const setMessageLabelsFn = createServerFn({ method: "POST" })
+  .validator((input: unknown) =>
+    z
+      .object({
+        messageId: z.string().uuid(),
+        labelIds: z.array(z.string().uuid()).max(5),
+      })
+      .parse(input),
+  )
+  .handler(async ({ data }) => {
+    const { actor } = await requireActor(getRequest().headers);
+    const labels = await setMessageLabels(actor, data.messageId, data.labelIds);
+    return { labels };
   });
 
 export const saveDraftFn = createServerFn({ method: "POST" })
