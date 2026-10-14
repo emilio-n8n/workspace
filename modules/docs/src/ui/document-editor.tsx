@@ -5,6 +5,7 @@ import { Image } from "@tiptap/extension-image";
 import { TableKit } from "@tiptap/extension-table";
 import { TextAlign } from "@tiptap/extension-text-align";
 import { TextStyleKit } from "@tiptap/extension-text-style";
+import { NodeSelection } from "@tiptap/pm/state";
 import { type Editor, EditorContent, type JSONContent, useEditor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import { Alert, Button, cn, Dialog, Input, Label } from "@workspace/ui";
@@ -805,7 +806,17 @@ function EditorSurface({
           <ToolbarButton
             label="Saut de page"
             disabled={!canEdit}
-            onClick={() => editor.chain().focus().insertContent({ type: "pageBreak" }).run()}
+            onClick={() => {
+              const { selection } = editor.state;
+              // Un nœud sélectionné (par exemple un saut précédent) serait
+              // remplacé par la nouvelle insertion : le saut s'ajoute alors
+              // juste après lui, jamais à sa place.
+              if (selection instanceof NodeSelection) {
+                editor.chain().focus().insertContentAt(selection.to, { type: "pageBreak" }).run();
+              } else {
+                editor.chain().focus().insertContent({ type: "pageBreak" }).run();
+              }
+            }}
           >
             <PageBreakIcon />
           </ToolbarButton>

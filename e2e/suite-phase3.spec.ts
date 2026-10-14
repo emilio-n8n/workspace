@@ -244,18 +244,22 @@ test("docs : styles, saut de page, tableau et zoom", async ({ page }) => {
   await page.getByLabel("Style de paragraphe").selectOption("heading1");
   await expect(page.getByRole("heading", { name: "Bonjour le monde" })).toBeVisible();
 
-  // Saut de page : nouveau paragraphe puis repère visible dans l'éditeur.
+  // Tableau 2×2 inséré par le dialogue (curseur juste après le titre).
   await page.keyboard.press("Enter");
-  await page.getByRole("button", { name: "Saut de page" }).click();
-  await expect(page.locator(".workspace-page-break")).toBeVisible();
-
-  // Tableau 2×2 inséré par le dialogue.
   await page.getByRole("button", { name: "Insérer un tableau" }).click();
   const tableDialog = page.getByRole("dialog", { name: "Insérer un tableau" });
   await tableDialog.getByLabel("Lignes").fill("2");
   await tableDialog.getByLabel("Colonnes").fill("2");
   await tableDialog.getByRole("button", { name: "Insérer" }).click();
   await expect(page.locator(".workspace-editor table")).toBeVisible();
+
+  // Saut de page : clic sous le tableau (curseur d'écart), puis repère visible.
+  const tableBox = await page.locator(".workspace-editor table").boundingBox();
+  if (tableBox) {
+    await page.mouse.click(tableBox.x + 24, tableBox.y + tableBox.height + 30);
+  }
+  await page.getByRole("button", { name: "Saut de page" }).click();
+  await expect(page.locator(".workspace-page-break")).toBeVisible();
 
   // Zoom (vue) : le sélecteur du pied de page.
   await page.getByLabel("Zoom").selectOption("125");
