@@ -28,7 +28,7 @@ test("mail : brouillon puis envoi conservé avec erreur explicite sans SMTP", as
   await signupNewUser(page, "Mail E2E", email);
 
   await openApp(page, `${MAIL}/`);
-  await page.getByRole("button", { name: "Écrire" }).click();
+  await page.getByRole("button", { name: "Écrire", exact: true }).click();
   await page.getByLabel("À (séparés par des virgules)").fill("ami@exemple.org");
   await page.getByLabel("Objet").fill("Test E2E");
   await page
@@ -38,7 +38,7 @@ test("mail : brouillon puis envoi conservé avec erreur explicite sans SMTP", as
   await page.getByRole("button", { name: "Enregistrer en brouillon" }).click();
   await expect(page.getByText("Brouillons").first()).toBeVisible();
 
-  await page.getByRole("button", { name: "Écrire" }).click();
+  await page.getByRole("button", { name: "Écrire", exact: true }).click();
   await page.getByLabel("À (séparés par des virgules)").fill("ami@exemple.org");
   await page.getByLabel("Objet").fill("Envoi E2E");
   await page

@@ -51,9 +51,14 @@ test("recherche globale : trouve fichiers, formulaires, tâches et événements"
 
   // Un événement « Point Alpha ».
   await openApp(page, `${CALENDAR}/`);
-  await page.getByRole("button", { name: "Nouvel événement" }).first().click();
-  await expect(page.getByLabel("Titre de l'événement")).toBeVisible({ timeout: 15_000 });
-  await page.getByLabel("Titre de l'événement").fill("Point Alpha");
+  // Tant que « Mon agenda » n'est pas créé, le bouton ne fait rien (course au
+  // premier chargement) : on retente le clic jusqu'à l'ouverture du dialogue.
+  const titreEvenement = page.getByLabel("Titre", { exact: true });
+  await expect(async () => {
+    await page.getByRole("button", { name: "Nouvel événement" }).first().click();
+    await expect(titreEvenement).toBeVisible({ timeout: 2_000 });
+  }).toPass({ timeout: 20_000 });
+  await titreEvenement.fill("Point Alpha");
   await page.getByRole("button", { name: "Créer l'événement" }).click();
   await expect(page.getByRole("button", { name: /Point Alpha/ }).first()).toBeVisible({
     timeout: 15_000,

@@ -44,7 +44,7 @@ test("forms : création, publication, réponse publique et lecture des réponses
   // Formulaire public (nouvel onglet) : réponse.
   const [publicPage] = await Promise.all([
     page.waitForEvent("popup"),
-    page.getByRole("button", { name: "Ouvrir", exact: true }).click(),
+    page.getByRole("link", { name: "Ouvrir" }).click(),
   ]);
   await publicPage.waitForSelector("html[data-hydrated='true']", { timeout: 40_000 });
   await expect(publicPage.getByRole("heading", { name: "Enquête E2E" })).toBeVisible();

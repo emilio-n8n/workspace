@@ -354,7 +354,7 @@ test("tâches : liste, ajout rapide, terminer, filtres et édition", async ({ pa
   await page.getByRole("button", { name: "Nouvelle liste" }).first().click();
   await page.getByLabel("Nom de la liste").fill("Projet E2E");
   await page.getByRole("button", { name: "Créer la liste" }).click();
-  await expect(page.getByRole("button", { name: "Projet E2E" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Projet E2E", exact: true })).toBeVisible();
 
   await page.getByLabel("Ajouter une tâche").fill("Relire la roadmap");
   await page.keyboard.press("Enter");

@@ -21,7 +21,7 @@ test("raccourcis du tableau de bord : créer une feuille", async ({ page }) => {
   await page.getByRole("button", { name: "Nouvelle feuille de calcul" }).click();
   await expect(page).toHaveURL(/localhost:3006\/sheet\//, { timeout: 25_000 });
   await page.waitForSelector("html[data-hydrated='true']", { timeout: 40_000 });
-  await expect(page.getByRole("button", { name: "Exporter CSV" })).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByRole("link", { name: "Exporter CSV" })).toBeVisible({ timeout: 15_000 });
 });
 
 test("mes tâches : agrégat transverse", async ({ page }) => {
@@ -34,7 +34,7 @@ test("mes tâches : agrégat transverse", async ({ page }) => {
   await page.getByRole("button", { name: "Nouvelle liste" }).first().click();
   await page.getByLabel("Nom de la liste").fill("Perso WFS");
   await page.getByRole("button", { name: "Créer la liste" }).click();
-  await expect(page.getByRole("button", { name: "Perso WFS" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Perso WFS", exact: true })).toBeVisible();
 
   await page.getByLabel("Ajouter une tâche").fill("Priorité absolue");
   await page.keyboard.press("Enter");
