@@ -1,4 +1,12 @@
-import { Alert, Badge, Button, ConfirmDialog, EmptyState, IconChat } from "@workspace/ui";
+import {
+  Alert,
+  Badge,
+  Button,
+  ConfirmDialog,
+  EmptyState,
+  IconChat,
+  LoadingState,
+} from "@workspace/ui";
 import { type FormEvent, useCallback, useEffect, useState } from "react";
 import {
   type AnnouncementView,
@@ -166,7 +174,7 @@ export function CourseFeed({
       {error ? <Alert tone="danger">{error}</Alert> : null}
 
       {loading ? (
-        <p className="text-sm text-muted-foreground">Chargement du fil…</p>
+        <LoadingState className="py-6" label="Chargement du fil…" size={20} />
       ) : announcements.length === 0 ? (
         <EmptyState
           icon={<IconChat />}

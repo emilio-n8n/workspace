@@ -1,4 +1,4 @@
-import { Badge, Button, cn, IconArchive, IconGlobe } from "@workspace/ui";
+import { Badge, Button, cn, IconArchive, IconGlobe, Spinner } from "@workspace/ui";
 import { useState } from "react";
 import type { ChannelView } from "../server.ts";
 import { IconLock } from "./icons.tsx";
@@ -81,7 +81,7 @@ export function ChannelSidebar({
       </div>
 
       {loading ? (
-        <p className="text-xs text-muted-foreground">Chargement…</p>
+        <Spinner className="px-2 py-1" size={12} label="Chargement des salons…" />
       ) : channels.length === 0 ? (
         // Pas d'EmptyState ici : sa carte p-8 déborderait de la barre de 256 px.
         <p className="text-xs text-muted-foreground">

@@ -13,6 +13,7 @@ import {
   IconFolder,
   Input,
   Label,
+  LoadingState,
   SHEETS_MIME,
   SITES_MIME,
   SLIDES_MIME,
@@ -1201,7 +1202,7 @@ export function DriveBrowser({
           </div>
         </Card>
       ) : visibleEntries === null ? (
-        <p className="text-sm text-muted-foreground">Chargement…</p>
+        <LoadingState label="Chargement du Drive…" />
       ) : visibleEntries.length === 0 && !inlineNew ? (
         <Card>
           <div className="flex flex-col items-center gap-3 px-6 py-14 text-center">
@@ -1672,9 +1673,11 @@ export function DriveBrowser({
                   )}
                 />
                 {previewImage === "loading" ? (
-                  <p className="absolute inset-0 grid place-items-center text-sm text-muted-foreground">
-                    Chargement de l'aperçu…
-                  </p>
+                  <LoadingState
+                    className="absolute inset-0 py-0"
+                    label="Chargement de l'aperçu…"
+                    size={20}
+                  />
                 ) : null}
               </div>
             )
@@ -1685,9 +1688,7 @@ export function DriveBrowser({
               className="h-[70vh] w-full rounded-md border border-border"
             />
           ) : previewText.status === "loading" ? (
-            <p className="py-8 text-center text-sm text-muted-foreground">
-              Chargement de l'aperçu…
-            </p>
+            <LoadingState className="py-0" label="Chargement de l'aperçu…" size={20} />
           ) : previewText.status === "error" ? (
             <Alert tone="danger" title="Aperçu impossible">
               {textPreviewErrorMessage()}

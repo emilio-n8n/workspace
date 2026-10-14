@@ -1,4 +1,4 @@
-import { Button, Dialog, EmptyState } from "@workspace/ui";
+import { Button, Dialog, EmptyState, LoadingState } from "@workspace/ui";
 import type { PinView } from "../server.ts";
 import { attachmentSummary } from "./attachment-links.tsx";
 import { fmtFullDate, fmtTime } from "./format.ts";
@@ -35,7 +35,7 @@ export function PinsDialog({
   return (
     <Dialog open={open} onClose={onClose} title={`Épingles — ${channelName}`}>
       {loading ? (
-        <p className="text-sm text-muted-foreground">Chargement des épingles…</p>
+        <LoadingState className="py-6" label="Chargement des épingles…" size={20} />
       ) : error ? (
         <div className="flex flex-col gap-3">
           <p role="alert" className="text-sm text-destructive">

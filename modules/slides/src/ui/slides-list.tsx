@@ -7,6 +7,7 @@ import {
   IconPresentation,
   Input,
   Label,
+  LoadingState,
   PageHeader,
 } from "@workspace/ui";
 import { type FormEvent, useCallback, useEffect, useState } from "react";
@@ -87,7 +88,7 @@ export function SlidesList() {
       {error ? <Alert tone="danger">{error}</Alert> : null}
 
       {loading ? (
-        <p className="text-sm text-muted-foreground">Chargement…</p>
+        <LoadingState label="Chargement des présentations…" />
       ) : slides.length === 0 ? (
         <EmptyState
           icon={<IconPresentation />}

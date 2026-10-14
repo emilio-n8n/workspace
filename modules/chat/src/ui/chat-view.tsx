@@ -5,6 +5,7 @@ import {
   EmptyState,
   Input,
   Label,
+  LoadingState,
   SegmentedTabs,
   Toasts,
   useToasts,
@@ -812,7 +813,7 @@ export function ChatView() {
 
       <Dialog open={dmDialog} onClose={() => setDmDialog(false)} title="Nouvelle discussion">
         {directoryLoading ? (
-          <p className="text-sm text-muted-foreground">Chargement des membres…</p>
+          <LoadingState className="py-6" label="Chargement des membres…" size={20} />
         ) : directoryError ? (
           <div className="flex flex-col gap-3">
             <p role="alert" className="text-sm text-destructive">

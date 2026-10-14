@@ -8,6 +8,7 @@ import {
   IconGlobe,
   Input,
   Label,
+  LoadingState,
   PageHeader,
 } from "@workspace/ui";
 import { type FormEvent, useCallback, useEffect, useState } from "react";
@@ -81,7 +82,7 @@ export function SitesList() {
       {error ? <Alert tone="danger">{error}</Alert> : null}
 
       {loading ? (
-        <p className="text-sm text-muted-foreground">Chargement…</p>
+        <LoadingState label="Chargement des sites…" />
       ) : sites.length === 0 ? (
         <EmptyState
           icon={<IconGlobe />}

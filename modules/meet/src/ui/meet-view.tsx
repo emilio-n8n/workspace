@@ -8,6 +8,7 @@ import {
   IconVideo,
   Input,
   Label,
+  LoadingState,
   PageHeader,
   Toasts,
   useToasts,
@@ -105,7 +106,7 @@ export function MeetView() {
       {error ? <Alert tone="danger">{error}</Alert> : null}
 
       {loading ? (
-        <p className="text-sm text-muted-foreground">Chargement…</p>
+        <LoadingState label="Chargement des salles…" />
       ) : rooms.length === 0 ? (
         <EmptyState
           icon={<IconVideo />}

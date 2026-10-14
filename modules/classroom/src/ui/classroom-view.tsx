@@ -10,6 +10,7 @@ import {
   IconGraduation,
   Input,
   Label,
+  LoadingState,
   PageHeader,
   Toasts,
   useToasts,
@@ -117,7 +118,7 @@ export function ClassroomView() {
       {error ? <Alert tone="danger">{error}</Alert> : null}
 
       {loading ? (
-        <p className="text-sm text-muted-foreground">Chargement…</p>
+        <LoadingState label="Chargement du cours…" />
       ) : courses.length === 0 ? (
         <EmptyState
           icon={<IconGraduation />}
@@ -339,7 +340,7 @@ export function CoursePage({ courseId }: { courseId: string }) {
       {error ? <Alert tone="danger">{error}</Alert> : null}
 
       {loading ? (
-        <p className="text-sm text-muted-foreground">Chargement…</p>
+        <LoadingState label="Chargement du cours…" />
       ) : course ? (
         <>
           <CourseFeed courseId={course.id} role={course.role} notify={push} />

@@ -5,6 +5,7 @@ import {
   ConfirmDialog,
   Dialog,
   Input,
+  LoadingState,
   type SegmentedTabItem,
   SegmentedTabs,
 } from "@workspace/ui";
@@ -425,7 +426,7 @@ export function CalendarView() {
 
             {loading ? (
               <div role="status" className="flex flex-col gap-2" aria-live="polite">
-                <p className="text-sm text-muted-foreground">Chargement…</p>
+                <LoadingState label="Chargement de l'agenda…" />
                 <div className="h-64 animate-pulse rounded-xl border border-border bg-muted/40" />
               </div>
             ) : mode === "month" ? (

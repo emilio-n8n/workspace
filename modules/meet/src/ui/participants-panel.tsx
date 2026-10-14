@@ -1,4 +1,4 @@
-import { Alert, Badge, Button, Sheet } from "@workspace/ui";
+import { Alert, Badge, Button, Sheet, Spinner } from "@workspace/ui";
 import {
   moderateMicrophoneLabel,
   mutedByHostLabel,
@@ -67,7 +67,7 @@ export function ParticipantsPanel({
         {error ? <Alert tone="danger">{error}</Alert> : null}
 
         {loading && !roster ? (
-          <p className="text-sm text-muted-foreground">Chargement des participants…</p>
+          <Spinner className="px-3 py-2" size={12} label="Chargement des participants…" />
         ) : null}
 
         <section aria-labelledby="meet-hands-title" className="flex flex-col gap-2">

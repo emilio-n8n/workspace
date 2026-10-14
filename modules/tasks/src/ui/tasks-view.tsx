@@ -8,6 +8,7 @@ import {
   IconGrid,
   Input,
   Label,
+  LoadingState,
   PageHeader,
   SegmentedTabs,
   Toasts,
@@ -1132,7 +1133,7 @@ function TaskArea<T extends TaskView>({
           </Alert>
         </div>
       ) : tasks === null ? (
-        <p className="p-4 text-sm text-muted-foreground">Chargement…</p>
+        <LoadingState className="p-4" label="Chargement des tâches…" size={20} />
       ) : tasks.length === 0 ? (
         <div className="p-4">
           <EmptyState

@@ -1,4 +1,4 @@
-import { Badge, cn, EmptyState, IconMail } from "@workspace/ui";
+import { Badge, cn, EmptyState, IconMail, Spinner } from "@workspace/ui";
 import { type ReactNode, useEffect, useRef } from "react";
 import type { FolderKey, MessageLabelRef } from "../server.ts";
 import { LabelChip } from "./label-chip.tsx";
@@ -208,7 +208,7 @@ export function MessageList({
               <div id={panelId} hidden={!expanded} className="bg-muted/30">
                 {expanded ? (
                   expandedMessages === null ? (
-                    <p className="px-9 py-2 text-xs text-muted-foreground">Chargement du fil…</p>
+                    <Spinner className="px-9 py-2" size={12} label="Chargement du fil…" />
                   ) : expandedMessages.length === 0 ? (
                     <p className="px-9 py-2 text-xs text-muted-foreground">Fil vide.</p>
                   ) : (

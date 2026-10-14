@@ -1,4 +1,4 @@
-import { Badge, Button, Dialog } from "@workspace/ui";
+import { Badge, Button, Dialog, LoadingState } from "@workspace/ui";
 import { useEffect, useState } from "react";
 import {
   addChannelMemberFn,
@@ -94,7 +94,7 @@ export function MembersDialog({
   return (
     <Dialog open={open} onClose={onClose} title={`Membres — ${channelName}`}>
       {loading ? (
-        <p className="text-sm text-muted-foreground">Chargement des membres…</p>
+        <LoadingState className="py-6" label="Chargement des membres…" size={20} />
       ) : error ? (
         <div className="flex flex-col gap-3">
           <p role="alert" className="text-sm text-destructive">

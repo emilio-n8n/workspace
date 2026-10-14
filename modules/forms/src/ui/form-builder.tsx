@@ -8,6 +8,7 @@ import {
   Input,
   Kbd,
   Label,
+  LoadingState,
   SegmentedTabs,
 } from "@workspace/ui";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -733,7 +734,7 @@ export function FormBuilder({ fileId }: { fileId: string }) {
           )}
         </>
       ) : !error ? (
-        <p className="text-sm text-muted-foreground">Chargement…</p>
+        <LoadingState className="py-6" label="Chargement des réponses…" size={20} />
       ) : null}
 
       {announcement ? (

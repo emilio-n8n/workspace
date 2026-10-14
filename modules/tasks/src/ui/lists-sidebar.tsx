@@ -8,6 +8,7 @@ import {
   IconGrid,
   Input,
   Label,
+  LoadingState,
 } from "@workspace/ui";
 import type { FormEvent } from "react";
 import { useState } from "react";
@@ -189,7 +190,7 @@ export function ListsSidebar({
               </Button>
             </Alert>
           ) : (
-            <p className="px-2 text-xs text-muted-foreground">Chargement…</p>
+            <LoadingState className="py-4" label="Chargement des listes…" size={20} />
           )
         ) : lists.length === 0 ? (
           <EmptyState

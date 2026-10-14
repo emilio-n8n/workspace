@@ -1,4 +1,4 @@
-import { Button, cn, Dialog, Input, Label } from "@workspace/ui";
+import { Button, cn, Dialog, Input, Label, LoadingState } from "@workspace/ui";
 import {
   type ChangeEvent,
   type CSSProperties,
@@ -1839,7 +1839,7 @@ export function SheetEditor({ fileId }: { fileId: string }) {
           </p>
         </>
       ) : !error ? (
-        <p className="text-sm text-muted-foreground">Chargement…</p>
+        <LoadingState label="Chargement de la feuille…" />
       ) : null}
 
       <Dialog open={importOpen} onClose={() => setImportOpen(false)} title="Importer un CSV">

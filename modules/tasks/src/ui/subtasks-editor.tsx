@@ -1,4 +1,4 @@
-import { Alert, Button, cn, IconTrash, Input, Label } from "@workspace/ui";
+import { Alert, Button, cn, IconTrash, Input, Label, Spinner } from "@workspace/ui";
 import { type FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { edgeIds, nudgeIds } from "../dnd.ts";
 import {
@@ -180,7 +180,7 @@ export function SubtasksEditor({
           </Button>
         </Alert>
       ) : rows === null ? (
-        <p className="text-xs text-muted-foreground">Chargement des sous-tâches…</p>
+        <Spinner className="py-1" size={12} label="Chargement des sous-tâches…" />
       ) : rows.length === 0 ? (
         <p className="text-xs text-muted-foreground">
           Aucune sous-tâche pour l'instant. Ajoutez la première ci-dessous.

@@ -8,7 +8,7 @@ import { TextStyleKit } from "@tiptap/extension-text-style";
 import { NodeSelection } from "@tiptap/pm/state";
 import { type Editor, EditorContent, type JSONContent, useEditor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
-import { Alert, Button, cn, Dialog, Input, Label } from "@workspace/ui";
+import { Alert, Button, cn, Dialog, Input, Label, LoadingState } from "@workspace/ui";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { type CollabSession, createCollabSession } from "../collab-client.ts";
 import {
@@ -241,7 +241,7 @@ function CollabGate({ collab, ...props }: CollabGateProps) {
   }, [collab.url, collab.room, collab.token]);
 
   if (!session && !unavailable) {
-    return <p className="px-6 py-8 text-sm text-muted-foreground">Chargement de l'éditeur…</p>;
+    return <LoadingState className="py-6" label="Chargement de l'éditeur…" />;
   }
 
   return <EditorSurface {...props} session={session} />;
@@ -537,7 +537,7 @@ function EditorSurface({
   }, [editor]);
 
   if (!editor) {
-    return <p className="px-6 py-8 text-sm text-muted-foreground">Chargement de l'éditeur…</p>;
+    return <LoadingState className="py-6" label="Chargement de l'éditeur…" />;
   }
 
   const statusLabel =

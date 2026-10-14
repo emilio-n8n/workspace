@@ -1,4 +1,4 @@
-import { Alert } from "@workspace/ui";
+import { Alert, LoadingState } from "@workspace/ui";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { LOBBY_POLL_MS } from "../lobby.ts";
 import {
@@ -157,7 +157,7 @@ export function JoinRoom({ slug }: { slug: string }) {
   }, []);
 
   if (phase === "loading" || (phase !== "error" && (!room || !lobby))) {
-    return <p className="text-sm text-muted-foreground">Chargement de la salle…</p>;
+    return <LoadingState className="py-6" label="Chargement de la salle…" />;
   }
 
   if (phase === "error" || !room || !lobby) {

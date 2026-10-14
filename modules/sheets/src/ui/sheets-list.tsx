@@ -1,5 +1,5 @@
 import { useNavigate } from "@tanstack/react-router";
-import { Button, Dialog, Input, Label } from "@workspace/ui";
+import { Button, Dialog, Input, Label, LoadingState } from "@workspace/ui";
 import { type FormEvent, useCallback, useEffect, useState } from "react";
 import { createSpreadsheetFn, listSpreadsheetsFn } from "../server.ts";
 
@@ -87,7 +87,7 @@ export function SheetsList() {
       ) : null}
 
       {loading ? (
-        <p className="text-sm text-muted-foreground">Chargement…</p>
+        <LoadingState label="Chargement des feuilles…" />
       ) : sheets.length === 0 ? (
         <div className="rounded-xl border border-border bg-card p-8 text-center">
           <p className="text-sm text-muted-foreground">

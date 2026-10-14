@@ -30,6 +30,7 @@ export { Separator, type SeparatorProps } from "./components/separator.tsx";
 export * from "./components/sheet.tsx";
 export * from "./components/shortcut.tsx";
 export * from "./components/skeleton.tsx";
+export * from "./components/spinner.tsx";
 export * from "./components/status-badge.tsx";
 export * from "./components/table.tsx";
 export * from "./components/tabs.tsx";

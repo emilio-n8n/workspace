@@ -1,4 +1,4 @@
-import { Alert, Button, cn, Dialog, Input, Kbd, Label } from "@workspace/ui";
+import { Alert, Button, cn, Dialog, Input, Kbd, Label, LoadingState } from "@workspace/ui";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
@@ -989,7 +989,7 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
       {error ? <Alert tone="danger">{error}</Alert> : null}
 
       {loading ? (
-        <p className="text-sm text-muted-foreground">Chargement…</p>
+        <LoadingState label="Chargement de la présentation…" />
       ) : current ? (
         <section aria-label="Éditeur de diapositives" className="flex flex-col gap-3 lg:flex-row">
           <SlideFilmstrip

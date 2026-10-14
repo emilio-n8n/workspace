@@ -1,4 +1,4 @@
-import { Button, Dialog, IconFolder, IconTrash } from "@workspace/ui";
+import { Button, Dialog, IconFolder, IconTrash, LoadingState } from "@workspace/ui";
 import { useCallback, useEffect, useState } from "react";
 import { type DriveEntryView, listMoveTargetsFn } from "../server.ts";
 import { selectionLabel } from "./selection.ts";
@@ -147,7 +147,7 @@ export function MoveDialog({ open, onClose, entries, busy, onConfirm }: MoveDial
       </p>
 
       {state.status === "loading" ? (
-        <p className="py-6 text-center text-sm text-muted-foreground">Chargement des dossiers…</p>
+        <LoadingState className="py-6" label="Chargement des dossiers…" size={20} />
       ) : state.status === "error" ? (
         <div className="flex flex-col items-center gap-3 py-6 text-center">
           <p role="alert" className="text-sm text-destructive">

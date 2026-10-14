@@ -1,4 +1,4 @@
-import { Alert, Button } from "@workspace/ui";
+import { Alert, Button, LoadingState } from "@workspace/ui";
 import { type FormEvent, useEffect, useRef, useState } from "react";
 import { visibleQuestions } from "../conditions.ts";
 import { getPublicFormFn, type PublicForm as PublicFormData, submitResponseFn } from "../server.ts";
@@ -92,7 +92,7 @@ export function PublicForm({ slug }: { slug: string }) {
   if (!form) {
     return (
       <main className="mx-auto max-w-xl px-4 py-16">
-        <p className="text-sm text-muted-foreground">Chargement…</p>
+        <LoadingState label="Chargement du formulaire…" />
       </main>
     );
   }

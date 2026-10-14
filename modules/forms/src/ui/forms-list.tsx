@@ -8,6 +8,7 @@ import {
   IconClipboard,
   Input,
   Label,
+  LoadingState,
   PageHeader,
 } from "@workspace/ui";
 import { type FormEvent, useCallback, useEffect, useState } from "react";
@@ -87,7 +88,7 @@ export function FormsList() {
       {error ? <Alert tone="danger">{error}</Alert> : null}
 
       {loading ? (
-        <p className="text-sm text-muted-foreground">Chargement…</p>
+        <LoadingState label="Chargement des formulaires…" />
       ) : forms.length === 0 ? (
         <EmptyState
           icon={<IconClipboard />}
