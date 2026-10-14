@@ -16,18 +16,18 @@ export { EmptyState, type EmptyStateProps } from "./components/empty-state.tsx";
 export { Input, type InputProps } from "./components/input.tsx";
 export { Kbd, type KbdProps } from "./components/kbd.tsx";
 export { Label, type LabelProps } from "./components/label.tsx";
-export * from "./components/menu.ts";
+export * from "./components/menu.tsx";
 export { PageHeader, type PageHeaderProps } from "./components/page-header.tsx";
 export {
   type SegmentedTabItem,
   SegmentedTabs,
   type SegmentedTabsProps,
 } from "./components/segmented-tabs.tsx";
-export * from "./components/select.ts";
+export * from "./components/select.tsx";
 export { Separator, type SeparatorProps } from "./components/separator.tsx";
-export * from "./components/sheet.ts";
-export * from "./components/table.ts";
-export * from "./components/tabs.ts";
+export * from "./components/sheet.tsx";
+export * from "./components/table.tsx";
+export * from "./components/tabs.tsx";
 export {
   type ToastItem,
   Toasts,
@@ -38,7 +38,7 @@ export {
   type UseToastsResult,
   useToasts,
 } from "./components/toast.tsx";
-export * from "./components/tooltip.ts";
+export * from "./components/tooltip.tsx";
 export {
   DOCS_MIME,
   FileIcon,
