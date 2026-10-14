@@ -46,12 +46,7 @@ import {
   rangeLabel,
   serializeTsv,
 } from "../range.ts";
-import {
-  CELL_STYLE_BACKGROUNDS,
-  type CellStyle,
-  type CellStyleAlign,
-  type CellStyleBackground,
-} from "../schema.ts";
+import type { CellStyle, CellStyleAlign } from "../schema.ts";
 import {
   addTabFn,
   deleteColumnsFn,
@@ -75,6 +70,7 @@ import {
   selectionAfter,
   structureMessage,
 } from "../structure.ts";
+import { CELL_STYLE_BACKGROUNDS, type CellStyleBackground } from "../style-palette.ts";
 import { toneOf } from "./cell-tone.ts";
 import { FormulaBar } from "./formula-bar.tsx";
 import { ResizeHandle } from "./resize-handle.tsx";

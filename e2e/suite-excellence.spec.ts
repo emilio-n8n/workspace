@@ -91,8 +91,8 @@ test("palette ⌘K : recherche en direct et navigation vers un résultat", async
   await openApp(page, `${DRIVE}/`);
   await page.getByRole("button", { name: "Nouveau", exact: true }).click();
   await page.getByRole("menuitem", { name: "Nouveau dossier" }).click();
-  await page.getByLabel("Nom du dossier").fill("Cible Palette");
-  await page.getByRole("button", { name: "Créer le dossier" }).click();
+  await page.getByLabel("Nom du nouveau dossier").fill("Cible Palette");
+  await page.getByRole("button", { name: "Créer", exact: true }).click();
   await expect(page.getByRole("button", { name: "Cible Palette", exact: true })).toBeVisible();
 
   // Retour au lanceur : la palette s'ouvre, se referme avec Échap…

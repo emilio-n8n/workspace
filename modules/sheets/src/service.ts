@@ -45,8 +45,11 @@ const MAX_CELLS_PER_IMPORT = 20_000;
 const SAVE_CHUNK = 500;
 /** Nombre maximal d'onglets par feuille. */
 export const MAX_TABS = 20;
+
 /** Nombre maximal de cellules mises en forme par appel (v1 mono-cellule côté UI). */
-export const MAX_STYLE_CELLS = 500;
+import { MAX_STYLE_CELLS } from "./style-palette.ts";
+
+export { MAX_STYLE_CELLS } from "./style-palette.ts";
 
 export type SheetsErrorCode = "not_found" | "forbidden" | "validation" | "conflict";
 

@@ -234,8 +234,8 @@ test("drive : dossiers, téléversement, corbeille et document (app Docs)", asyn
   await expect(page.getByText("Ce dossier est vide")).toBeVisible();
 
   await page.getByRole("button", { name: "Nouveau dossier" }).first().click();
-  await page.getByLabel("Nom du dossier").fill("Projets");
-  await page.getByRole("button", { name: "Créer le dossier" }).click();
+  await page.getByLabel("Nom du nouveau dossier").fill("Projets");
+  await page.getByRole("button", { name: "Créer", exact: true }).click();
   await expect(page.getByRole("button", { name: "Projets", exact: true })).toBeVisible();
 
   await page.locator('input[type="file"]').setInputFiles({
@@ -293,8 +293,8 @@ test("partage : deuxième membre, accès réel via l'interface, révocation", as
   await signupNewUser(page, "Alice Partage", ownerEmail);
   await openApp(page, `${DRIVE}/`);
   await page.getByRole("button", { name: "Nouveau dossier" }).first().click();
-  await page.getByLabel("Nom du dossier").fill("Commun");
-  await page.getByRole("button", { name: "Créer le dossier" }).click();
+  await page.getByLabel("Nom du nouveau dossier").fill("Commun");
+  await page.getByRole("button", { name: "Créer", exact: true }).click();
   await expect(page.getByRole("button", { name: "Commun", exact: true })).toBeVisible();
 
   // B s'inscrit, puis son appartenance à l'organisation d'Alice est amorcée.

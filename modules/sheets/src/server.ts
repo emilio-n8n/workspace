@@ -2,9 +2,9 @@ import { createServerFn } from "@tanstack/react-start";
 import { getRequest } from "@tanstack/react-start/server";
 import { requireActor } from "@workspace/auth";
 import { z } from "zod";
+import { MAX_DIMENSION_SIZES } from "./dimensions.ts";
 import {
   addTab,
-  CELL_STYLE_BACKGROUNDS,
   createSpreadsheet,
   deleteColumns,
   deleteRows,
@@ -14,14 +14,13 @@ import {
   insertColumns,
   insertRows,
   listSpreadsheets,
-  MAX_DIMENSION_SIZES,
-  MAX_STYLE_CELLS,
   renameSpreadsheet,
   renameTab,
   saveCells,
   setCellStyle,
   setDimensionSizes,
-} from "./index.ts";
+} from "./service.ts";
+import { CELL_STYLE_BACKGROUNDS, MAX_STYLE_CELLS } from "./style-palette.ts";
 
 export type { CellView, DimensionSize, SpreadsheetDetail, TabView } from "./index.ts";
 

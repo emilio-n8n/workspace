@@ -26,8 +26,10 @@ export type CellStyleAlign = "left" | "center" | "right";
  * Jetons de fond autorisés : jamais de couleur en dur en base, l'interface
  * choisit la teinte réelle de chaque jeton (palette fixe).
  */
-export const CELL_STYLE_BACKGROUNDS = ["accent", "attention", "danger", "muted"] as const;
-export type CellStyleBackground = (typeof CELL_STYLE_BACKGROUNDS)[number];
+import { CELL_STYLE_BACKGROUNDS, type CellStyleBackground } from "./style-palette.ts";
+
+export type { CellStyleBackground };
+export { CELL_STYLE_BACKGROUNDS };
 
 /**
  * Mise en forme d'une cellule (v1) : `true` uniquement quand l'attribut est

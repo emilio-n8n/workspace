@@ -35,7 +35,11 @@ test("forms : création, publication, réponse publique et lecture des réponses
   await page.getByRole("button", { name: "Créer", exact: true }).click();
 
   // Constructeur : ajout d'une question texte, puis publication.
-  await page.getByRole("button", { name: "Texte court" }).click();
+  // Course d'hydratation possible : on retente l'ajout jusqu'à l'apparition du champ.
+  await expect(async () => {
+    await page.getByRole("button", { name: "Texte court" }).click();
+    await expect(page.getByLabel("Intitulé de la question")).toBeVisible({ timeout: 2_000 });
+  }).toPass({ timeout: 20_000 });
   await page.getByLabel("Intitulé de la question").fill("Votre avis");
   await page.getByLabel("Statut").selectOption("open");
   await page.getByRole("button", { name: "Enregistrer" }).click();
@@ -105,8 +109,8 @@ test("slides : zone de texte, sauvegarde et persistance", async ({ page }) => {
   await page.getByLabel("Titre de la présentation").fill("Pitch E2E");
   await page.getByRole("button", { name: "Créer et ouvrir" }).click();
 
-  await page.getByRole("button", { name: "Ajouter une zone de texte" }).click();
-  // Le nom accessible de l'élément dérive de son texte (« Élément Texte » à la création).
+  await page.getByRole("button", { name: "Zone de texte", exact: true }).click();
+  // Le nom accessible de l'élément dérive de son texte (« Élément texte » à la création).
   await page
     .getByRole("button", { name: /Élément/ })
     .first()

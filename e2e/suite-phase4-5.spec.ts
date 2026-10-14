@@ -17,7 +17,7 @@ test("chat : canal, message envoyé, compteur de non-lus", async ({ page }) => {
   await page.getByLabel("Nom du canal").fill("produit");
   await page.getByRole("button", { name: "Créer le canal" }).click();
 
-  await page.getByRole("textbox", { name: "Message", exact: true }).fill("Bonjour l'équipe");
+  await page.getByLabel("Message", { exact: true }).fill("Bonjour l'équipe");
   await page.getByRole("button", { name: "Envoyer" }).click();
   await expect(page.getByText("Bonjour l'équipe")).toBeVisible({ timeout: 15_000 });
   await page.screenshot({ path: "e2e/screenshots/chat.png", fullPage: true });
@@ -58,7 +58,9 @@ test("mail : brouillon puis envoi conservé avec erreur explicite sans SMTP", as
     .fill("Un vrai envoi");
   await page.getByRole("button", { name: "Envoyer" }).click();
 
-  await expect(page.getByRole("alert")).toContainText("SMTP", { timeout: 15_000 });
+  await expect(page.getByRole("alert").filter({ hasText: "SMTP" })).toBeVisible({
+    timeout: 15_000,
+  });
   await expect(page.getByText("Envoi E2E")).toBeVisible();
   await page.screenshot({ path: "e2e/screenshots/mail.png", fullPage: true });
 });
@@ -153,9 +155,9 @@ test("classroom : cours, code d'accès, copie d'élève et notation", async ({ p
   await page.getByRole("button", { name: /Maths E2E/ }).click();
   await page.getByRole("button", { name: /Copies \(1\)/ }).click();
   await expect(page.getByText("Ma réponse E2E")).toBeVisible({ timeout: 25_000 });
-  await page.getByLabel("Note").fill("15");
+  await page.getByLabel(/Note sur/).fill("15");
   await page.getByRole("button", { name: "Noter" }).click();
-  await expect(page.getByLabel("Note")).toHaveValue("15", { timeout: 25_000 });
+  await expect(page.getByLabel(/Note sur/)).toHaveValue("15", { timeout: 25_000 });
   await page.screenshot({ path: "e2e/screenshots/classroom.png", fullPage: true });
 });
 
@@ -166,12 +168,16 @@ test("admin : profil d'organisation, membres, quota et journal", async ({ page }
   await openApp(page, `${ADMIN}/`);
   await expect(page.getByRole("heading", { name: "Administration" })).toBeVisible();
 
-  await page.getByLabel("Nom", { exact: true }).fill("Org E2E");
   // Deux cartes « Enregistrer » (profil, politiques) : on vise la carte Profil.
-  await page
+  // Course d'hydratation : re-saisir jusqu'à ce que la carte devienne enregistrable.
+  const enregistrerProfil = page
     .locator("section", { hasText: "Profil de l'organisation" })
-    .getByRole("button", { name: "Enregistrer" })
-    .click();
+    .getByRole("button", { name: "Enregistrer" });
+  await expect(async () => {
+    await page.getByLabel("Nom", { exact: true }).fill("Org E2E");
+    await expect(enregistrerProfil).toBeEnabled({ timeout: 2_000 });
+  }).toPass({ timeout: 20_000 });
+  await enregistrerProfil.click();
   await expect(page.getByRole("status")).toContainText("Profil mis à jour.");
 
   await expect(page.getByText(email).first()).toBeVisible();
