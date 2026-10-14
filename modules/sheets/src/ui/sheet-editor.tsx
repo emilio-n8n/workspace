@@ -24,6 +24,29 @@ import {
 } from "../dimensions.ts";
 import { cellKey, evaluateCells, formatValue, parseKey } from "../formula.ts";
 import {
+  DEFAULT_FREEZE,
+  type FreezeState,
+  freezeAnnouncement,
+  freezeButtonLabel,
+  freezeClasses,
+  freezeHint,
+  toggleFreeze,
+} from "../freeze.ts";
+import {
+  type CellAddress,
+  type CellRange,
+  clipboardError,
+  copySummary,
+  inRange,
+  isSingleCell,
+  parseTsv,
+  pasteSummary,
+  pasteTargets,
+  rangeFrom,
+  rangeLabel,
+  serializeTsv,
+} from "../range.ts";
+import {
   CELL_STYLE_BACKGROUNDS,
   type CellStyle,
   type CellStyleAlign,
@@ -45,6 +68,7 @@ import {
   setCellStyleFn,
   setDimensionSizesFn,
 } from "../server.ts";
+import { type SortDirection, sortRange, sortSummary } from "../sort.ts";
 import {
   type StructureKind,
   type StructureMode,
@@ -123,9 +147,11 @@ type GridCellProps = {
   tone: CellTone;
   cellStyle: CellStyle | null;
   selected: boolean;
+  /** Cellule comprise dans la plage de sélection étendue (TASK-004/006). */
+  inRange: boolean;
   canEdit: boolean;
   editing: boolean;
-  onStart: (row: number, col: number) => void;
+  onStart: (row: number, col: number, extend?: boolean) => void;
   onCommit: (row: number, col: number, value: string, move: MoveDirection) => void;
   onCancel: () => void;
   /** Clic droit ou touche Menu : ouvre le menu contextuel de la cellule. */
@@ -146,6 +172,7 @@ const GridCell = memo(function GridCell({
   tone,
   cellStyle,
   selected,
+  inRange,
   canEdit,
   editing,
   onStart,
@@ -194,7 +221,7 @@ const GridCell = memo(function GridCell({
       aria-label={`Cellule ${cellKey(row, col)}`}
       // La cellule active est signalée sans dépendre d'un rôle ARIA de grille.
       aria-current={selected ? "true" : undefined}
-      onClick={() => onStart(row, col)}
+      onClick={(event) => onStart(row, col, event.shiftKey)}
       onContextMenu={(event) => {
         // Le menu contextuel est le seul propriétaire du clic droit : on ouvre
         // à la position du pointeur plutôt que d'afficher le menu natif.
@@ -218,6 +245,7 @@ const GridCell = memo(function GridCell({
         "block w-full truncate px-2 py-1 text-sm",
         tone === "number" ? "text-right tabular-nums" : "text-left",
         cellStyle?.background ? STYLE_BACKGROUND_CLASSES[cellStyle.background] : undefined,
+        inRange && !cellStyle?.background && "bg-accent/25",
         canEdit ? "cursor-cell hover:bg-muted/60" : "cursor-default",
         tone === "error" && "text-destructive",
       )}
@@ -238,6 +266,11 @@ export function SheetEditor({ fileId }: { fileId: string }) {
   const [cellsByTab, setCellsByTab] = useState<Map<string, Map<string, string>>>(new Map());
   const [editing, setEditing] = useState<{ row: number; col: number } | null>(null);
   const [selected, setSelected] = useState<{ row: number; col: number } | null>(null);
+  // Ancre de la sélection de plage : nulle pour une cellule seule, remplie par
+  // Maj + clic ou Maj + flèche (TASK-004/006).
+  const [rangeAnchor, setRangeAnchor] = useState<CellAddress | null>(null);
+  // Repères figés au défilement (TASK-005) : session en cours, défaut figé.
+  const [freeze, setFreeze] = useState<FreezeState>(DEFAULT_FREEZE);
   const [stylesByTab, setStylesByTab] = useState<Map<string, Map<string, CellStyle>>>(new Map());
   const [status, setStatus] = useState<SaveStatus>("idle");
   const [styleBusy, setStyleBusy] = useState(false);
@@ -254,6 +287,8 @@ export function SheetEditor({ fileId }: { fileId: string }) {
   const retryRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const activeTabIdRef = useRef<string | null>(null);
   const canEditRef = useRef(false);
+  // Dernière cellule active, lue par les rappels stables d'étirement de plage.
+  const selectedRef = useRef<CellAddress | null>(null);
   const flushRef = useRef<(tabId: string | null) => Promise<void>>(async () => undefined);
   // Tailles de colonnes et de lignes, par onglet ; le glisser n'écrit qu'à la fin.
   const [sizesByTab, setSizesByTab] = useState<Map<string, SheetSizes>>(new Map());
@@ -283,6 +318,11 @@ export function SheetEditor({ fileId }: { fileId: string }) {
   const activeTab = detail?.tabs.find((tab) => tab.id === activeTabId) ?? null;
   const canEdit = detail?.canEdit ?? false;
   const selectedKey = selected ? `${selected.row}:${selected.col}` : null;
+  // Plage sélectionnée : une cellule seule tant que l'ancre est nulle.
+  const selectionRange = useMemo<CellRange | null>(
+    () => (rangeAnchor && selected ? rangeFrom(rangeAnchor, selected) : null),
+    [rangeAnchor, selected],
+  );
   const statusLabel =
     status === "saving"
       ? "Enregistrement…"
@@ -299,6 +339,10 @@ export function SheetEditor({ fileId }: { fileId: string }) {
   useEffect(() => {
     canEditRef.current = detail?.canEdit ?? false;
   }, [detail]);
+
+  useEffect(() => {
+    selectedRef.current = selected;
+  }, [selected]);
 
   const load = useCallback(async () => {
     try {
@@ -553,9 +597,20 @@ export function SheetEditor({ fileId }: { fileId: string }) {
     [queueSave],
   );
 
-  const startEditing = useCallback((row: number, col: number) => {
-    if (!canEditRef.current) return;
+  /**
+   * Clic simple : sélectionne la cellule et ouvre l'édition (si le droit
+   * d'écriture l'autorise). Maj + clic : étend la plage depuis l'ancre, sans
+   * ouvrir l'édition, pour copier ou trier une plage.
+   */
+  const startEditing = useCallback((row: number, col: number, extend = false) => {
+    if (extend) {
+      setRangeAnchor((current) => current ?? selectedRef.current);
+      setSelected({ row, col });
+      return;
+    }
     setSelected({ row, col });
+    setRangeAnchor(null);
+    if (!canEditRef.current) return;
     setEditing({ row, col });
   }, []);
 
@@ -567,12 +622,14 @@ export function SheetEditor({ fileId }: { fileId: string }) {
       if (move === "none") {
         setEditing(null);
         setSelected({ row, col });
+        setRangeAnchor(null);
         return;
       }
       const nextRow = move === "down" ? Math.min(row + 1, ROWS - 1) : row;
       const nextCol = move === "right" ? Math.min(col + 1, COLS - 1) : col;
       setEditing({ row: nextRow, col: nextCol });
       setSelected({ row: nextRow, col: nextCol });
+      setRangeAnchor(null);
     },
     [commitCell],
   );
@@ -703,6 +760,7 @@ export function SheetEditor({ fileId }: { fileId: string }) {
       await flush(activeTabId);
       await deleteTabFn({ data: { tabId } });
       setSelected(null);
+      setRangeAnchor(null);
       setActiveTabId(null);
       await load();
     } catch (caught) {
@@ -761,6 +819,7 @@ export function SheetEditor({ fileId }: { fileId: string }) {
       setError(null);
       setStructureBusy(true);
       setSelected((current) => selectionAfter(kind, mode, index, 1, current));
+      setRangeAnchor(null);
       setEditing(null);
       try {
         // Les cellules en attente seraient écrasées par le décalage.
@@ -788,6 +847,7 @@ export function SheetEditor({ fileId }: { fileId: string }) {
   const openMenu = useCallback((target: ContextTarget, anchor: { left: number; top: number }) => {
     if (target.kind === "cell") {
       setSelected({ row: target.row, col: target.col });
+      setRangeAnchor(null);
       setEditing(null);
     }
     setMenu({ x: anchor.left, y: anchor.top, target });
@@ -863,6 +923,44 @@ export function SheetEditor({ fileId }: { fileId: string }) {
   }, [activeMap, currentBarDraft, evaluated, selectedKey]);
 
   // -------------------------------------------------------------------------
+  // Tri de la plage sélectionnée (TASK-006) et figement (TASK-005)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Trie la plage sélectionnée selon la colonne de la cellule active : les
+   * lignes entières se déplacent, puis la mise à jour passe par l'autosave.
+   */
+  const runSort = useCallback(
+    (direction: SortDirection) => {
+      const range = selectionRange;
+      if (!range || !selected || !canEditRef.current || !activeTabIdRef.current) return;
+      const values = new Map<string, string>();
+      for (const [key, value] of activeMap) values.set(key, value);
+      const result = sortRange({
+        range,
+        column: selected.col,
+        direction,
+        values,
+        bounds: { rows: ROWS, cols: COLS },
+      });
+      for (const update of result.updates) {
+        commitCell(update.row, update.col, update.value);
+      }
+      setEditing(null);
+      setMenu(null);
+      setAnnouncement(sortSummary(result.moved, direction));
+    },
+    [activeMap, commitCell, selected, selectionRange],
+  );
+
+  /** Inverse un repère figé et l'annonce aux lecteurs d'écran. */
+  function changeFreeze(part: keyof FreezeState) {
+    const next = toggleFreeze(freeze, part);
+    setFreeze(next);
+    setAnnouncement(freezeAnnouncement(next));
+  }
+
+  // -------------------------------------------------------------------------
   // Construction du menu contextuel (TASK-002)
   // -------------------------------------------------------------------------
 
@@ -904,6 +1002,24 @@ export function SheetEditor({ fileId }: { fileId: string }) {
       items.push({ type: "separator", id: "suppressions" });
       items.push(remove("row", target.row, "Supprimer la ligne"));
       items.push(remove("col", target.col, "Supprimer la colonne"));
+      if (selectionRange && !isSingleCell(selectionRange)) {
+        const scope = rangeLabel(selectionRange, (col) => COL_LETTERS[col] ?? "");
+        items.push({ type: "separator", id: "tri" });
+        items.push({
+          type: "item",
+          id: "trier-croissant",
+          label: `Trier ${scope} (croissant)`,
+          disabled: !canEdit || structureBusy,
+          onSelect: () => runSort("asc"),
+        });
+        items.push({
+          type: "item",
+          id: "trier-decroissant",
+          label: `Trier ${scope} (décroissant)`,
+          disabled: !canEdit || structureBusy,
+          onSelect: () => runSort("desc"),
+        });
+      }
       items.push({ type: "separator", id: "formats" });
       items.push(format("gras", "Gras", selectedStyle?.bold === true, () => toggleFlag("bold")));
       items.push(
@@ -956,8 +1072,10 @@ export function SheetEditor({ fileId }: { fileId: string }) {
     applyCellStyle,
     canEdit,
     menu,
+    runSort,
     runStructure,
     selectedStyle,
+    selectionRange,
     structureBusy,
     styleBusy,
     toggleAlign,
@@ -979,6 +1097,7 @@ export function SheetEditor({ fileId }: { fileId: string }) {
     const nextCol = move === "right" ? Math.min(selected.col + 1, COLS - 1) : selected.col;
     setEditing(null);
     setSelected({ row: nextRow, col: nextCol });
+    setRangeAnchor(null);
   }
 
   function goToReference(reference: string) {
@@ -996,6 +1115,7 @@ export function SheetEditor({ fileId }: { fileId: string }) {
     setError(null);
     setEditing(null);
     setSelected({ row: target.row, col: target.col });
+    setRangeAnchor(null);
     focusCell(target.row, target.col);
   }
 
@@ -1007,22 +1127,78 @@ export function SheetEditor({ fileId }: { fileId: string }) {
     element?.focus();
   }, []);
 
-  /** Navigation clavier de la grille quand aucune cellule n'est en édition. */
+  /**
+   * Navigation clavier. `extend` (Maj + flèche) étire la plage depuis l'ancre ;
+   * sinon la sélection redevient une cellule seule.
+   */
   const moveSelection = useCallback(
-    (row: number, col: number) => {
+    (row: number, col: number, extend = false) => {
       const next = {
         row: Math.max(0, Math.min(ROWS - 1, row)),
         col: Math.max(0, Math.min(COLS - 1, col)),
       };
+      setRangeAnchor((current) => (extend ? (current ?? selectedRef.current) : null));
       setSelected(next);
       focusCell(next.row, next.col);
     },
     [focusCell],
   );
 
+  /** Copie la cellule ou la plage active en TSV (TASK-004). */
+  const copySelection = useCallback(async () => {
+    const range = selectionRange;
+    if (!range) return;
+    const rows: string[][] = [];
+    for (let row = range.startRow; row <= range.endRow; row += 1) {
+      const line: string[] = [];
+      for (let col = range.startCol; col <= range.endCol; col += 1) {
+        line.push(activeMap.get(`${row}:${col}`) ?? "");
+      }
+      rows.push(line);
+    }
+    const count = (range.endRow - range.startRow + 1) * (range.endCol - range.startCol + 1);
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error("API presse-papiers indisponible");
+      await navigator.clipboard.writeText(serializeTsv(rows));
+      setError(null);
+      setAnnouncement(copySummary(count));
+    } catch (caught) {
+      setError(clipboardError("copy", caught));
+    }
+  }, [activeMap, selectionRange]);
+
+  /** Colle un TSV depuis le presse-papiers à partir de la cellule active (TASK-004). */
+  const pasteSelection = useCallback(async () => {
+    if (!canEditRef.current || !activeTabIdRef.current) return;
+    try {
+      if (!navigator.clipboard?.readText) throw new Error("API presse-papiers indisponible");
+      const values = parseTsv(await navigator.clipboard.readText());
+      if (values.length === 0) return;
+      const origin = selectedRef.current ?? { row: 0, col: 0 };
+      const targets = pasteTargets(values, origin, { rows: ROWS, cols: COLS });
+      for (const target of targets) commitCell(target.row, target.col, target.value);
+      setError(null);
+      setAnnouncement(pasteSummary(targets.length));
+    } catch (caught) {
+      setError(clipboardError("paste", caught));
+    }
+  }, [commitCell]);
+
   const onGridKeyDown = useCallback(
     (event: ReactKeyboardEvent<HTMLDivElement>) => {
       if (editing) return;
+      const mod = event.ctrlKey || event.metaKey;
+      // Presse-papiers : Ctrl+C copie la sélection, Ctrl+V la colle.
+      if (mod && (event.key === "c" || event.key === "C")) {
+        event.preventDefault();
+        void copySelection();
+        return;
+      }
+      if (mod && (event.key === "v" || event.key === "V")) {
+        event.preventDefault();
+        void pasteSelection();
+        return;
+      }
       const deltas: Record<string, [number, number]> = {
         ArrowUp: [-1, 0],
         ArrowDown: [1, 0],
@@ -1033,9 +1209,13 @@ export function SheetEditor({ fileId }: { fileId: string }) {
       if (delta) {
         event.preventDefault();
         // Ctrl (ou Cmd) étend le pas d'une page entière de la grille visible.
-        const stride = event.ctrlKey || event.metaKey ? 5 : 1;
+        const stride = mod ? 5 : 1;
         const current = selected ?? { row: 0, col: 0 };
-        moveSelection(current.row + delta[0] * stride, current.col + delta[1] * stride);
+        moveSelection(
+          current.row + delta[0] * stride,
+          current.col + delta[1] * stride,
+          event.shiftKey,
+        );
         return;
       }
       if (event.key === "Home" && (event.ctrlKey || event.metaKey)) {
@@ -1046,10 +1226,13 @@ export function SheetEditor({ fileId }: { fileId: string }) {
         moveSelection(ROWS - 1, COLS - 1);
       } else if (event.key === "Escape" && selected) {
         setSelected(null);
+        setRangeAnchor(null);
       }
     },
-    [editing, moveSelection, selected],
+    [copySelection, editing, moveSelection, pasteSelection, selected],
   );
+
+  const freezeClass = freezeClasses(freeze);
 
   return (
     <div className="flex flex-col gap-3">
@@ -1139,6 +1322,7 @@ export function SheetEditor({ fileId }: { fileId: string }) {
                   setActiveTabId(tab.id);
                   setEditing(null);
                   setSelected(null);
+                  setRangeAnchor(null);
                 }}
                 className={cn(
                   "rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors",
@@ -1199,6 +1383,30 @@ export function SheetEditor({ fileId }: { fileId: string }) {
             </span>
           </div>
 
+          <div
+            role="toolbar"
+            aria-label="Repères figés"
+            className="flex flex-wrap items-center gap-1"
+          >
+            <span className="px-1 text-xs text-muted-foreground">{freezeHint(freeze)}</span>
+            <Button
+              size="sm"
+              variant={freeze.header ? "secondary" : "ghost"}
+              aria-pressed={freeze.header}
+              onClick={() => changeFreeze("header")}
+            >
+              {freezeButtonLabel("header")}
+            </Button>
+            <Button
+              size="sm"
+              variant={freeze.firstColumn ? "secondary" : "ghost"}
+              aria-pressed={freeze.firstColumn}
+              onClick={() => changeFreeze("firstColumn")}
+            >
+              {freezeButtonLabel("firstColumn")}
+            </Button>
+          </div>
+
           {canEdit && selected ? (
             <div
               role="toolbar"
@@ -1206,7 +1414,9 @@ export function SheetEditor({ fileId }: { fileId: string }) {
               className="flex flex-wrap items-center gap-1 rounded-xl border border-border bg-card px-2 py-1.5"
             >
               <span className="px-1 text-xs font-medium tabular-nums text-muted-foreground">
-                {cellKey(selected.row, selected.col)}
+                {selectionRange && !isSingleCell(selectionRange)
+                  ? rangeLabel(selectionRange, (col) => COL_LETTERS[col] ?? "")
+                  : cellKey(selected.row, selected.col)}
               </span>
               <Button
                 size="sm"
@@ -1320,12 +1530,15 @@ export function SheetEditor({ fileId }: { fileId: string }) {
             }
           >
             <caption className="sr-only">
-              Grille de la feuille — flèches pour parcourir les cellules, Entrée pour modifier,
-              touche Menu pour les actions de la cellule.
+              Grille de la feuille — flèches pour parcourir les cellules, Entrée pour modifier, Maj
+              + flèche pour étendre la sélection, Ctrl+C et Ctrl+V pour copier et coller, touche
+              Menu pour les actions de la cellule.
             </caption>
             <thead className="contents">
               <tr className="contents">
-                <td className="sticky left-0 top-0 z-20 border-b border-r border-border bg-muted" />
+                <td
+                  className={cn(freezeClass.corner, "border-b border-r border-border bg-muted")}
+                />
                 {COL_LETTERS.map((letter, col) => (
                   <th
                     key={letter}
@@ -1339,7 +1552,8 @@ export function SheetEditor({ fileId }: { fileId: string }) {
                       );
                     }}
                     className={cn(
-                      "sticky top-0 z-10 border-b border-border bg-muted px-2 py-1 text-center text-[11px] font-medium text-muted-foreground",
+                      freezeClass.header,
+                      "border-b border-border bg-muted px-2 py-1 text-center text-[11px] font-medium text-muted-foreground",
                       col < COLS - 1 && "border-r",
                     )}
                   >
@@ -1376,7 +1590,8 @@ export function SheetEditor({ fileId }: { fileId: string }) {
                       );
                     }}
                     className={cn(
-                      "sticky left-0 z-10 border-r border-border bg-muted px-2 py-1 text-right text-[11px] font-normal tabular-nums text-muted-foreground",
+                      freezeClass.firstColumn,
+                      "border-r border-border bg-muted px-2 py-1 text-right text-[11px] font-normal tabular-nums text-muted-foreground",
                       row < ROWS - 1 && "border-b",
                     )}
                   >
@@ -1423,6 +1638,7 @@ export function SheetEditor({ fileId }: { fileId: string }) {
                           tone={toneOf(value)}
                           cellStyle={cellStyle}
                           selected={isSelected}
+                          inRange={selectionRange !== null && inRange(selectionRange, row, col)}
                           canEdit={canEdit}
                           editing={isEditing}
                           onStart={startEditing}
