@@ -37,6 +37,17 @@ test("mail : brouillon puis envoi conservé avec erreur explicite sans SMTP", as
     .fill("Corps du message E2E");
   await page.getByRole("button", { name: "Enregistrer en brouillon" }).click();
   await expect(page.getByText("Brouillons").first()).toBeVisible();
+  // Selon l'état, le compositeur peut rester ouvert après l'enregistrement :
+  // on le referme (Échap, dialogue natif) avant de recommencer un message.
+  if (
+    await page
+      .getByRole("dialog", { name: "Nouveau message" })
+      .isVisible()
+      .catch(() => false)
+  ) {
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("dialog", { name: "Nouveau message" })).toBeHidden();
+  }
 
   await page.getByRole("button", { name: "Écrire", exact: true }).click();
   await page.getByLabel("À (séparés par des virgules)").fill("ami@exemple.org");
@@ -75,8 +86,14 @@ test("sites : page en Markdown, aperçu HTML rendu et sûr", async ({ page }) =>
   await page.getByLabel("Nom du site").fill("Wiki E2E");
   await page.getByRole("button", { name: "Créer et ouvrir" }).click();
 
-  await page.getByLabel("Contenu Markdown").fill("# Accueil E2E\n\nBienvenue au wiki.");
-  await page.getByRole("button", { name: "Enregistrer" }).click();
+  // Le champ peut être rempli avant que React n'attache ses gestionnaires :
+  // on retente la saisie jusqu'à ce que « Enregistrer » devienne actif.
+  const enregistrerSite = page.getByRole("button", { name: "Enregistrer" });
+  await expect(async () => {
+    await page.getByLabel("Contenu Markdown").fill("# Accueil E2E\n\nBienvenue au wiki.");
+    await expect(enregistrerSite).toBeEnabled({ timeout: 2_000 });
+  }).toPass({ timeout: 20_000 });
+  await enregistrerSite.click();
   await expect(page.getByRole("status").filter({ hasText: "Enregistré" }).first()).toBeVisible({
     timeout: 15_000,
   });

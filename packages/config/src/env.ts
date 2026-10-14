@@ -1,5 +1,3 @@
-import { existsSync, readFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
 import { z } from "zod";
 
 /**
@@ -96,21 +94,35 @@ function formatIssues(issues: ReadonlyArray<{ path: PropertyKey[]; message: stri
  * (la racine du dépôt en pratique), sans écraser les variables déjà
  * définies dans l'environnement du processus.
  */
-export function loadDotEnv(fromDir: string = process.cwd()): string | null {
-  // Garde-fou navigateur : `node:fs` est externalisé par Vite côté client et
-  // lève à l'accès. Appelée depuis un bundle client (page qui importe un
-  // barrel tirant la config), cette fonction faisait planter l'application
-  // entière (« Module node:fs has been externalized »). Côté navigateur, les
-  // variables viennent de `import.meta.env` : il n'y a rien à charger.
+export function loadDotEnv(fromDir?: string): string | null {
+  // Garde-fou navigateur : en dev, Vite externalise les imports `node:*` et
+  // leur ÉVALUATION lève (« Cannot access node:fs.existsSync in client code »)
+  // dès que ce module entre dans un bundle client. On charge donc les modules
+  // natifs via `process.getBuiltinModule` (Node >= 20.16) au lieu d'imports
+  // statiques : côté navigateur, la fonction est inerte.
   if (typeof window !== "undefined") return null;
-  let dir = resolve(fromDir);
+  const processLike = (
+    globalThis as { process?: { cwd?: () => string; getBuiltinModule?: (id: string) => unknown } }
+  ).process;
+  const getBuiltin = processLike?.getBuiltinModule;
+  if (typeof getBuiltin !== "function") return null;
+  const fs = getBuiltin.call(processLike, "node:fs") as {
+    existsSync: (path: string) => boolean;
+    readFileSync: (path: string, encoding: string) => string;
+  };
+  const path = getBuiltin.call(processLike, "node:path") as {
+    dirname: (path: string) => string;
+    join: (...parts: string[]) => string;
+    resolve: (...parts: string[]) => string;
+  };
+  let dir = path.resolve(fromDir ?? processLike?.cwd?.() ?? ".");
   for (;;) {
-    const candidate = join(dir, ".env");
-    if (existsSync(candidate)) {
-      applyDotEnv(readFileSync(candidate, "utf8"));
+    const candidate = path.join(dir, ".env");
+    if (fs.existsSync(candidate)) {
+      applyDotEnv(fs.readFileSync(candidate, "utf8"));
       return candidate;
     }
-    const parent = dirname(dir);
+    const parent = path.dirname(dir);
     if (parent === dir) return null;
     dir = parent;
   }
