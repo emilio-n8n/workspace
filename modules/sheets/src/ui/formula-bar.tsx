@@ -116,7 +116,6 @@ export function FormulaBar({
       <div className="flex flex-col">
         <Input
           aria-label="Référence de cellule"
-          defaultValue={reference}
           value={reference}
           disabled={disabled || !active}
           spellCheck={false}
