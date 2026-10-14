@@ -1,7 +1,7 @@
 import { Button, cn } from "@workspace/ui";
 import type { CalendarOption } from "../server.ts";
 import type { DayEventLike } from "./date-grid.ts";
-import { MiniCalendar } from "./mini-calendar.ts";
+import { MiniCalendar } from "./mini-calendar.tsx";
 import { VIEW_LABELS, VIEW_MODES, type ViewMode } from "./view-state.ts";
 
 export type CalendarSidebarProps = {
