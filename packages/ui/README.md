@@ -64,6 +64,54 @@ export {
 } from "./components/tooltip.tsx";
 ```
 
+Vague 2 (squelettes, états vides, badges, raccourcis, helpers) — mêmes
+fichiers `src/index.ts` / `src/hooks` / `src/lib` :
+
+```ts
+export { CountBadge, DotBadge } from "./components/count-badge.tsx";
+export {
+  EmptyStateBlock,
+  type EmptyStateBlockProps,
+} from "./components/empty-state-block.tsx";
+export {
+  Shortcut,
+  type ShortcutKey,
+  ShortcutList,
+  ShortcutListRow,
+} from "./components/shortcut.tsx";
+export {
+  LoadingRegion,
+  type LoadingRegionProps,
+  Skeleton,
+  SkeletonCard,
+  SkeletonCircle,
+  SkeletonTable,
+  SkeletonText,
+  type SkeletonProps,
+} from "./components/skeleton.tsx";
+export {
+  StatusBadge,
+  type StatusBadgeProps,
+  type StatusBadgeSize,
+  type StatusBadgeTone,
+  statusBadgeVariants,
+} from "./components/status-badge.tsx";
+export { useOverlayBehavior, type OverlayBehaviorOptions } from "./hooks/use-overlay-behavior.ts";
+export { pluralizeFr } from "./lib/french-text.ts";
+export {
+  FOCUSABLE_SELECTOR,
+  getFocusableElements,
+  lockScroll,
+  trapFocus,
+  type TrapFocusOptions,
+} from "./lib/overlay.ts";
+```
+
+> **Extension réelle des exports** : les composants sont exportés en `.tsx`
+> (`./components/skeleton.tsx`), les hooks et utilitaires en `.ts`
+> (`./hooks/use-overlay-behavior.ts`). Un `.ts` sur un fichier `.tsx` casse le
+> build Vite (module introuvable).
+
 **b) `packages/ui/package.json`** — exposer les feuilles de style additives :
 
 ```json
@@ -121,7 +169,6 @@ const duration = reduced ? 0 : 240; // ms, pour une animation JS
 
 ### `Tabs` / `TabsPanel` — onglets
 
-```tsx
 ```tsx
 // import { useId } from "react";
 const prefix = useId(); // ou n'importe quelle chaîne stable
@@ -262,9 +309,146 @@ const prefix = useId(); // ou n'importe quelle chaîne stable
 - `side`: `"right" | "left"` ; largeur par défaut `max-w-md`, débordable via
   `className`.
 
+### `Skeleton` — placeholders de chargement
+
+```tsx
+<LoadingRegion>
+  <SkeletonCard lines={3} />
+</LoadingRegion>
+
+<SkeletonTable rows={5} columns={4} />
+```
+
+- `Skeleton` : bloc neutre (`bg-muted`, `animate-pulse`), **`aria-hidden`** — le
+  squelette ne porte jamais l'état accessible.
+- `SkeletonText` (`lines`, `lastLineWidth`), `SkeletonCircle` (`size`),
+  `SkeletonCard` (`lines`), `SkeletonTable` (`rows`, `columns`).
+- `SkeletonTable` réutilise les primitifs `Table` réels : la mise en page ne
+  saute pas à l'arrivée des données.
+
+### `LoadingRegion` — état de chargement annoncé
+
+```tsx
+<LoadingRegion label="Chargement des fichiers…">
+  <SkeletonTable />
+</LoadingRegion>
+```
+
+- `role="status"` + `aria-busy="true"` + libellé en lecture seule d'écran :
+  c'est **le seul nœud porteur de l'état**, les squelettes restant invisibles.
+- Sous `prefers-reduced-motion`, la pulsation est ralentie (2 s) plutôt que
+  supprimée : l'activité reste perceptible.
+
+### `EmptyStateBlock` — état vide enrichi
+
+```tsx
+<EmptyStateBlock
+  icon={<FolderIcon />}
+  title="Aucun fichier"
+  description="Déposez un fichier ou créez un dossier pour commencer."
+  secondaryAction={<Button variant="ghost">Importer</Button>}
+  action={<Button>Créer un dossier</Button>}
+  bare
+/>
+```
+
+- Grand frère de `EmptyState` : deux actions, description libre, variante
+  `bare` (sans bordure ni fond, pour un panneau déjà bordé).
+- `role="status"` : le message est annoncé dès son apparition (liste filtrée
+  sans résultat, dossier vide), là où un paragraphe muet ne l'est pas.
+
+### `StatusBadge` — pastille d'état
+
+```tsx
+<StatusBadge tone="success" dot>
+  Actif
+</StatusBadge>
+<StatusBadge tone="warning">En attente</StatusBadge>
+```
+
+- Cinq tons : `neutral`, `info`, `success`, `warning`, `danger` ; tailles `sm`
+  et `md` ; `dot` affiche une pastille colorée devant le libellé.
+- Le libellé reste **normatif** : `warning` et `danger` s'emploient avec un
+  texte explicite, jamais seuls (l'information ne repose pas sur la couleur).
+- Couleurs issues des tokens sémantiques (`accent`, `attention`, `destructive`),
+  thème clair et sombre compris.
+
+### `CountBadge` / `DotBadge` — compteurs et points d'état
+
+```tsx
+<CountBadge count={12} />
+<CountBadge count={130} label="message" />
+<CountBadge count={3} destructive label="échec" />
+<DotBadge tone="accent" label="Non lu" />
+```
+
+- `CountBadge` : nombre en chiffres tabulaires, **masqué au-delà de `max`**
+  (`99+` par défaut) ; le texte lu par les lecteurs d'écran est un pluriel
+  français correct via `pluralizeFr` (« 1 élément », « 12 éléments »).
+- `DotBadge` : point de 8 px (`tone` : `primary`, `accent`, `destructive`,
+  `attention`) toujours accompagné d'un `label` annoncé.
+- `pluralizeFr(n, singulier, pluriel?)` — « 2 non lus » avec un pluriel
+  irrégulier : `pluralizeFr(n, "non lu", "non lus")`.
+
+### `Shortcut` / `ShortcutList` / `ShortcutListRow` — aide clavier
+
+```tsx
+<Shortcut keys={["⌘", "K"]} />
+<Shortcut keys={[{ keys: "⌘", label: "Commande" }, "K"]} />
+
+<ShortcutList>
+  <ShortcutListRow action="Ouvrir la palette" keys={["⌘", "K"]} />
+  <ShortcutListRow action="Enregistrer" keys={["⌘", "S"]} />
+</ShortcutList>
+```
+
+- `Shortcut` : `<fieldset>` inline avec `<legend>` en lecture seule d'écran ;
+  le nom accessible est « Raccourci : ⌘ + K », les glyphes n'étant que visuels.
+  Une touche accepte un libellé (`{ keys: "⌘", label: "Commande" }`).
+- `ShortcutList` : liste de définitions (`<dl>`) ; `ShortcutListRow` aligne
+  l'action à gauche et les puces `Kbd` à droite.
+
 ---
 
-## 5. Règles de contribution
+## 5. Helpers de superposition (verrou de défilement, focus trap)
+
+Pour un panneau **non `<dialog>`** (palette de commandes, popover, tiroir
+maison) :
+
+```tsx
+const panelRef = useRef<HTMLDivElement>(null);
+
+useOverlayBehavior({
+  active: ouvert,
+  container: panelRef,
+  onEscape: () => setOuvert(false),
+});
+
+return (
+  <div ref={panelRef} role="dialog" aria-modal="true">
+    …
+  </div>
+);
+```
+
+- `lockScroll()` — fige le défilement de la page et compense la barre pour
+  éviter le saut de mise en page ; **compté** entre appels concurrents (le
+  défilement n'est restauré qu'au dernier déverrouillage). Retourne la fonction
+  de déverrouillage.
+- `trapFocus(container, { onEscape, autoFocus })` — Tab / Maj+Tab cyclent dans
+  le conteneur, Échap appelle `onEscape` (la fermeture reste à l'appelant).
+  Retourne la fonction de nettoyage.
+- `getFocusableElements(container)` / `FOCUSABLE_SELECTOR` — détection des
+  éléments focalisables (exclut `aria-hidden`, `tabindex` négatif et champs
+  désactivés).
+- `useOverlayBehavior({ active, container, onEscape, restoreFocus, autoFocus })`
+  — branche les trois ci-dessus et **rend le focus** à l'élément actif à la
+  fermeture. À n'utiliser que hors `<dialog>` : `Dialog` et `Sheet` s'appuient
+  sur `showModal()`, qui gère déjà focus, inertie et Échap.
+
+---
+
+## 6. Règles de contribution
 
 1. **Tokens sémantiques uniquement** — jamais de couleur littérale, jamais de
    `text-white` / `bg-black`.
