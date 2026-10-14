@@ -627,7 +627,16 @@ describe("sheets — mise en forme (v1)", () => {
     const result = await setCellStyle(f.actorAlice, entry.id, {
       tabId,
       cells: [{ row: 0, col: 0 }],
-      style: { bold: true, italic: true, align: "center", background: "accent" },
+      style: {
+        bold: true,
+        italic: true,
+        underline: true,
+        strike: true,
+        align: "center",
+        background: "accent",
+        color: "attention",
+        format: "percent",
+      },
     });
     expect(result.styled).toBe(1);
 
@@ -638,7 +647,16 @@ describe("sheets — mise en forme (v1)", () => {
         row: 0,
         col: 0,
         value: "Titre",
-        style: { bold: true, italic: true, align: "center", background: "accent" },
+        style: {
+          bold: true,
+          italic: true,
+          underline: true,
+          strike: true,
+          align: "center",
+          background: "accent",
+          color: "attention",
+          format: "percent",
+        },
       },
     ]);
   });
@@ -656,6 +674,9 @@ describe("sheets — mise en forme (v1)", () => {
     await expect(attempt({ bold: true, color: "red" })).rejects.toThrow(SheetsError);
     await expect(attempt({ align: "middle" })).rejects.toThrow(SheetsError);
     await expect(attempt({ background: "chartreuse" })).rejects.toThrow(SheetsError);
+    await expect(attempt({ color: "chartreuse" })).rejects.toThrow(SheetsError);
+    await expect(attempt({ format: "scientifique" })).rejects.toThrow(SheetsError);
+    await expect(attempt({ underline: false })).rejects.toThrow(SheetsError);
     await expect(attempt({ bold: false })).rejects.toThrow(SheetsError);
     await expect(attempt("gras")).rejects.toThrow(SheetsError);
 

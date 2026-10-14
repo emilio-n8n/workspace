@@ -3,6 +3,7 @@ import { getRequest } from "@tanstack/react-start/server";
 import { requireActor } from "@workspace/auth";
 import { z } from "zod";
 import { MAX_DIMENSION_SIZES } from "./dimensions.ts";
+import { CELL_STORED_FORMAT_IDS } from "./number-format.ts";
 import {
   addTab,
   createSpreadsheet,
@@ -20,7 +21,7 @@ import {
   setCellStyle,
   setDimensionSizes,
 } from "./service.ts";
-import { CELL_STYLE_BACKGROUNDS, MAX_STYLE_CELLS } from "./style-palette.ts";
+import { CELL_STYLE_BACKGROUNDS, CELL_TEXT_COLORS, MAX_STYLE_CELLS } from "./style-palette.ts";
 
 export type { CellView, DimensionSize, SpreadsheetDetail, TabView } from "./index.ts";
 
@@ -96,8 +97,12 @@ export const setCellStyleFn = createServerFn({ method: "POST" })
           .object({
             bold: z.literal(true).optional(),
             italic: z.literal(true).optional(),
+            underline: z.literal(true).optional(),
+            strike: z.literal(true).optional(),
             align: z.enum(["left", "center", "right"]).optional(),
             background: z.enum(CELL_STYLE_BACKGROUNDS).optional(),
+            color: z.enum(CELL_TEXT_COLORS).optional(),
+            format: z.enum(CELL_STORED_FORMAT_IDS).optional(),
           })
           .nullable(),
       })

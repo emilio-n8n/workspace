@@ -94,6 +94,16 @@ test("sheets : saisie, formule évaluée et persistance après rechargement", as
   await expect(page.getByRole("button", { name: "Cellule A3", exact: true })).toHaveText("5", {
     timeout: 10_000,
   });
+
+  // Format de nombre : 0.25 s'affiche en pourcentage, la valeur ne change pas.
+  await typeCell("A4", "0.25");
+  await page.getByRole("button", { name: "Cellule A4", exact: true }).click();
+  await page.getByRole("button", { name: "Pourcentage" }).click();
+  await expect(page.getByRole("button", { name: "Cellule A4", exact: true })).toHaveText(
+    "25,00 %",
+    { timeout: 10_000 },
+  );
+
   await expect(page.getByRole("status").filter({ hasText: "Enregistré" })).toBeVisible({
     timeout: 15_000,
   });
@@ -103,6 +113,10 @@ test("sheets : saisie, formule évaluée et persistance après rechargement", as
   await expect(page.getByRole("button", { name: "Cellule A3", exact: true })).toHaveText("5", {
     timeout: 15_000,
   });
+  await expect(page.getByRole("button", { name: "Cellule A4", exact: true })).toHaveText(
+    "25,00 %",
+    { timeout: 15_000 },
+  );
   await page.screenshot({ path: "e2e/screenshots/sheets.png", fullPage: true });
 });
 

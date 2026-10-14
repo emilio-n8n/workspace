@@ -22,8 +22,10 @@ import {
   validateSize,
 } from "./dimensions.ts";
 import { cellKey, evaluateCells, formatValue } from "./formula.ts";
+import { normalizeStoredFormat } from "./number-format.ts";
 import {
   CELL_STYLE_BACKGROUNDS,
+  CELL_TEXT_COLORS,
   type CellStyle,
   type SheetTabRow,
   sheetCells,
@@ -362,10 +364,20 @@ export async function saveCells(
 }
 
 // ---------------------------------------------------------------------------
-// Mise en forme des cellules (v1 : gras, italique, alignement, jetons de fond)
+// Mise en forme des cellules (gras, italique, souligné, barré, alignement,
+// jetons de fond et de texte, formats numériques)
 // ---------------------------------------------------------------------------
 
-const STYLE_KEYS: ReadonlySet<string> = new Set(["bold", "italic", "align", "background"]);
+const STYLE_KEYS: ReadonlySet<string> = new Set([
+  "bold",
+  "italic",
+  "underline",
+  "strike",
+  "align",
+  "background",
+  "color",
+  "format",
+]);
 const CELL_ALIGNS: ReadonlySet<string> = new Set(["left", "center", "right"]);
 
 /**
@@ -393,6 +405,16 @@ export function normalizeCellStyle(style: unknown): CellStyle | null {
     if (raw.italic !== true) throw new SheetsError("validation", "« italic » doit valoir true.");
     clean.italic = true;
   }
+  if (raw.underline !== undefined) {
+    if (raw.underline !== true) {
+      throw new SheetsError("validation", "« underline » doit valoir true.");
+    }
+    clean.underline = true;
+  }
+  if (raw.strike !== undefined) {
+    if (raw.strike !== true) throw new SheetsError("validation", "« strike » doit valoir true.");
+    clean.strike = true;
+  }
   if (raw.align !== undefined) {
     if (typeof raw.align !== "string" || !CELL_ALIGNS.has(raw.align)) {
       throw new SheetsError("validation", "Alignement invalide (left, center ou right).");
@@ -407,6 +429,22 @@ export function normalizeCellStyle(style: unknown): CellStyle | null {
       throw new SheetsError("validation", "Fond invalide (jeton de palette inconnu).");
     }
     clean.background = raw.background as CellStyle["background"];
+  }
+  if (raw.color !== undefined) {
+    if (
+      typeof raw.color !== "string" ||
+      !(CELL_TEXT_COLORS as readonly string[]).includes(raw.color)
+    ) {
+      throw new SheetsError("validation", "Couleur de texte invalide (jeton inconnu).");
+    }
+    clean.color = raw.color as CellStyle["color"];
+  }
+  if (raw.format !== undefined) {
+    const format = normalizeStoredFormat(raw.format);
+    if (format === null) {
+      throw new SheetsError("validation", "Format numérique inconnu.");
+    }
+    clean.format = format;
   }
   return Object.keys(clean).length > 0 ? clean : null;
 }

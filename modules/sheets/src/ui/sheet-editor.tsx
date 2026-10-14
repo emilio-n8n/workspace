@@ -32,6 +32,7 @@ import {
   freezeHint,
   toggleFreeze,
 } from "../freeze.ts";
+import { CELL_FORMATS, type CellFormatId, formatCellDisplay } from "../number-format.ts";
 import {
   type CellAddress,
   type CellRange,
@@ -70,7 +71,12 @@ import {
   selectionAfter,
   structureMessage,
 } from "../structure.ts";
-import { CELL_STYLE_BACKGROUNDS, type CellStyleBackground } from "../style-palette.ts";
+import {
+  CELL_STYLE_BACKGROUNDS,
+  CELL_TEXT_COLORS,
+  type CellStyleBackground,
+  type CellTextColor,
+} from "../style-palette.ts";
 import { toneOf } from "./cell-tone.ts";
 import { FormulaBar } from "./formula-bar.tsx";
 import { ResizeHandle } from "./resize-handle.tsx";
@@ -109,6 +115,27 @@ const STYLE_SWATCH_LABELS: Record<CellStyleBackground, string> = {
   muted: "Neutre",
 };
 
+/** Classes de couleur de TEXTE par jeton (le défaut est une absence de clé). */
+const STYLE_TEXT_CLASSES: Record<CellTextColor, string> = {
+  accent: "text-primary",
+  attention: "text-attention",
+  danger: "text-destructive",
+  muted: "text-muted-foreground",
+};
+/** Pastilles de couleur de texte (teinte pleine du jeton). */
+const STYLE_TEXT_SWATCH_CLASSES: Record<CellTextColor, string> = {
+  accent: "bg-primary",
+  attention: "bg-attention",
+  danger: "bg-destructive",
+  muted: "bg-muted-foreground",
+};
+const STYLE_TEXT_LABELS: Record<CellTextColor, string> = {
+  accent: "Accent",
+  attention: "Attention",
+  danger: "Rouge",
+  muted: "Gris",
+};
+
 type SaveStatus = "idle" | "saving" | "saved" | "error";
 type MoveDirection = "down" | "right" | "none";
 type CellTone = "number" | "error" | "text";
@@ -126,7 +153,10 @@ type SheetSizes = {
 };
 
 /** Retire un attribut d'un style ; `null` si le style devient vide. */
-function withoutKey(style: CellStyle, key: "align" | "background"): CellStyle | null {
+function withoutKey(
+  style: CellStyle,
+  key: "align" | "background" | "color" | "format",
+): CellStyle | null {
   const next = { ...style };
   delete next[key];
   return Object.keys(next).length > 0 ? next : null;
@@ -235,12 +265,17 @@ const GridCell = memo(function GridCell({
       style={{
         fontWeight: cellStyle?.bold ? 700 : undefined,
         fontStyle: cellStyle?.italic ? "italic" : undefined,
+        textDecoration:
+          [cellStyle?.underline ? "underline" : null, cellStyle?.strike ? "line-through" : null]
+            .filter((value): value is string => value !== null)
+            .join(" ") || undefined,
         textAlign: cellStyle?.align,
       }}
       className={cn(
         "block w-full truncate px-2 py-1 text-sm",
         tone === "number" ? "text-right tabular-nums" : "text-left",
         cellStyle?.background ? STYLE_BACKGROUND_CLASSES[cellStyle.background] : undefined,
+        cellStyle?.color ? STYLE_TEXT_CLASSES[cellStyle.color] : undefined,
         inRange && !cellStyle?.background && "bg-accent/25",
         canEdit ? "cursor-cell hover:bg-muted/60" : "cursor-default",
         tone === "error" && "text-destructive",
@@ -674,7 +709,7 @@ export function SheetEditor({ fileId }: { fileId: string }) {
   );
 
   const toggleFlag = useCallback(
-    (flag: "bold" | "italic") => {
+    (flag: "bold" | "italic" | "underline" | "strike") => {
       void applyCellStyle((current) => {
         const next = { ...(current ?? {}) };
         if (next[flag]) delete next[flag];
@@ -701,6 +736,28 @@ export function SheetEditor({ fileId }: { fileId: string }) {
         : { ...(current ?? {}), background },
     );
   }
+
+  const toggleColor = useCallback(
+    (color: CellTextColor) => {
+      void applyCellStyle((current) =>
+        current?.color === color ? withoutKey(current, "color") : { ...(current ?? {}), color },
+      );
+    },
+    [applyCellStyle],
+  );
+
+  /** Format d'affichage : « auto » (ou re-clic) retire la clé, jamais de valeur par défaut stockée. */
+  const toggleFormat = useCallback(
+    (format: CellFormatId) => {
+      void applyCellStyle((current) => {
+        if (format === "auto" || current?.format === format) {
+          return withoutKey(current ?? {}, "format");
+        }
+        return { ...(current ?? {}), format };
+      });
+    },
+    [applyCellStyle],
+  );
 
   async function onRenameSpreadsheet() {
     if (!detail) return;
@@ -1022,6 +1079,43 @@ export function SheetEditor({ fileId }: { fileId: string }) {
         format("italique", "Italique", selectedStyle?.italic === true, () => toggleFlag("italic")),
       );
       items.push(
+        format("souligne", "Souligné", selectedStyle?.underline === true, () =>
+          toggleFlag("underline"),
+        ),
+      );
+      items.push(
+        format("barre", "Barré", selectedStyle?.strike === true, () => toggleFlag("strike")),
+      );
+      items.push({ type: "separator", id: "formats-numeriques" });
+      items.push(
+        format(
+          "format-auto",
+          "Format automatique",
+          (selectedStyle?.format ?? "auto") === "auto",
+          () => toggleFormat("auto"),
+        ),
+      );
+      items.push(
+        format("format-nombre", "Nombre (2 décimales)", selectedStyle?.format === "number", () =>
+          toggleFormat("number"),
+        ),
+      );
+      items.push(
+        format("format-entier", "Entier", selectedStyle?.format === "integer", () =>
+          toggleFormat("integer"),
+        ),
+      );
+      items.push(
+        format("format-pourcent", "Pourcentage", selectedStyle?.format === "percent", () =>
+          toggleFormat("percent"),
+        ),
+      );
+      items.push(
+        format("format-euro", "Euro", selectedStyle?.format === "currency", () =>
+          toggleFormat("currency"),
+        ),
+      );
+      items.push(
         format("gauche", "Aligner à gauche", selectedStyle?.align === "left", () =>
           toggleAlign("left"),
         ),
@@ -1076,6 +1170,7 @@ export function SheetEditor({ fileId }: { fileId: string }) {
     styleBusy,
     toggleAlign,
     toggleFlag,
+    toggleFormat,
   ]);
 
   function submitBarValue(value: string, move: MoveDirection) {
@@ -1436,6 +1531,28 @@ export function SheetEditor({ fileId }: { fileId: string }) {
               >
                 <em>I</em>
               </Button>
+              <Button
+                size="sm"
+                variant={selectedStyle?.underline ? "secondary" : "ghost"}
+                aria-pressed={selectedStyle?.underline === true}
+                aria-label="Souligné"
+                title="Souligné"
+                disabled={styleBusy}
+                onClick={() => toggleFlag("underline")}
+              >
+                <span className="underline">U</span>
+              </Button>
+              <Button
+                size="sm"
+                variant={selectedStyle?.strike ? "secondary" : "ghost"}
+                aria-pressed={selectedStyle?.strike === true}
+                aria-label="Barré"
+                title="Barré"
+                disabled={styleBusy}
+                onClick={() => toggleFlag("strike")}
+              >
+                <span className="line-through">S</span>
+              </Button>
               <span aria-hidden className="mx-1 h-5 w-px bg-border" />
               <Button
                 size="sm"
@@ -1486,6 +1603,54 @@ export function SheetEditor({ fileId }: { fileId: string }) {
                     selectedStyle?.background === background && "ring-2 ring-ring",
                   )}
                 />
+              ))}
+              <span aria-hidden className="mx-1 h-5 w-px bg-border" />
+              {/* Couleur de texte : la pastille « A » remet le défaut (jeton absent). */}
+              <button
+                type="button"
+                aria-label="Couleur par défaut"
+                aria-pressed={selectedStyle?.color === undefined}
+                title="Couleur par défaut"
+                disabled={styleBusy}
+                onClick={() => void applyCellStyle((current) => withoutKey(current ?? {}, "color"))}
+                className={cn(
+                  "size-5 rounded-sm border border-border text-[10px] font-bold leading-none disabled:opacity-50",
+                  selectedStyle?.color === undefined && "ring-2 ring-ring",
+                )}
+              >
+                A
+              </button>
+              {CELL_TEXT_COLORS.map((color) => (
+                <button
+                  key={color}
+                  type="button"
+                  aria-label={`Couleur ${STYLE_TEXT_LABELS[color]}`}
+                  aria-pressed={selectedStyle?.color === color}
+                  title={`Couleur ${STYLE_TEXT_LABELS[color]}`}
+                  disabled={styleBusy}
+                  onClick={() => toggleColor(color)}
+                  className={cn(
+                    "size-5 rounded-sm border border-border disabled:opacity-50",
+                    STYLE_TEXT_SWATCH_CLASSES[color],
+                    selectedStyle?.color === color && "ring-2 ring-ring",
+                  )}
+                />
+              ))}
+              <span aria-hidden className="mx-1 h-5 w-px bg-border" />
+              {/* Formats d'affichage : le nombre stocké ne change jamais. */}
+              {CELL_FORMATS.map((format) => (
+                <Button
+                  key={format.id}
+                  size="sm"
+                  variant={(selectedStyle?.format ?? "auto") === format.id ? "secondary" : "ghost"}
+                  aria-pressed={(selectedStyle?.format ?? "auto") === format.id}
+                  aria-label={format.label}
+                  title={format.label}
+                  disabled={styleBusy}
+                  onClick={() => toggleFormat(format.id)}
+                >
+                  <span className="tabular-nums">{format.glyph}</span>
+                </Button>
               ))}
               <Button
                 size="sm"
@@ -1630,7 +1795,11 @@ export function SheetEditor({ fileId }: { fileId: string }) {
                           row={row}
                           col={col}
                           raw={raw}
-                          display={value ? formatValue(value) : ""}
+                          display={
+                            value
+                              ? formatCellDisplay(formatValue(value), cellStyle?.format ?? "auto")
+                              : ""
+                          }
                           tone={toneOf(value)}
                           cellStyle={cellStyle}
                           selected={isSelected}

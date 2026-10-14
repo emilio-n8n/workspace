@@ -33,3 +33,8 @@ moteur + service + E2E).
 ## Hors périmètre
 Collaboration temps réel (Yjs), mise en forme conditionnelle, graphiques,
 imports XLSX/CSV.
+
+## Vague « tableur » (14 oct. 2026)
+- **Mise en forme étendue** : souligné, barré, couleur de texte (jetons sémantiques), en plus de gras/italique/alignement/fond.
+- **Formats d'affichage** : automatique, nombre (2 décimales), entier, pourcentage, euro — la valeur stockée ne change **jamais** (aucun arrondi persisté), seul l'affichage s'adapte (locale fr-FR). Boutons dans la barre + menu contextuel de cellule.
+- Validation stricte côté service : clés inconnues et jetons hors palette refusés ; le défaut est une absence de clé, jamais une valeur par défaut stockée.

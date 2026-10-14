@@ -26,20 +26,33 @@ export type CellStyleAlign = "left" | "center" | "right";
  * Jetons de fond autorisés : jamais de couleur en dur en base, l'interface
  * choisit la teinte réelle de chaque jeton (palette fixe).
  */
-import { CELL_STYLE_BACKGROUNDS, type CellStyleBackground } from "./style-palette.ts";
+import type { CellStoredFormat } from "./number-format.ts";
+import {
+  CELL_STYLE_BACKGROUNDS,
+  CELL_TEXT_COLORS,
+  type CellStyleBackground,
+  type CellTextColor,
+} from "./style-palette.ts";
 
-export type { CellStyleBackground };
-export { CELL_STYLE_BACKGROUNDS };
+export type { CellStyleBackground, CellTextColor };
+export { CELL_STYLE_BACKGROUNDS, CELL_TEXT_COLORS };
 
 /**
- * Mise en forme d'une cellule (v1) : `true` uniquement quand l'attribut est
- * actif (un attribut absent est inactif) ; `null` sur la colonne = aucun style.
+ * Mise en forme d'une cellule : `true` uniquement quand l'attribut est actif
+ * (un attribut absent est inactif) ; `null` sur la colonne = aucun style.
+ * `color` et `format` ne stockent jamais leur valeur par défaut — l'absence
+ * de clé est le défaut.
  */
 export type CellStyle = {
   bold?: true;
   italic?: true;
+  underline?: true;
+  strike?: true;
   align?: CellStyleAlign;
   background?: CellStyleBackground;
+  color?: CellTextColor;
+  /** Format d'affichage numérique (« auto » = clé absente). */
+  format?: CellStoredFormat;
 };
 
 export const spreadsheets = pgTable(
