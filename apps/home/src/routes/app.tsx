@@ -21,6 +21,17 @@ export const Route = createFileRoute("/app")({
     const session = await getSessionFn();
     if (!session) throw redirect({ to: "/login" });
   },
+  head: () => ({
+    meta: [
+      {
+        title: "Tableau de bord — Workspace",
+      },
+      {
+        name: "description",
+        content: "Tableau de bord de Workspace : raccourcis, fichiers récents, applications et gestion de votre espace de travail.",
+      },
+    ],
+  }),
 });
 
 type AppUrls = {

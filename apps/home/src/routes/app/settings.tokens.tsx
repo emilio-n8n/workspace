@@ -18,7 +18,20 @@ import {
 import { useCallback, useEffect, useState } from "react";
 import { createTokenFn, listTokensFn, revokeTokenFn, type TokenView } from "../../server/tokens";
 
-export const Route = createFileRoute("/app/settings/tokens")({ component: TokensPage });
+export const Route = createFileRoute("/app/settings/tokens")({
+  component: TokensPage,
+  head: () => ({
+    meta: [
+      {
+        title: "Agents et jetons — Workspace",
+      },
+      {
+        name: "description",
+        content: "Gérez les jetons d'accès pour agents IA compatibles MCP : minimaux, scopés et révocables.",
+      },
+    ],
+  }),
+});
 
 type CreatedToken = { id: string; token: string; prefix: string };
 

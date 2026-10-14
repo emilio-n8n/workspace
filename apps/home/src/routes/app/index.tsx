@@ -24,7 +24,20 @@ import { Skeleton, SkeletonCard, SkeletonRow } from "../../dashboard/skeleton.ts
 import { getAppUrlsFn, getWorkspaceFn, type WorkspaceInfo } from "../../server/context.ts";
 import { getStorageUsageFn } from "../../server/storage.ts";
 
-export const Route = createFileRoute("/app/")({ component: DashboardPage });
+export const Route = createFileRoute("/app/")({
+  component: DashboardPage,
+  head: () => ({
+    meta: [
+      {
+        title: "Tableau de bord — Workspace",
+      },
+      {
+        name: "description",
+        content: "Tableau de bord : raccourcis, fichiers récents, applications et stockage de votre espace de travail.",
+      },
+    ],
+  }),
+});
 
 type StorageUsage = { usedBytes: number; fileCount: number; quotaBytes: number | null };
 

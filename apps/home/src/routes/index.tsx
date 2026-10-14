@@ -16,6 +16,22 @@ export const Route = createFileRoute("/")({
   component: LandingPage,
   head: () => ({
     links: externalOrigins.map((origin) => ({ rel: "preconnect", href: origin })),
+    meta: [
+      {
+        title: "Workspace — la suite bureautique libre et auto-hébergeable",
+      },
+      {
+        name: "description",
+        content:
+          "Workspace est une suite bureautique libre, auto-hébergeable et prête pour l'IA. Quatorze applications partagent un même compte, des permissions révisées côté serveur et un serveur MCP autorisé par jetons scopés.",
+      },
+      { property: "og:title", content: "Workspace — la suite bureautique libre" },
+      {
+        property: "og:description",
+        content:
+          "Suite bureautique libre et auto-hébergeable : Drive, Docs, Sheets, Slides, Calendar, Tasks, Forms, Mail, Chat, Meet, Sites, Classroom, Admin.",
+      },
+    ],
   }),
 });
 

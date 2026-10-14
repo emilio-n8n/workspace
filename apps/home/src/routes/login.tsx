@@ -13,7 +13,20 @@ import {
 import { type FormEvent, useRef, useState } from "react";
 import { authErrorMessage, validateEmail, validatePassword } from "../auth/validation.ts";
 
-export const Route = createFileRoute("/login")({ component: LoginPage });
+export const Route = createFileRoute("/login")({
+  component: LoginPage,
+  head: () => ({
+    meta: [
+      {
+        title: "Connexion — Workspace",
+      },
+      {
+        name: "description",
+        content: "Connectez-vous à votre espace Workspace pour accéder à vos documents, fichiers et équipes.",
+      },
+    ],
+  }),
+});
 
 type FieldName = "email" | "password";
 

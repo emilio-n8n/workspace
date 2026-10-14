@@ -531,7 +531,7 @@ export function FinalCtaSection() {
 export function LandingFooter() {
   return (
     <footer className="border-t border-border bg-muted/40">
-      <div className="mx-auto grid max-w-6xl gap-8 px-4 py-12 md:grid-cols-[2fr_1fr_1fr]">
+      <div className="mx-auto grid max-w-6xl gap-8 px-4 py-12 md:grid-cols-[2fr_1fr_1fr_1fr]">
         <div className="flex flex-col gap-3">
           <span className="flex items-center gap-2">
             <BrandMark className="size-7 text-sm" />
@@ -556,7 +556,20 @@ export function LandingFooter() {
         ))}
       </div>
       <div className="mx-auto max-w-6xl px-4 pb-10">
-        <p className="border-t border-border pt-6 text-xs text-muted-foreground">{FOOTER.legal}</p>
+        <div className="flex flex-col gap-4 border-t border-border pt-6 md:flex-row md:items-center md:justify-between">
+          <p className="text-xs text-muted-foreground">{FOOTER.legal}</p>
+          <dl className="flex flex-col gap-1 text-xs text-muted-foreground">
+            <div className="flex items-center gap-2">
+              <dt className="font-medium">Raccourci clavier principal</dt>
+              <dd aria-label="Ctrl ou Meta K">
+                <span className="sr-only">Ctrl ou Commande K</span>
+                <kbd className="rounded border border-border bg-background px-1.5 py-0.5 font-sans text-[10px] font-medium">
+                  ⌘K
+                </kbd>
+              </dd>
+            </div>
+          </dl>
+        </div>
       </div>
     </footer>
   );

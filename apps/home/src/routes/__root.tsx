@@ -20,10 +20,36 @@ export const Route = createRootRoute({
         content: "width=device-width, initial-scale=1",
       },
       {
-        title: "Workspace",
+        title: "Workspace — la suite bureautique libre et auto-hébergeable",
       },
+      {
+        name: "description",
+        content:
+          "Workspace est une suite bureautique libre et auto-hébergeable : Drive, Docs, Sheets, Slides, Calendar, Tasks, Forms, Mail, Chat, Meet, Sites, Classroom et Admin, avec un serveur MCP autorisé par jetons scopés.",
+      },
+      { property: "og:title", content: "Workspace — la suite bureautique libre" },
+      {
+        property: "og:description",
+        content:
+          "Suite bureautique libre et auto-hébergeable : vos données vivent chez vous, avec agents IA autorisés par jetons scopés et révocables.",
+      },
+      { property: "og:type", content: "website" },
+      { property: "og:locale", content: "fr_FR" },
+      { property: "og:image", content: "/pwa/icon.svg" },
+      { property: "og:url", content: "/" },
+      { name: "twitter:card", content: "summary" },
+      { name: "twitter:title", content: "Workspace — la suite bureautique libre" },
+      {
+        name: "twitter:description",
+        content: "Suite bureautique libre et auto-hébergeable, avec permissions révisées côté serveur.",
+      },
+      { name: "twitter:image", content: "/pwa/icon.svg" },
     ],
-    links: [{ rel: "stylesheet", href: appCss }],
+    links: [
+      { rel: "stylesheet", href: appCss },
+      { rel: "icon", type: "image/svg+xml", href: "/pwa/icon.svg" },
+      { rel: "apple-touch-icon", href: "/pwa/maskable.svg" },
+    ],
   }),
   shellComponent: RootDocument,
   notFoundComponent: NotFoundDocument,

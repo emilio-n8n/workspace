@@ -303,8 +303,15 @@ export const FOOTER = {
         { kind: "route", to: "/app", label: "Tableau de bord" },
       ],
     },
+    {
+      label: "Accessibilité & raccourcis",
+      links: [
+        { kind: "anchor", href: "#top", label: "Retour en haut" },
+        { kind: "anchor", href: "#contenu", label: "Aller au contenu" },
+      ],
+    },
   ],
-  legal: "Licence AGPL-3.0-only · Interface en français · Polices auto-hébergées",
+  legal: "Licence AGPL-3.0-only · Interface en français · Polices auto-hébergées · Raccourcis globaux ⌘K (Ctrl+K)",
 } as const;
 
 /** Lien de pied de page : ancre interne ou route de l'application. */

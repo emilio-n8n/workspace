@@ -33,7 +33,20 @@ const searchFn = createServerFn({ method: "GET" })
     return searchEverything(actor, data);
   });
 
-export const Route = createFileRoute("/app/recherche")({ component: SearchPage });
+export const Route = createFileRoute("/app/recherche")({
+  component: SearchPage,
+  head: () => ({
+    meta: [
+      {
+        title: "Recherche — Workspace",
+      },
+      {
+        name: "description",
+        content: "Recherche globale dans Workspace : fichiers, documents, formulaires, tâches et événements.",
+      },
+    ],
+  }),
+});
 
 const KIND_ICONS: Record<SearchResult["kind"], typeof IconSearch> = {
   file: IconFileText,

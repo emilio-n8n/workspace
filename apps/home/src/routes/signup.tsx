@@ -20,7 +20,20 @@ import {
 } from "../auth/validation.ts";
 import { provisionWorkspaceFn } from "../server/context.ts";
 
-export const Route = createFileRoute("/signup")({ component: SignupPage });
+export const Route = createFileRoute("/signup")({
+  component: SignupPage,
+  head: () => ({
+    meta: [
+      {
+        title: "Créer un compte — Workspace",
+      },
+      {
+        name: "description",
+        content: "Créez votre espace Workspace en une minute : gratuit, auto-hébergeable, AGPL-3.0-only.",
+      },
+    ],
+  }),
+});
 
 type FieldName = "name" | "email" | "password";
 

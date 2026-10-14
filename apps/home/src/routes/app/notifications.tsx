@@ -1,7 +1,20 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { Card, CardDescription, CardHeader, CardTitle } from "@workspace/ui";
 
-export const Route = createFileRoute("/app/notifications")({ component: NotificationsPage });
+export const Route = createFileRoute("/app/notifications")({
+  component: NotificationsPage,
+  head: () => ({
+    meta: [
+      {
+        title: "Notifications — Workspace",
+      },
+      {
+        name: "description",
+        content: "Historique des notifications Workspace : partages, assignations et mises à jour.",
+      },
+    ],
+  }),
+});
 
 function NotificationsPage() {
   return (
