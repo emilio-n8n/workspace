@@ -11,8 +11,10 @@ export {
   CardTitle,
 } from "./components/card.tsx";
 export { ConfirmDialog, type ConfirmDialogProps } from "./components/confirm-dialog.tsx";
+export * from "./components/count-badge.tsx";
 export { Dialog, type DialogProps } from "./components/dialog.tsx";
 export { EmptyState, type EmptyStateProps } from "./components/empty-state.tsx";
+export * from "./components/empty-state-block.tsx";
 export { Input, type InputProps } from "./components/input.tsx";
 export { Kbd, type KbdProps } from "./components/kbd.tsx";
 export { Label, type LabelProps } from "./components/label.tsx";
@@ -26,6 +28,9 @@ export {
 export * from "./components/select.tsx";
 export { Separator, type SeparatorProps } from "./components/separator.tsx";
 export * from "./components/sheet.tsx";
+export * from "./components/shortcut.tsx";
+export * from "./components/skeleton.tsx";
+export * from "./components/status-badge.tsx";
 export * from "./components/table.tsx";
 export * from "./components/tabs.tsx";
 export {
@@ -49,7 +54,14 @@ export {
   SLIDES_MIME,
 } from "./file-icon.tsx";
 export { useDebouncedValue } from "./hooks/use-debounced-value.ts";
+export * from "./hooks/use-overlay-behavior.ts";
+export {
+  prefersReducedMotion,
+  usePrefersReducedMotion,
+} from "./hooks/use-prefers-reduced-motion.ts";
 export * from "./icons.tsx";
+export * from "./lib/french-text.ts";
+export * from "./lib/overlay.ts";
 export * from "./lib/text-match.ts";
 export { AppRail, type AppRailProps } from "./shell/app-rail.tsx";
 export {

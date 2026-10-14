@@ -51,6 +51,24 @@ Toutes testées, committées et poussées. Compteurs par escouade (tests du modu
 
 **Missions restantes (~100)** : vagues suivantes de chaque escouade (aperçus Drive, formats Sheets, récurrence Calendar, sous-tâches Tasks, conditions Forms, threads Mail, réactions Chat, participants Meet, export Sites, export notes Classroom, infra de test UI…), + TASK-197→200 (docs).
 
+## 3 bis. Vagues du 14 octobre (soir) — mise à niveau par application
+
+| Application | Vague | Vérif |
+|---|---|---|
+| **Slides** | Mises en page à zones (« Cliquez pour ajouter un titre »), édition du texte en place, gras/italique/souligné/couleurs, tailles, puces et numérotation, **transitions** (fondu/glissement/poussée/balayage, durée, aperçu, reduced-motion) | 120 tests + E2E |
+| **Docs** | Niveau traitement de texte : styles de paragraphe, tailles, couleurs/surlignages sémantiques, alignement, **tableaux** (outils contextuels), images https, liens, **saut de page imprimable**, zoom, export enrichi (tableaux, images, styles sûrs) | 105 tests + E2E |
+| **Sheets** | Souligné/barré, couleur de texte (jetons), **formats d'affichage** (nombre, entier, pourcentage, euro) — la valeur n'est jamais arrondie ni modifiée | 129 tests + E2E |
+| **Calendar** | **Glisser-déposer** des événements (fantôme, annulation, annonces), **fuseaux d'affichage**, **intervalle de répétition** (« toutes les N semaines ») | 157 tests + E2E |
+| **Tasks** | Réordonnancement par glisser-déposer, filtres combinables, **sous-tâches** avec progression | 76 tests |
+| **Forms** | **Questions conditionnelles** (affichage calculé), accent par formulaire (jetons), aperçu intégré | 64 tests |
+| **Meet** | Panneau des **participants** (rôles, états média, admission), **chat de réunion** | 100 tests |
+| **Drive** | **Aperçu intégré** (image, texte, PDF, médias), **corbeille dédiée** (restauration, purge) | 149 tests |
+| **Classroom** | Notification de nouveau devoir, **export CSV du carnet de notes** (téléchargement vérifié) | 54 tests + E2E |
+| **Admin** | Journal d'audit factorisé (filtres, pagination) | 23 tests |
+| **Home** | Métadonnées SEO/OG/Twitter + favicons sur toutes les routes | typecheck + build |
+
+Ces vagues terminent les travaux des escouades bloquées par le quota : chaque lot a été vérifié localement (typecheck + tests du module), committé et poussé ; la CI GitHub valide l'ensemble (le dernier run couvre toute la chaîne).
+
 ## 4. Fonctionnalités produit notables (au-delà de l'Armada)
 
 Audit web exhaustif (10 modules), recherche FTS française, pièces jointes Mail/Chat/Classroom, conformité RGPD (export/effacement audités), collaboration Docs temps réel (serveur Yjs + client Tiptap, dégradation locale propre), historique de versions Docs avec restauration, notifications temps réel SSE (14 apps), 29 outils MCP.
