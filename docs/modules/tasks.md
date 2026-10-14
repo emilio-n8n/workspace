@@ -54,3 +54,8 @@ Les tâches et listes de la suite : personnelles ou partagées, avec échéances
 
 - Volume : pagination/archivage des listes anciennes (à traiter avec la recherche globale en Phase 3).
 - Champs libres (`notes`) : rendu Markdown limité à envisager plus tard.
+
+## Vague « gestes, filtres et sous-tâches » (14 oct. 2026)
+- **Réordonnancement manuel** : glisser-déposer des lignes (poignée dédiée), repère de dépôt, annulation, flèches au clavier avec annonces vocales — logique pure testée (`dnd.ts`).
+- **Filtres combinables** : critères purs (`filters.ts`) + barre de filtres (`filter-bar.tsx`), état vide qui distingue liste vide et filtre sans résultat.
+- **Sous-tâches** : modèle et progression (`subtasks.ts`), éditeur dédié dans la tâche (`subtasks-editor.tsx`), compteur et barre de progression sur la ligne.

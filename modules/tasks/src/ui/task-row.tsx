@@ -1,4 +1,7 @@
 import { Badge, cn } from "@workspace/ui";
+import type { DragEvent, KeyboardEvent } from "react";
+import type { DropEdge } from "../dnd.ts";
+import { handleHint } from "../dnd.ts";
 import type { TaskView } from "../server.ts";
 import { LabelChip, PriorityDot } from "./task-visuals.tsx";
 
@@ -13,6 +16,18 @@ export function formatDue(value: string): string {
   return new Date(value).toLocaleDateString("fr-FR", { day: "numeric", month: "short" });
 }
 
+/** Réglages de glisser-déposer d'une ligne (ordre manuel, sans regroupement). */
+export type TaskRowDrag = {
+  enabled: boolean;
+  dragging: boolean;
+  dropEdge: DropEdge | null;
+  onDragStart: (event: DragEvent<HTMLButtonElement>) => void;
+  onDragOver: (event: DragEvent<HTMLLIElement>) => void;
+  onDrop: (event: DragEvent<HTMLLIElement>) => void;
+  onDragEnd: () => void;
+  onHandleKeyDown: (event: KeyboardEvent<HTMLButtonElement>) => void;
+};
+
 /** Ligne de tâche partagée entre une liste et l'agrégat « Mes tâches ». */
 export function TaskRow({
   task,
@@ -21,6 +36,7 @@ export function TaskRow({
   assigneeName,
   onToggle,
   onOpen,
+  drag,
 }: {
   task: TaskView;
   subtitle?: string;
@@ -28,14 +44,50 @@ export function TaskRow({
   assigneeName?: string;
   onToggle: () => void;
   onOpen: () => void;
+  drag?: TaskRowDrag;
 }) {
   const overdue = isOverdue(task);
   const labels = task.labels ?? [];
   const visibleLabels = labels.slice(0, MAX_VISIBLE_LABELS);
   const hiddenCount = labels.length - visibleLabels.length;
+  const hasSubtasks = task.subtaskTotal > 0;
 
   return (
-    <li className="flex items-center gap-3 border-b border-border/60 px-3 py-2 last:border-b-0 hover:bg-muted/30">
+    <li
+      className={cn(
+        "relative flex items-center gap-3 border-b border-border/60 px-3 py-2 last:border-b-0 hover:bg-muted/30",
+        drag?.dragging && "opacity-50",
+      )}
+      onDragOver={drag?.enabled ? drag.onDragOver : undefined}
+      onDrop={drag?.enabled ? drag.onDrop : undefined}
+    >
+      {drag?.dropEdge ? (
+        <span
+          aria-hidden
+          className={cn(
+            "pointer-events-none absolute inset-x-0 h-0.5 bg-primary",
+            drag.dropEdge === "top" ? "top-0" : "bottom-0",
+          )}
+        />
+      ) : null}
+
+      {drag?.enabled ? (
+        <button
+          type="button"
+          draggable
+          onDragStart={drag.onDragStart}
+          onDragEnd={drag.onDragEnd}
+          onKeyDown={drag.onHandleKeyDown}
+          title={`Réordonner « ${task.title} ». ${handleHint()}`}
+          aria-label={`Réordonner « ${task.title} »`}
+          className="shrink-0 cursor-grab rounded p-0.5 text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring active:cursor-grabbing"
+        >
+          <span aria-hidden className="block text-xs leading-none tracking-tighter">
+            ⠿
+          </span>
+        </button>
+      ) : null}
+
       <input
         type="checkbox"
         className="accent-primary"
@@ -64,6 +116,16 @@ export function TaskRow({
       </button>
 
       {task.status === "in_progress" ? <Badge variant="accent">En cours</Badge> : null}
+
+      {hasSubtasks ? (
+        <span
+          className="shrink-0 text-[10px] tabular-nums text-muted-foreground"
+          title={`Sous-tâches : ${task.subtaskDone} sur ${task.subtaskTotal} terminées`}
+          aria-label={`Sous-tâches : ${task.subtaskDone} sur ${task.subtaskTotal} terminées`}
+        >
+          {task.subtaskDone}/{task.subtaskTotal}
+        </span>
+      ) : null}
 
       <PriorityDot priority={task.priority} />
 

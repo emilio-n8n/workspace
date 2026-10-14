@@ -13,8 +13,25 @@ import {
   Toasts,
   useToasts,
 } from "@workspace/ui";
-import type { FormEvent, ReactNode } from "react";
+import type { DragEvent, FormEvent, KeyboardEvent, ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  canDragReorder,
+  type DropEdge,
+  describeMove,
+  edgeFromOffset,
+  edgeIds,
+  moveIds,
+  nudgeIds,
+  targetIndexFromHover,
+} from "../dnd.ts";
+import {
+  DEFAULT_CRITERIA,
+  filterTasks,
+  isFiltering,
+  TASK_STATUS_FILTERS,
+  type TaskFilterCriteria,
+} from "../filters.ts";
 import {
   describeView,
   groupTasks,
@@ -40,12 +57,15 @@ import {
   type MyTaskView,
   renameTaskListFn,
   reorderTaskListsFn,
+  reorderTasksFn,
   type TaskLabelView,
   type TaskListView,
   type TaskView,
   updateTaskFn,
   updateTaskLabelFn,
 } from "../server.ts";
+import type { SubtaskProgress } from "../subtasks.ts";
+import { FilterBar } from "./filter-bar.tsx";
 import { LabelsDialog } from "./labels-dialog.tsx";
 import { ListsSidebar } from "./lists-sidebar.tsx";
 import { ShareListDialog } from "./share-list-dialog.tsx";
@@ -55,18 +75,9 @@ import {
   SortBar,
   TaskSections,
 } from "./sort-controls.tsx";
+import { SubtasksEditor } from "./subtasks-editor.tsx";
 import { TaskLabelsEditor } from "./task-labels-editor.tsx";
-import { isOverdue, TaskRow } from "./task-row.tsx";
-
-type Filter = "all" | "todo" | "in_progress" | "done" | "overdue";
-
-const FILTERS: { id: Filter; label: string }[] = [
-  { id: "all", label: "Toutes" },
-  { id: "todo", label: "À faire" },
-  { id: "in_progress", label: "En cours" },
-  { id: "done", label: "Terminées" },
-  { id: "overdue", label: "En retard" },
-];
+import { TaskRow } from "./task-row.tsx";
 
 const MY_TASKS_WINDOWS: { id: MyTasksWindow; label: string }[] = [
   { id: "today", label: "Aujourd'hui" },
@@ -93,13 +104,21 @@ export function TasksView() {
   const [tasks, setTasks] = useState<TaskView[] | null>(null);
   const [labels, setLabels] = useState<TaskLabelView[]>([]);
   const [members, setMembers] = useState<MemberView[]>([]);
-  const [filter, setFilter] = useState<Filter>("all");
+  const [criteria, setCriteria] = useState<TaskFilterCriteria>(DEFAULT_CRITERIA);
   const [sort, setSort] = useState<TaskSortId>("manual");
   const [group, setGroup] = useState<TaskGroupId>("none");
   const { toasts, push, dismiss } = useToasts();
   const [listsError, setListsError] = useState<string | null>(null);
   const [tasksError, setTasksError] = useState<string | null>(null);
   const tasksRequestRef = useRef(0);
+
+  // Glisser-déposer (mission 5) — actif seulement en ordre manuel sans
+  // regroupement ni filtre : ailleurs, la position n'a pas de sens visible.
+  const [dragTaskId, setDragTaskId] = useState<string | null>(null);
+  const [dropTarget, setDropTarget] = useState<{ id: string; edge: DropEdge } | null>(null);
+  // Une sous-tâche touchée dans le dialogue impose de relire la liste à la
+  // fermeture : son statut peut avoir basculé (parente terminée ou rouverte).
+  const subtasksDirtyRef = useRef(false);
 
   // Vue agrégée « Mes tâches » — simple bascule d'affichage, pas de route.
   const [showMyTasks, setShowMyTasks] = useState(false);
@@ -128,6 +147,11 @@ export function TasksView() {
     [lists, activeListId],
   );
 
+  // L'ordre manuel (positions) n'est demandé au serveur que lorsque l'écran
+  // affiche réellement l'ordre de la liste ; les autres tris réordonnent côté
+  // client et n'ont pas besoin d'un aller-retour réseau.
+  const taskOrder: "default" | "manual" = sort === "manual" ? "manual" : "default";
+
   const loadLists = useCallback(async () => {
     const rows = await listTaskListsFn();
     setLists(rows);
@@ -152,11 +176,11 @@ export function TasksView() {
     }
   }, []);
 
-  const loadTasks = useCallback(async (listId: string) => {
+  const loadTasks = useCallback(async (listId: string, order: "default" | "manual") => {
     const requestId = ++tasksRequestRef.current;
     setTasksError(null);
     try {
-      const rows = await listTasksFn({ data: { listId } });
+      const rows = await listTasksFn({ data: { listId, order } });
       if (tasksRequestRef.current !== requestId) return;
       setTasks(rows);
     } catch {
@@ -181,8 +205,8 @@ export function TasksView() {
   }, []);
 
   const retryTasks = useCallback(() => {
-    if (activeListId) void loadTasks(activeListId);
-  }, [activeListId, loadTasks]);
+    if (activeListId) void loadTasks(activeListId, taskOrder);
+  }, [activeListId, loadTasks, taskOrder]);
 
   const retryMyTasks = useCallback(() => {
     void loadMyTasks(myTasksWindow);
@@ -199,8 +223,8 @@ export function TasksView() {
       setTasksError(null);
       return;
     }
-    void loadTasks(activeListId);
-  }, [activeListId, loadTasks]);
+    void loadTasks(activeListId, taskOrder);
+  }, [activeListId, taskOrder, loadTasks]);
 
   useEffect(() => {
     if (!showMyTasks) return;
@@ -224,7 +248,7 @@ export function TasksView() {
     if (showMyTasks) {
       await loadMyTasks(myTasksWindow);
     } else if (activeListId) {
-      await loadTasks(activeListId);
+      await loadTasks(activeListId, taskOrder);
     }
   }
 
@@ -292,7 +316,7 @@ export function TasksView() {
     try {
       await createTaskFn({ data: { listId: activeListId, title } });
       setQuickTitle("");
-      await loadTasks(activeListId);
+      await loadTasks(activeListId, taskOrder);
       setAnnouncement(`Tâche « ${title} » ajoutée.`);
     } catch (caught) {
       push("danger", caught instanceof Error ? caught.message : "Création impossible.");
@@ -319,7 +343,7 @@ export function TasksView() {
       push("danger", caught instanceof Error ? caught.message : "Mise à jour impossible.");
     } finally {
       markTaskBusy(task.id, false);
-      if (activeListId) await loadTasks(activeListId);
+      if (activeListId) await loadTasks(activeListId, taskOrder);
     }
   }
 
@@ -356,6 +380,7 @@ export function TasksView() {
         },
       });
       setEditTarget(null);
+      subtasksDirtyRef.current = false;
       setAnnouncement("Tâche enregistrée.");
       await refreshActiveView();
     } catch (caught) {
@@ -373,6 +398,7 @@ export function TasksView() {
       await deleteTaskFn({ data: { taskId: editTarget.id } });
       setConfirmDeleteTask(false);
       setEditTarget(null);
+      subtasksDirtyRef.current = false;
       setAnnouncement(`Tâche « ${title} » supprimée.`);
       await refreshActiveView();
     } catch (caught) {
@@ -397,6 +423,104 @@ export function TasksView() {
     } finally {
       setDeletingList(false);
     }
+  }
+
+  // -------------------------------------------------------------------------
+  // Glisser-déposer (ordre manuel)
+  // -------------------------------------------------------------------------
+
+  const canReorder = useMemo(
+    () => !showMyTasks && canDragReorder(sort, group) && !isFiltering(criteria),
+    [showMyTasks, sort, group, criteria],
+  );
+
+  function resetDrag() {
+    setDragTaskId(null);
+    setDropTarget(null);
+  }
+
+  async function persistTaskOrder(movedId: string, taskIds: string[]) {
+    if (!activeListId || !orderedTasks) return;
+    const previous = tasks;
+    const byId = new Map(orderedTasks.map((row) => [row.id, row]));
+    const reordered = taskIds
+      .map((id) => byId.get(id))
+      .filter((row): row is TaskView => row !== undefined);
+    setTasks(reordered);
+    const movedTitle = byId.get(movedId)?.title ?? "";
+    const index = taskIds.indexOf(movedId);
+    setAnnouncement(describeMove({ title: movedTitle, index, total: taskIds.length }));
+    try {
+      await reorderTasksFn({ data: { listId: activeListId, taskIds } });
+      await loadTasks(activeListId, "manual");
+    } catch (caught) {
+      setTasks(previous);
+      push("danger", caught instanceof Error ? caught.message : "Réorganisation impossible.");
+    } finally {
+      resetDrag();
+    }
+  }
+
+  function onDragStartTask(task: TaskView, event: DragEvent<HTMLButtonElement>) {
+    setDragTaskId(task.id);
+    setDropTarget(null);
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("text/plain", task.id);
+  }
+
+  function onDragOverTask(task: TaskView, event: DragEvent<HTMLLIElement>) {
+    if (dragTaskId === null) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "move";
+    if (task.id === dragTaskId) {
+      setDropTarget(null);
+      return;
+    }
+    const rect = event.currentTarget.getBoundingClientRect();
+    const edge = edgeFromOffset(event.clientY - rect.top, rect.height);
+    setDropTarget((current) =>
+      current && current.id === task.id && current.edge === edge ? current : { id: task.id, edge },
+    );
+  }
+
+  function onDropTask(event: DragEvent<HTMLLIElement>) {
+    event.preventDefault();
+    const movedId = dragTaskId;
+    const target = dropTarget;
+    if (!movedId || !target || !orderedTasks) {
+      resetDrag();
+      return;
+    }
+    const ids = orderedTasks.map((row) => row.id);
+    const from = ids.indexOf(movedId);
+    const hoverIndex = ids.indexOf(target.id);
+    const to = targetIndexFromHover(hoverIndex, target.edge, ids.length);
+    if (from < 0 || to < 0) {
+      resetDrag();
+      return;
+    }
+    const next = moveIds(ids, from, to);
+    if (!next || next.every((id, index) => id === ids[index])) {
+      resetDrag();
+      return;
+    }
+    void persistTaskOrder(movedId, next);
+  }
+
+  function onTaskHandleKeyDown(task: TaskView, event: KeyboardEvent<HTMLButtonElement>) {
+    if (!orderedTasks) return;
+    const ids = orderedTasks.map((row) => row.id);
+    const from = ids.indexOf(task.id);
+    if (from < 0) return;
+    let next: string[] | null = null;
+    if (event.key === "ArrowUp") next = nudgeIds(ids, from, -1);
+    else if (event.key === "ArrowDown") next = nudgeIds(ids, from, 1);
+    else if (event.key === "Home") next = edgeIds(ids, from, "first");
+    else if (event.key === "End") next = edgeIds(ids, from, "last");
+    else return;
+    event.preventDefault();
+    if (!next || next.every((id, index) => id === ids[index])) return;
+    void persistTaskOrder(task.id, next);
   }
 
   // -------------------------------------------------------------------------
@@ -469,19 +593,8 @@ export function TasksView() {
 
   const visibleTasks = useMemo(() => {
     if (!tasks) return null;
-    switch (filter) {
-      case "todo":
-        return tasks.filter((task) => task.status === "todo");
-      case "in_progress":
-        return tasks.filter((task) => task.status === "in_progress");
-      case "done":
-        return tasks.filter((task) => task.status === "done");
-      case "overdue":
-        return tasks.filter(isOverdue);
-      default:
-        return tasks;
-    }
-  }, [tasks, filter]);
+    return filterTasks(tasks, criteria);
+  }, [tasks, criteria]);
 
   const orderedTasks = useMemo(
     () => (visibleTasks === null ? null : sortTasks(visibleTasks, sort)),
@@ -524,8 +637,10 @@ export function TasksView() {
           showMyTasks={showMyTasks}
           onSelectList={(listId) => {
             setActiveListId(listId);
-            setFilter("all");
+            setCriteria(DEFAULT_CRITERIA);
             setShowMyTasks(false);
+            setDragTaskId(null);
+            setDropTarget(null);
             setAnnouncement(
               `Liste « ${lists?.find((list) => list.id === listId)?.name ?? ""} » ouverte.`,
             );
@@ -588,13 +703,13 @@ export function TasksView() {
               </header>
 
               <div className="flex flex-wrap items-center gap-1 border-b border-border px-3 py-2">
-                {FILTERS.map((item) => (
+                {TASK_STATUS_FILTERS.map((item) => (
                   <Button
                     key={item.id}
-                    variant={filter === item.id ? "secondary" : "ghost"}
+                    variant={criteria.status === item.id ? "secondary" : "ghost"}
                     size="sm"
-                    aria-pressed={filter === item.id}
-                    onClick={() => setFilter(item.id)}
+                    aria-pressed={criteria.status === item.id}
+                    onClick={() => setCriteria((current) => ({ ...current, status: item.id }))}
                   >
                     {item.label}
                   </Button>
@@ -631,6 +746,15 @@ export function TasksView() {
                 onGroupChange={setGroup}
               />
 
+              <FilterBar
+                criteria={criteria}
+                labels={labels}
+                shown={orderedTasks?.length ?? 0}
+                total={tasks?.length ?? 0}
+                onChange={(patch) => setCriteria((current) => ({ ...current, ...patch }))}
+                onReset={() => setCriteria(DEFAULT_CRITERIA)}
+              />
+
               <TaskArea
                 tasks={orderedTasks}
                 total={tasks?.length ?? 0}
@@ -643,11 +767,32 @@ export function TasksView() {
                 onOpen={(task) => setEditTarget({ ...task })}
                 emptyState={{
                   title:
-                    filter === "all"
+                    tasks?.length === 0
                       ? "Aucune tâche dans cette liste."
-                      : "Aucune tâche ne correspond à ce filtre.",
-                  hint: filter === "all" ? "Ajoutez-en une ci-dessus." : undefined,
+                      : isFiltering(criteria)
+                        ? "Aucune tâche ne correspond à ce filtre."
+                        : "Aucune tâche dans cette liste.",
+                  hint:
+                    tasks?.length === 0 && !isFiltering(criteria)
+                      ? "Ajoutez-en une ci-dessus."
+                      : undefined,
                 }}
+                drag={
+                  canReorder
+                    ? {
+                        enabled: true,
+                        draggingId: dragTaskId,
+                        dropTarget,
+                        onDragStart: onDragStartTask,
+                        onDragOver: onDragOverTask,
+                        onDrop: (event: DragEvent<HTMLLIElement>) => {
+                          void onDropTask(event);
+                        },
+                        onDragEnd: resetDrag,
+                        onHandleKeyDown: onTaskHandleKeyDown,
+                      }
+                    : undefined
+                }
               />
             </>
           )}
@@ -662,7 +807,13 @@ export function TasksView() {
 
       <Dialog
         open={editTarget !== null}
-        onClose={() => setEditTarget(null)}
+        onClose={() => {
+          setEditTarget(null);
+          if (subtasksDirtyRef.current) {
+            subtasksDirtyRef.current = false;
+            void refreshActiveView();
+          }
+        }}
         title="Modifier la tâche"
         className="max-w-lg"
       >
@@ -778,6 +929,29 @@ export function TasksView() {
               onCreate={onCreateLabel}
             />
 
+            <SubtasksEditor
+              taskId={editTarget.id}
+              onError={(message) => push("danger", message)}
+              onProgress={(progress: SubtaskProgress) => {
+                subtasksDirtyRef.current = true;
+                setEditTarget((current) => {
+                  if (!current) return current;
+                  const status =
+                    progress.complete && current.status !== "done"
+                      ? "done"
+                      : !progress.complete && current.status === "done"
+                        ? "todo"
+                        : current.status;
+                  return {
+                    ...current,
+                    subtaskDone: progress.done,
+                    subtaskTotal: progress.total,
+                    status,
+                  };
+                });
+              }}
+            />
+
             <div className="flex items-center justify-between">
               <Button
                 type="button"
@@ -788,7 +962,17 @@ export function TasksView() {
                 Supprimer
               </Button>
               <div className="flex gap-2">
-                <Button type="button" variant="ghost" onClick={() => setEditTarget(null)}>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  onClick={() => {
+                    setEditTarget(null);
+                    if (subtasksDirtyRef.current) {
+                      subtasksDirtyRef.current = false;
+                      void refreshActiveView();
+                    }
+                  }}
+                >
                   Annuler
                 </Button>
                 <Button type="submit" loading={savingEdit}>
@@ -855,6 +1039,22 @@ export function TasksView() {
 }
 
 /**
+ * Glisser-déposer partagé par la zone : état global (identifiant en cours,
+ * cible) et rappels liés à la tâche. La zone résout, ligne par ligne, le
+ * `TaskRowDrag` que consomme `TaskRow`.
+ */
+type TaskAreaDrag = {
+  enabled: boolean;
+  draggingId: string | null;
+  dropTarget: { id: string; edge: DropEdge } | null;
+  onDragStart: (task: TaskView, event: DragEvent<HTMLButtonElement>) => void;
+  onDragOver: (task: TaskView, event: DragEvent<HTMLLIElement>) => void;
+  onDrop: (event: DragEvent<HTMLLIElement>) => void;
+  onDragEnd: () => void;
+  onHandleKeyDown: (task: TaskView, event: KeyboardEvent<HTMLButtonElement>) => void;
+};
+
+/**
  * Zone de tâches : chargement, erreur, vide, liste à plat ou sections de
  * regroupement. Partagée par la liste active et par l'agrégat « Mes tâches »,
  * pour que les deux écrans vieillissent ensemble.
@@ -871,6 +1071,7 @@ function TaskArea<T extends TaskView>({
   onToggle,
   onOpen,
   emptyState,
+  drag,
 }: {
   tasks: T[] | null;
   total: number;
@@ -884,6 +1085,8 @@ function TaskArea<T extends TaskView>({
   onToggle: (task: T) => void;
   onOpen: (task: T) => void;
   emptyState: { title: string; hint?: string };
+  /** Glisser-déposer (ordre manuel) ; absent, les lignes sont statiques. */
+  drag?: TaskAreaDrag;
 }) {
   const sections = useMemo(() => {
     if (tasks === null) return null;
@@ -900,6 +1103,20 @@ function TaskArea<T extends TaskView>({
       assigneeName={assigneeNameOf(task.assigneeId)}
       onToggle={() => onToggle(task)}
       onOpen={() => onOpen(task)}
+      drag={
+        drag?.enabled
+          ? {
+              enabled: true,
+              dragging: drag.draggingId === task.id,
+              dropEdge: drag.dropTarget?.id === task.id ? drag.dropTarget.edge : null,
+              onDragStart: (event) => drag.onDragStart(task, event),
+              onDragOver: (event) => drag.onDragOver(task, event),
+              onDrop: (event) => drag.onDrop(event),
+              onDragEnd: drag.onDragEnd,
+              onHandleKeyDown: (event) => drag.onHandleKeyDown(task, event),
+            }
+          : undefined
+      }
     />
   );
 

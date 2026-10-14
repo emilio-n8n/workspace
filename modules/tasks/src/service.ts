@@ -15,6 +15,7 @@ import {
 } from "@workspace/permissions";
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import {
+  type Subtask,
   type Task,
   type TaskLabel,
   type TaskLabelColor,
@@ -24,8 +25,16 @@ import {
   taskLabelLinks,
   taskLabels,
   taskLists,
+  taskSubtasks,
   tasks,
 } from "./schema.ts";
+import {
+  nextSubtaskPosition,
+  parentStatusAfterSubtaskChange,
+  SUBTASK_TITLE_MAX,
+  SUBTASKS_MAX,
+  sortSubtasks,
+} from "./subtasks.ts";
 
 export type TasksErrorCode = "not_found" | "forbidden" | "validation" | "conflict";
 
@@ -305,7 +314,12 @@ export async function listListGrants(actor: Actor, listId: string): Promise<Reso
 // Tâches
 // ---------------------------------------------------------------------------
 
-export type TaskWithLabels = Task & { labels: TaskLabel[] };
+export type TaskWithLabels = Task & {
+  labels: TaskLabel[];
+  /** Nombre de sous-tâches, et combien sont faites (0/0 = pas de sous-tâche). */
+  subtaskTotal: number;
+  subtaskDone: number;
+};
 
 /** Étiquettes d'un lot de tâches, en une requête (jamais une requête par tâche). */
 async function attachLabels(orgId: string, rows: readonly Task[]): Promise<TaskWithLabels[]> {
@@ -337,25 +351,68 @@ async function attachLabels(orgId: string, rows: readonly Task[]): Promise<TaskW
     labels: (byTask.get(row.id) ?? []).sort(
       (a, b) => a.name.localeCompare(b.name, "fr") || a.id.localeCompare(b.id),
     ),
+    subtaskTotal: 0,
+    subtaskDone: 0,
   }));
 }
 
-/** Tâches d'une liste : non terminées d'abord, puis échéance croissante. */
+/** Compteurs de sous-tâches du lot, en une requête agrégée. */
+async function attachSubtaskCounts(rows: TaskWithLabels[]): Promise<TaskWithLabels[]> {
+  if (rows.length === 0) return rows;
+  const counts = await db()
+    .select({
+      taskId: taskSubtasks.taskId,
+      total: sql<number>`count(*)`.mapWith(Number),
+      done: sql<number>`count(*) filter (where ${taskSubtasks.isDone})`.mapWith(Number),
+    })
+    .from(taskSubtasks)
+    .where(
+      inArray(
+        taskSubtasks.taskId,
+        rows.map((row) => row.id),
+      ),
+    )
+    .groupBy(taskSubtasks.taskId);
+
+  const byTask = new Map(counts.map((row) => [row.taskId, row]));
+  return rows.map((row) => {
+    const count = byTask.get(row.id);
+    return count ? { ...row, subtaskTotal: count.total, subtaskDone: count.done } : row;
+  });
+}
+
+/**
+ * Tâches d'une liste.
+ *
+ * `order: "default"` (le défaut, comportement historique) : non terminées
+ * d'abord, échéance croissante, création croissante. `order: "manual"` :
+ * l'ordre glissé par l'utilisateur (`position`, puis création) — c'est le seul
+ * ordre dans lequel le glisser-déposer a un sens.
+ */
 export async function listTasks(
   actor: Actor,
-  input: { listId: string },
+  input: { listId: string; order?: "default" | "manual" },
 ): Promise<TaskWithLabels[]> {
   await assertList(actor, "read", input.listId);
-  const rows = await db()
-    .select()
-    .from(tasks)
-    .where(eq(tasks.listId, input.listId))
-    .orderBy(
-      sql`case when ${tasks.status} = 'done' then 1 else 0 end`,
-      sql`${tasks.dueAt} asc nulls last`,
-      asc(tasks.createdAt),
-    );
-  return attachLabels(actor.orgId, rows);
+
+  const rows =
+    input.order === "manual"
+      ? await db()
+          .select()
+          .from(tasks)
+          .where(eq(tasks.listId, input.listId))
+          .orderBy(asc(tasks.position), asc(tasks.createdAt))
+      : await db()
+          .select()
+          .from(tasks)
+          .where(eq(tasks.listId, input.listId))
+          .orderBy(
+            sql`case when ${tasks.status} = 'done' then 1 else 0 end`,
+            sql`${tasks.dueAt} asc nulls last`,
+            asc(tasks.createdAt),
+          );
+
+  return attachSubtaskCounts(await attachLabels(actor.orgId, rows));
 }
 
 export type MyTasksWindow = "today" | "week" | "all";
@@ -461,6 +518,13 @@ export async function createTask(
 ): Promise<Task> {
   await assertList(actor, "write", input.listId);
 
+  // Nouvelle tâche en fin de liste pour l'ordre manuel : sans cela, toutes les
+  // créations se disputeraient la position 0 et remonteraient en tête.
+  const [head] = await db()
+    .select({ next: sql<number>`coalesce(max(${tasks.position}), -1) + 1`.mapWith(Number) })
+    .from(tasks)
+    .where(eq(tasks.listId, input.listId));
+
   const [row] = await db()
     .insert(tasks)
     .values({
@@ -472,6 +536,7 @@ export async function createTask(
       notes: assertNotes(input.notes),
       priority: input.priority ?? "medium",
       dueAt: parseDueAt(input.dueAt),
+      position: head?.next ?? 0,
     })
     .returning();
   if (!row) throw new TasksError("conflict", "Création impossible.");
@@ -581,6 +646,253 @@ export async function deleteTask(actor: Actor, taskId: string): Promise<void> {
     resourceId: taskId,
     result: "success",
   });
+}
+
+/**
+ * Réordonne les tâches d'une liste à la main. `taskIds` doit décrire EXACTEMENT
+ * les tâches de la liste (ni oubli, ni identifiant étranger, ni doublon) :
+ * l'ordre est partagé par toute l'organisation, un ordre partiel laisserait des
+ * lignes à 0 et les ferait remonter en tête.
+ */
+export async function reorderTasks(
+  actor: Actor,
+  listId: string,
+  taskIds: readonly string[],
+): Promise<void> {
+  await assertList(actor, "write", listId);
+
+  const rows = await db().select({ id: tasks.id }).from(tasks).where(eq(tasks.listId, listId));
+  const knownIds = new Set(rows.map((row) => row.id));
+  const submitted = new Set(taskIds);
+
+  if (taskIds.length === 0) {
+    throw new TasksError("validation", "L'ordre des tâches est vide.");
+  }
+  if (submitted.size !== taskIds.length) {
+    throw new TasksError("validation", "Une tâche ne peut pas apparaître deux fois dans l'ordre.");
+  }
+  if (submitted.size !== knownIds.size || taskIds.some((id) => !knownIds.has(id))) {
+    throw new TasksError("validation", "L'ordre soumis ne correspond pas aux tâches de la liste.");
+  }
+
+  await withTransaction(async (tx) => {
+    for (const [position, taskId] of taskIds.entries()) {
+      await tx.update(tasks).set({ position }).where(eq(tasks.id, taskId));
+    }
+  });
+
+  await recordAudit({
+    orgId: actor.orgId,
+    actorUserId: actor.userId,
+    action: "tasks.task.reorder",
+    resourceType: "task_list",
+    resourceId: listId,
+    result: "success",
+    metadata: { tasks: taskIds.length },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Sous-tâches (un seul niveau)
+// ---------------------------------------------------------------------------
+
+function assertSubtaskTitle(title: string): string {
+  const trimmed = title.trim();
+  if (trimmed.length < 1 || trimmed.length > SUBTASK_TITLE_MAX) {
+    throw new TasksError(
+      "validation",
+      `La sous-tâche doit contenir entre 1 et ${SUBTASK_TITLE_MAX} caractères.`,
+    );
+  }
+  const hasForbiddenChar = [...trimmed].some((char) => (char.codePointAt(0) ?? 0) < 0x20);
+  if (hasForbiddenChar) {
+    throw new TasksError("validation", "La sous-tâche contient des caractères de contrôle.");
+  }
+  return trimmed;
+}
+
+/** Charge une tâche et vérifie l'action demandée sur sa liste. */
+async function requireTask(actor: Actor, taskId: string, action: "read" | "write"): Promise<Task> {
+  const [task] = await db()
+    .select()
+    .from(tasks)
+    .where(and(eq(tasks.id, taskId), eq(tasks.orgId, actor.orgId)))
+    .limit(1);
+  if (!task) throw new TasksError("not_found", "Tâche introuvable.");
+
+  await assertList(actor, action, task.listId);
+  return task;
+}
+
+async function loadSubtasks(taskId: string): Promise<Subtask[]> {
+  const rows = await db()
+    .select()
+    .from(taskSubtasks)
+    .where(eq(taskSubtasks.taskId, taskId))
+    .orderBy(asc(taskSubtasks.position), asc(taskSubtasks.id));
+  return sortSubtasks(rows);
+}
+
+/**
+ * Totaux de sous-tâches d'une tâche, pour la puce de progression affichée sur
+ * la ligne. Volontairement séparé de `listSubtasks` : l'écran n'a pas besoin
+ * des titres pour afficher « 2/3 ».
+ */
+export async function countSubtasks(
+  actor: Actor,
+  taskId: string,
+): Promise<{ total: number; done: number }> {
+  await requireTask(actor, taskId, "read");
+  const [row] = await db()
+    .select({
+      total: sql<number>`count(*)`.mapWith(Number),
+      done: sql<number>`count(*) filter (where ${taskSubtasks.isDone})`.mapWith(Number),
+    })
+    .from(taskSubtasks)
+    .where(eq(taskSubtasks.taskId, taskId));
+  return { total: row?.total ?? 0, done: row?.done ?? 0 };
+}
+
+/** Sous-tâches d'une tâche, dans l'ordre affiché.
+ */
+export async function listSubtasks(actor: Actor, taskId: string): Promise<Subtask[]> {
+  await requireTask(actor, taskId, "read");
+  return loadSubtasks(taskId);
+}
+
+export async function createSubtask(
+  actor: Actor,
+  input: { taskId: string; title: string },
+): Promise<Subtask> {
+  const task = await requireTask(actor, input.taskId, "write");
+  const title = assertSubtaskTitle(input.title);
+
+  const existing = await loadSubtasks(task.id);
+  if (existing.length >= SUBTASKS_MAX) {
+    throw new TasksError(
+      "validation",
+      `Une tâche ne peut pas dépasser ${SUBTASKS_MAX} sous-tâches.`,
+    );
+  }
+
+  const [row] = await db()
+    .insert(taskSubtasks)
+    .values({ taskId: task.id, title, position: nextSubtaskPosition(existing) })
+    .returning();
+  if (!row) throw new TasksError("conflict", "Création de la sous-tâche impossible.");
+  return row;
+}
+
+/**
+ * Met à jour une sous-tâche, puis synchronise la tâche parente : toutes les
+ * sous-tâches faites terminent la parente, une sous-tâche rouverte la rouvre.
+ * La règle vit dans `parentStatusAfterSubtaskChange` (logique pure, testée).
+ */
+export async function updateSubtask(
+  actor: Actor,
+  subtaskId: string,
+  patch: { title?: string; isDone?: boolean },
+): Promise<Subtask> {
+  const [current] = await db()
+    .select()
+    .from(taskSubtasks)
+    .where(eq(taskSubtasks.id, subtaskId))
+    .limit(1);
+  if (!current) throw new TasksError("not_found", "Sous-tâche introuvable.");
+
+  const task = await requireTask(actor, current.taskId, "write");
+
+  const updates: Partial<typeof taskSubtasks.$inferInsert> = {};
+  if (patch.title !== undefined) updates.title = assertSubtaskTitle(patch.title);
+  if (patch.isDone !== undefined) updates.isDone = patch.isDone;
+  if (Object.keys(updates).length === 0) return current;
+
+  const [row] = await db()
+    .update(taskSubtasks)
+    .set(updates)
+    .where(eq(taskSubtasks.id, subtaskId))
+    .returning();
+  if (!row) throw new TasksError("not_found", "Sous-tâche introuvable.");
+
+  await syncParentFromSubtasks(task);
+  return row;
+}
+
+export async function deleteSubtask(actor: Actor, subtaskId: string): Promise<void> {
+  const [current] = await db()
+    .select({ id: taskSubtasks.id, taskId: taskSubtasks.taskId })
+    .from(taskSubtasks)
+    .where(eq(taskSubtasks.id, subtaskId))
+    .limit(1);
+  if (!current) throw new TasksError("not_found", "Sous-tâche introuvable.");
+
+  await requireTask(actor, current.taskId, "write");
+  await db().delete(taskSubtasks).where(eq(taskSubtasks.id, subtaskId));
+}
+
+/**
+ * Réordonnancement simple des sous-tâches. `subtaskIds` doit décrire EXACTEMENT
+ * les sous-tâches de la tâche : un ordre partiel laisserait des trous, donc des
+ * lignes mal placées au rechargement.
+ */
+export async function reorderSubtasks(
+  actor: Actor,
+  taskId: string,
+  subtaskIds: readonly string[],
+): Promise<Subtask[]> {
+  await requireTask(actor, taskId, "write");
+
+  const existing = await loadSubtasks(taskId);
+  const knownIds = new Set(existing.map((row) => row.id));
+  const submitted = new Set(subtaskIds);
+
+  if (subtaskIds.length === 0) {
+    throw new TasksError("validation", "L'ordre des sous-tâches est vide.");
+  }
+  if (submitted.size !== subtaskIds.length) {
+    throw new TasksError(
+      "validation",
+      "Une sous-tâche ne peut pas apparaître deux fois dans l'ordre.",
+    );
+  }
+  if (submitted.size !== knownIds.size || subtaskIds.some((id) => !knownIds.has(id))) {
+    throw new TasksError(
+      "validation",
+      "L'ordre soumis ne correspond pas aux sous-tâches de la tâche.",
+    );
+  }
+
+  await withTransaction(async (tx) => {
+    for (const [position, subtaskId] of subtaskIds.entries()) {
+      await tx.update(taskSubtasks).set({ position }).where(eq(taskSubtasks.id, subtaskId));
+    }
+  });
+
+  return loadSubtasks(taskId);
+}
+
+/**
+ * Aligne le statut de la tâche parente sur ses sous-tâches.
+ */
+async function syncParentFromSubtasks(task: Task): Promise<void> {
+  const rows = await db()
+    .select({ isDone: taskSubtasks.isDone })
+    .from(taskSubtasks)
+    .where(eq(taskSubtasks.taskId, task.id));
+
+  const decision = parentStatusAfterSubtaskChange({
+    parentStatus: task.status,
+    subtasks: rows,
+  });
+  if (!decision.changed) return;
+
+  await db()
+    .update(tasks)
+    .set({
+      status: decision.status,
+      completedAt: decision.status === "done" ? new Date() : null,
+    })
+    .where(eq(tasks.id, task.id));
 }
 
 // ---------------------------------------------------------------------------

@@ -5,25 +5,34 @@ import { schema as coreSchema, getDb } from "@workspace/database";
 import { asc, eq } from "drizzle-orm";
 import { z } from "zod";
 import {
+  countSubtasks,
   createLabel,
   createList,
+  createSubtask,
   createTask,
   deleteLabel,
   deleteList,
+  deleteSubtask,
   deleteTask,
   listLabels,
   listListGrants,
   listLists,
   listMyTasks,
+  listSubtasks,
   listTaskLabels,
   listTasks,
+  type MyTaskEntry,
   renameList,
   reorderLists,
+  reorderSubtasks,
+  reorderTasks,
+  type Subtask,
   shareList,
   type Task,
   type TaskLabel,
   unshareList,
   updateLabel,
+  updateSubtask,
   updateTask,
 } from "./index.ts";
 
@@ -49,9 +58,21 @@ export type TaskView = {
   assigneeId: string | null;
   updatedAt: string;
   createdAt: string;
+  /** Ordre manuel persistant (glisser-déposer). */
+  position: number;
   labels: TaskLabelView[];
+  /** Sous-tâches : totaux pour la puce de progression (0 = aucune). */
+  subtaskTotal: number;
+  subtaskDone: number;
 };
 export type TaskLabelView = { id: string; name: string; color: string };
+export type SubtaskView = {
+  id: string;
+  taskId: string;
+  title: string;
+  isDone: boolean;
+  position: number;
+};
 export type MemberView = { userId: string; name: string; email: string };
 export type ListGrantView = { id: string; subjectLabel: string; role: string };
 export type MyTaskView = TaskView & { listName: string };
@@ -60,7 +81,23 @@ function toLabelView(label: TaskLabel): TaskLabelView {
   return { id: label.id, name: label.name, color: label.color };
 }
 
-function toTaskView(task: Task & { labels?: readonly TaskLabel[] }): TaskView {
+function toSubtaskView(subtask: Subtask): SubtaskView {
+  return {
+    id: subtask.id,
+    taskId: subtask.taskId,
+    title: subtask.title,
+    isDone: subtask.isDone,
+    position: subtask.position,
+  };
+}
+
+function toTaskView(
+  task: Task & {
+    labels?: readonly TaskLabel[];
+    subtaskTotal?: number;
+    subtaskDone?: number;
+  },
+): TaskView {
   return {
     id: task.id,
     listId: task.listId,
@@ -73,7 +110,10 @@ function toTaskView(task: Task & { labels?: readonly TaskLabel[] }): TaskView {
     assigneeId: task.assigneeId,
     updatedAt: task.updatedAt.toISOString(),
     createdAt: task.createdAt.toISOString(),
+    position: task.position,
     labels: (task.labels ?? []).map(toLabelView),
+    subtaskTotal: task.subtaskTotal ?? 0,
+    subtaskDone: task.subtaskDone ?? 0,
   };
 }
 
@@ -147,12 +187,32 @@ export const deleteTaskListFn = createServerFn({ method: "POST" })
 // Tâches
 // ---------------------------------------------------------------------------
 
+const listTasksInput = z.object({
+  listId: z.string().uuid(),
+  // « default » : non terminées d'abord puis échéance. « manual » : l'ordre
+  // glissé, seul ordre dans lequel le glisser-déposer a un sens.
+  order: z.enum(["default", "manual"]).optional(),
+});
+
 export const listTasksFn = createServerFn({ method: "GET" })
-  .validator((input: unknown) => listInput.parse(input))
+  .validator((input: unknown) => listTasksInput.parse(input))
   .handler(async ({ data }): Promise<TaskView[]> => {
     const { actor } = await requireActor(getRequest().headers);
-    const rows = await listTasks(actor, { listId: data.listId });
+    const rows = await listTasks(actor, { listId: data.listId, order: data.order });
     return rows.map(toTaskView);
+  });
+
+/** Réordonne les tâches d'une liste (glisser-déposer ou clavier). */
+export const reorderTasksFn = createServerFn({ method: "POST" })
+  .validator((input: unknown) =>
+    z
+      .object({ listId: z.string().uuid(), taskIds: z.array(z.string().uuid()).min(1) })
+      .parse(input),
+  )
+  .handler(async ({ data }) => {
+    const { actor } = await requireActor(getRequest().headers);
+    await reorderTasks(actor, data.listId, data.taskIds);
+    return { ok: true };
   });
 
 const myTasksInput = z.object({
@@ -165,7 +225,10 @@ export const listMyTasksFn = createServerFn({ method: "GET" })
   .validator((input: unknown) => myTasksInput.parse(input ?? {}))
   .handler(async ({ data }): Promise<MyTaskView[]> => {
     const { actor } = await requireActor(getRequest().headers);
-    const rows = await listMyTasks(actor, { window: data.window, limit: data.limit });
+    const rows: MyTaskEntry[] = await listMyTasks(actor, {
+      window: data.window,
+      limit: data.limit,
+    });
     return rows.map((row) => ({ ...toTaskView(row.task), listName: row.listName }));
   });
 
@@ -195,7 +258,7 @@ export const createTaskFn = createServerFn({ method: "POST" })
     // Les étiquettes sont relues par le chemin public : la vue renvoyée dit la
     // vérité de ce qui a bien été attaché.
     const labels = await listTaskLabels(actor, task.id);
-    return toTaskView({ ...task, labels });
+    return toTaskView({ ...task, labels, subtaskTotal: 0, subtaskDone: 0 });
   });
 
 export const updateTaskFn = createServerFn({ method: "POST" })
@@ -217,7 +280,16 @@ export const updateTaskFn = createServerFn({ method: "POST" })
     const { actor } = await requireActor(getRequest().headers);
     const { taskId, ...patch } = data;
     const task = await updateTask(actor, taskId, patch);
-    return toTaskView({ ...task, labels: await listTaskLabels(actor, task.id) });
+    const [labels, counters] = await Promise.all([
+      listTaskLabels(actor, task.id),
+      countSubtasks(actor, task.id),
+    ]);
+    return toTaskView({
+      ...task,
+      labels,
+      subtaskTotal: counters.total,
+      subtaskDone: counters.done,
+    });
   });
 
 export const deleteTaskFn = createServerFn({ method: "POST" })
@@ -360,4 +432,74 @@ export const deleteTaskLabelFn = createServerFn({ method: "POST" })
     const { actor } = await requireActor(getRequest().headers);
     await deleteLabel(actor, data.labelId);
     return { ok: true };
+  });
+
+// ---------------------------------------------------------------------------
+// Sous-tâches (un seul niveau)
+// ---------------------------------------------------------------------------
+
+/** Longueur maximale d'un titre de sous-tâche — miroir de SUBTASK_TITLE_MAX. */
+const SUBTASK_TITLE_LIMIT = 200;
+
+export const listTaskSubtasksFn = createServerFn({ method: "GET" })
+  .validator((input: unknown) => taskInput.parse(input))
+  .handler(async ({ data }): Promise<SubtaskView[]> => {
+    const { actor } = await requireActor(getRequest().headers);
+    const rows = await listSubtasks(actor, data.taskId);
+    return rows.map(toSubtaskView);
+  });
+
+export const createTaskSubtaskFn = createServerFn({ method: "POST" })
+  .validator((input: unknown) =>
+    z
+      .object({
+        taskId: z.string().uuid(),
+        title: z.string().trim().min(1).max(SUBTASK_TITLE_LIMIT),
+      })
+      .parse(input),
+  )
+  .handler(async ({ data }): Promise<SubtaskView> => {
+    const { actor } = await requireActor(getRequest().headers);
+    const row = await createSubtask(actor, { taskId: data.taskId, title: data.title });
+    return toSubtaskView(row);
+  });
+
+export const updateTaskSubtaskFn = createServerFn({ method: "POST" })
+  .validator((input: unknown) =>
+    z
+      .object({
+        subtaskId: z.string().uuid(),
+        title: z.string().trim().min(1).max(SUBTASK_TITLE_LIMIT).optional(),
+        isDone: z.boolean().optional(),
+      })
+      .parse(input),
+  )
+  .handler(async ({ data }): Promise<SubtaskView> => {
+    const { actor } = await requireActor(getRequest().headers);
+    const { subtaskId, ...patch } = data;
+    const row = await updateSubtask(actor, subtaskId, patch);
+    return toSubtaskView(row);
+  });
+
+export const deleteTaskSubtaskFn = createServerFn({ method: "POST" })
+  .validator((input: unknown) => z.object({ subtaskId: z.string().uuid() }).parse(input))
+  .handler(async ({ data }) => {
+    const { actor } = await requireActor(getRequest().headers);
+    await deleteSubtask(actor, data.subtaskId);
+    return { ok: true };
+  });
+
+export const reorderTaskSubtasksFn = createServerFn({ method: "POST" })
+  .validator((input: unknown) =>
+    z
+      .object({
+        taskId: z.string().uuid(),
+        subtaskIds: z.array(z.string().uuid()).min(1),
+      })
+      .parse(input),
+  )
+  .handler(async ({ data }): Promise<SubtaskView[]> => {
+    const { actor } = await requireActor(getRequest().headers);
+    const rows = await reorderSubtasks(actor, data.taskId, data.subtaskIds);
+    return rows.map(toSubtaskView);
   });

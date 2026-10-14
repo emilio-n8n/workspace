@@ -4,26 +4,34 @@ import { type Actor, createGrant, revokeGrant } from "@workspace/permissions";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  countSubtasks,
   createLabel,
   createList,
+  createSubtask,
   createTask,
   deleteLabel,
   deleteList,
+  deleteSubtask,
   deleteTask,
   effectiveListRole,
   listLabels,
   listListGrants,
   listLists,
   listMyTasks,
+  listSubtasks,
   listTaskLabels,
   listTasks,
   renameList,
   reorderLists,
+  reorderSubtasks,
+  reorderTasks,
   setTaskLabels,
   shareList,
   TasksError,
+  taskSubtasks,
   unshareList,
   updateLabel,
+  updateSubtask,
   updateTask,
 } from "../src/index.ts";
 
@@ -747,5 +755,199 @@ describe("tasks — étiquettes", () => {
       code: "forbidden",
     });
     await expect(listTaskLabels(f.actorAlice, task.id)).resolves.toHaveLength(0);
+  });
+});
+
+describe("tasks — sous-tâches (un seul niveau)", () => {
+  it("crée, ordonne, compte puis supprime, bornes et isolation comprises", async () => {
+    const list = await createList(f.actorAlice, { name: "Sous-tâches" });
+    const task = await createTask(f.actorAlice, { listId: list.id, title: "Préparer le dossier" });
+
+    const premiere = await createSubtask(f.actorAlice, { taskId: task.id, title: "Rassembler" });
+    const deuxieme = await createSubtask(f.actorAlice, { taskId: task.id, title: "Relire" });
+    const troisieme = await createSubtask(f.actorAlice, { taskId: task.id, title: "Envoyer" });
+
+    expect([premiere.position, deuxieme.position, troisieme.position]).toEqual([0, 1, 2]);
+    expect((await listSubtasks(f.actorAlice, task.id)).map((row) => row.title)).toEqual([
+      "Rassembler",
+      "Relire",
+      "Envoyer",
+    ]);
+
+    // Réordonnancement simple : l'ordre est relu depuis la base.
+    const reordonnees = await reorderSubtasks(f.actorAlice, task.id, [
+      troisieme.id,
+      premiere.id,
+      deuxieme.id,
+    ]);
+    expect(reordonnees.map((row) => row.title)).toEqual(["Envoyer", "Rassembler", "Relire"]);
+
+    // Les compteurs voyagent avec la tâche, sans requête supplémentaire visible.
+    const [fromList] = await listTasks(f.actorAlice, { listId: list.id });
+    expect([fromList?.subtaskTotal, fromList?.subtaskDone]).toEqual([3, 0]);
+    expect(await countSubtasks(f.actorAlice, task.id)).toEqual({ total: 3, done: 0 });
+
+    await deleteSubtask(f.actorAlice, deuxieme.id);
+    expect(await countSubtasks(f.actorAlice, task.id)).toEqual({ total: 2, done: 0 });
+
+    // Titres invalides : vide, caractère de contrôle, trop long.
+    await expect(
+      createSubtask(f.actorAlice, { taskId: task.id, title: "   " }),
+    ).rejects.toMatchObject({ code: "validation" });
+    await expect(
+      createSubtask(f.actorAlice, { taskId: task.id, title: "a\nb" }),
+    ).rejects.toMatchObject({ code: "validation" });
+    await expect(
+      createSubtask(f.actorAlice, { taskId: task.id, title: "z".repeat(201) }),
+    ).rejects.toMatchObject({ code: "validation" });
+
+    // Isolation : la sous-tâche d'une autre organisation est introuvable.
+    await expect(updateSubtask(f.actorChloe, premiere.id, { title: "Vol" })).rejects.toMatchObject({
+      code: "not_found",
+    });
+  });
+
+  it("termine la tâche parente quand tout est fait, la rouvre sinon", async () => {
+    const list = await createList(f.actorAlice, { name: "Progression" });
+    const task = await createTask(f.actorAlice, { listId: list.id, title: "Grande tâche" });
+    const a = await createSubtask(f.actorAlice, { taskId: task.id, title: "Étape 1" });
+    const b = await createSubtask(f.actorAlice, { taskId: task.id, title: "Étape 2" });
+
+    await updateSubtask(f.actorAlice, a.id, { isDone: true });
+    let [row] = await listTasks(f.actorAlice, { listId: list.id });
+    expect(row?.status).toBe("todo");
+    expect(row?.subtaskDone).toBe(1);
+
+    await updateSubtask(f.actorAlice, b.id, { isDone: true });
+    [row] = await listTasks(f.actorAlice, { listId: list.id });
+    expect(row?.status).toBe("done");
+    expect(row?.completedAt).not.toBeNull();
+    expect(row?.subtaskDone).toBe(2);
+
+    // Rouvrir une sous-tâche rouvre la tâche parente.
+    await updateSubtask(f.actorAlice, a.id, { isDone: false });
+    [row] = await listTasks(f.actorAlice, { listId: list.id });
+    expect(row?.status).toBe("todo");
+    expect(row?.completedAt).toBeNull();
+  });
+
+  it("supprime les sous-tâches en cascade avec la tâche", async () => {
+    const list = await createList(f.actorAlice, { name: "Cascade sous-tâches" });
+    const task = await createTask(f.actorAlice, { listId: list.id, title: "Éphémère" });
+    await createSubtask(f.actorAlice, { taskId: task.id, title: "Bribe" });
+
+    await deleteTask(f.actorAlice, task.id);
+
+    const rows = await getDb().select().from(taskSubtasks).where(eq(taskSubtasks.taskId, task.id));
+    expect(rows).toHaveLength(0);
+  });
+
+  it("réserve l'écriture à la liste, ordre complet exigé", async () => {
+    const list = await createList(f.actorAlice, { name: "Droits sous-tâches" });
+    const task = await createTask(f.actorAlice, { listId: list.id, title: "Visible" });
+    const a = await createSubtask(f.actorAlice, { taskId: task.id, title: "A" });
+    const other = await createSubtask(f.actorAlice, { taskId: task.id, title: "B" });
+
+    await shareList(f.actorAlice, list.id, {
+      subject: { kind: "user", id: f.bruno },
+      role: "viewer",
+    });
+    await expect(
+      createSubtask(f.actorBruno, { taskId: task.id, title: "Interdit" }),
+    ).rejects.toMatchObject({ code: "forbidden" });
+    expect(await listSubtasks(f.actorBruno, task.id)).toHaveLength(2);
+
+    await expect(reorderSubtasks(f.actorAlice, task.id, [])).rejects.toMatchObject({
+      code: "validation",
+    });
+    await expect(reorderSubtasks(f.actorAlice, task.id, [a.id, a.id])).rejects.toMatchObject({
+      code: "validation",
+    });
+    await expect(reorderSubtasks(f.actorAlice, task.id, [a.id])).rejects.toMatchObject({
+      code: "validation",
+    });
+    await expect(
+      reorderSubtasks(f.actorAlice, task.id, [
+        a.id,
+        other.id,
+        "00000000-0000-0000-0000-000000000000",
+      ]),
+    ).rejects.toMatchObject({ code: "validation" });
+    expect(await listSubtasks(f.actorAlice, task.id)).toHaveLength(2);
+  });
+});
+
+describe("tasks — ordre manuel des tâches", () => {
+  it("persiste l'ordre glissé, sans toucher à l'ordre par défaut", async () => {
+    const list = await createList(f.actorAlice, { name: "Ordre manuel" });
+    const a = await createTask(f.actorAlice, { listId: list.id, title: "A" });
+    const b = await createTask(f.actorAlice, { listId: list.id, title: "B" });
+    const c = await createTask(f.actorAlice, { listId: list.id, title: "C" });
+
+    const manualIds = async () =>
+      (await listTasks(f.actorAlice, { listId: list.id, order: "manual" })).map((row) => row.id);
+
+    expect(await manualIds()).toEqual([a.id, b.id, c.id]);
+
+    await reorderTasks(f.actorAlice, list.id, [c.id, a.id, b.id]);
+    expect(await manualIds()).toEqual([c.id, a.id, b.id]);
+    // L'ordre par défaut reste piloté par l'échéance et la création.
+    expect((await listTasks(f.actorAlice, { listId: list.id })).map((row) => row.id)).toEqual([
+      a.id,
+      b.id,
+      c.id,
+    ]);
+
+    // Une nouvelle tâche se range en fin d'ordre manuel.
+    const d = await createTask(f.actorAlice, { listId: list.id, title: "D" });
+    expect(await manualIds()).toEqual([c.id, a.id, b.id, d.id]);
+  });
+
+  it("refuse un ordre vide, en doublon, incomplet ou étranger, et exige l'écriture", async () => {
+    const list = await createList(f.actorAlice, { name: "Ordre strict" });
+    const a = await createTask(f.actorAlice, { listId: list.id, title: "A" });
+    const b = await createTask(f.actorAlice, { listId: list.id, title: "B" });
+
+    await expect(reorderTasks(f.actorAlice, list.id, [])).rejects.toMatchObject({
+      code: "validation",
+    });
+    await expect(reorderTasks(f.actorAlice, list.id, [a.id, a.id])).rejects.toMatchObject({
+      code: "validation",
+    });
+    await expect(reorderTasks(f.actorAlice, list.id, [a.id])).rejects.toMatchObject({
+      code: "validation",
+    });
+    await expect(
+      reorderTasks(f.actorAlice, list.id, [a.id, b.id, "00000000-0000-0000-0000-000000000000"]),
+    ).rejects.toMatchObject({ code: "validation" });
+    expect(
+      (await listTasks(f.actorAlice, { listId: list.id, order: "manual" })).map((row) => row.id),
+    ).toEqual([a.id, b.id]);
+
+    await shareList(f.actorAlice, list.id, {
+      subject: { kind: "user", id: f.bruno },
+      role: "viewer",
+    });
+    await expect(reorderTasks(f.actorBruno, list.id, [b.id, a.id])).rejects.toMatchObject({
+      code: "forbidden",
+    });
+  });
+
+  it("journalise la réorganisation des tâches", async () => {
+    const list = await createList(f.actorAlice, { name: "Audit ordre tâches" });
+    const a = await createTask(f.actorAlice, { listId: list.id, title: "A" });
+    const b = await createTask(f.actorAlice, { listId: list.id, title: "B" });
+    const before = await countAuditRows(f.orgId);
+
+    await reorderTasks(f.actorAlice, list.id, [b.id, a.id]);
+
+    expect(await countAuditRows(f.orgId)).toBe(before + 1);
+    const rows = await getDb().select().from(auditEvents).where(eq(auditEvents.orgId, f.orgId));
+    expect(rows.at(-1)).toMatchObject({
+      action: "tasks.task.reorder",
+      resourceType: "task_list",
+      resourceId: list.id,
+      result: "success",
+    });
   });
 });

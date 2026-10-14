@@ -1,6 +1,7 @@
 import { schema as core } from "@workspace/database";
 import { sql } from "drizzle-orm";
 import {
+  boolean,
   index,
   integer,
   pgEnum,
@@ -83,6 +84,11 @@ export const tasks = pgTable(
     priority: taskPriority("priority").notNull().default("medium"),
     dueAt: timestamp("due_at", { withTimezone: true }),
     completedAt: timestamp("completed_at", { withTimezone: true }),
+    // Ordre MANUEL au sein de la liste (glisser-déposer). Il ne change pas
+    // l'ordre par défaut — `listTasks` trie d'abord par échéance — et n'est
+    // utilisé que lorsque l'écran demande explicitement `order: "manual"`.
+    // Les lignes antérieures valent toutes 0 : `created_at` les départage.
+    position: integer("position").notNull().default(0),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true })
       .defaultNow()
@@ -96,6 +102,7 @@ export const tasks = pgTable(
     index("tasks_list_due_idx").on(table.listId, table.dueAt),
     index("tasks_assignee_idx").on(table.assigneeId),
     index("tasks_due_idx").on(table.dueAt),
+    index("tasks_list_position_idx").on(table.listId, table.position),
   ],
 );
 
@@ -150,3 +157,34 @@ export type TaskPriority = (typeof taskPriority.enumValues)[number];
 export type TaskStatus = (typeof taskStatus.enumValues)[number];
 export type TaskLabelColor = (typeof taskLabelColor.enumValues)[number];
 export type TaskLabel = typeof taskLabels.$inferSelect;
+export type Subtask = typeof taskSubtasks.$inferSelect;
+
+/**
+ * Sous-tâches — UN seul niveau, volontairement : `task_subtasks` pointe vers
+ * `tasks` et jamais vers une autre sous-tâche. Ajouter un second niveau
+ * demanderait une colonne `parent_id` ici, et une récursion que l'interface ne
+ * sait pas rendre lisible.
+ */
+export const taskSubtasks = pgTable(
+  "task_subtasks",
+  {
+    id: uuid("id").primaryKey().default(sql`uuidv7()`),
+    taskId: uuid("task_id")
+      .notNull()
+      .references(() => tasks.id, { onDelete: "cascade" }),
+    title: text("title").notNull(),
+    isDone: boolean("is_done").notNull().default(false),
+    // Ordre dans la liste des sous-tâches (0 = en tête), réécrit en entier à
+    // chaque réordonnancement : pas de trou, pas de doublon.
+    position: integer("position").notNull().default(0),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .defaultNow()
+      .notNull()
+      .$onUpdate(() => new Date()),
+  },
+  (table) => [
+    index("task_subtasks_task_idx").on(table.taskId),
+    index("task_subtasks_task_position_idx").on(table.taskId, table.position),
+  ],
+);
