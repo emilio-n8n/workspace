@@ -137,6 +137,61 @@ test("slides : zone de texte, sauvegarde et persistance", async ({ page }) => {
   await page.screenshot({ path: "e2e/screenshots/slides.png", fullPage: true });
 });
 
+test("slides : mise en page de titre, édition en place et nouvelle diapositive", async ({
+  page,
+}) => {
+  const email = uniqueEmail("slides2");
+  await signupNewUser(page, "Slides E2E 2", email);
+
+  await openApp(page, `${SLIDES}/`);
+  await page.getByRole("button", { name: "Nouvelle présentation" }).first().click();
+  await page.getByLabel("Titre de la présentation").fill("Pitch visuel");
+  await page.getByRole("button", { name: "Créer et ouvrir" }).click();
+
+  // La première diapositive porte la mise en page « Titre » : les invitations
+  // des zones apparaissent dès le chargement de l'éditeur.
+  await expect(page.getByText("Cliquez pour ajouter un titre").first()).toBeVisible({
+    timeout: 15_000,
+  });
+  await expect(page.getByText("Cliquez pour ajouter un sous-titre").first()).toBeVisible();
+
+  // Une zone vide s'ouvre au clic et le texte s'édite en place, sur la
+  // diapositive (course d'hydratation tolérée par la reprise).
+  await expect(async () => {
+    await page.getByRole("button", { name: "Élément titre" }).first().click();
+    await expect(page.getByRole("textbox", { name: "Modifier le texte" })).toBeVisible({
+      timeout: 2_000,
+    });
+  }).toPass({ timeout: 20_000 });
+  await page.getByRole("textbox", { name: "Modifier le texte" }).fill("Lancement 2026");
+  await page.getByRole("textbox", { name: "Modifier le texte" }).press("Escape");
+  await expect(page.getByText("Lancement 2026").first()).toBeVisible();
+
+  // Mise en forme : l'élément reste sélectionné après l'édition en place.
+  await page.getByRole("button", { name: "Italique" }).click();
+  await expect(page.getByRole("button", { name: "Italique" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+
+  // Nouvelle diapositive avec la mise en page « Titre et contenu ».
+  await expect(async () => {
+    await page.getByRole("button", { name: "Nouvelle diapositive" }).click();
+    await page.getByRole("button", { name: "Titre et contenu" }).click();
+    await expect(page.getByText("Cliquez pour ajouter du texte").first()).toBeVisible({
+      timeout: 3_000,
+    });
+  }).toPass({ timeout: 15_000 });
+
+  // Persistance : le rechargement retrouve le titre saisi et la mise en page.
+  await expect(page.getByRole("status").filter({ hasText: "Enregistré" })).toBeVisible({
+    timeout: 15_000,
+  });
+  await page.reload();
+  await page.waitForSelector("html[data-hydrated='true']", { timeout: 40_000 });
+  await expect(page.getByText("Lancement 2026").first()).toBeVisible({ timeout: 15_000 });
+});
+
 test("accueil : le lanceur expose les quatorze applications", async ({ page }) => {
   const email = uniqueEmail("lanceur");
   await signupNewUser(page, "Lanceur E2E", email);

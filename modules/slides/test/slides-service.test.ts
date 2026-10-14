@@ -131,13 +131,19 @@ async function auditEventsFor(orgId: string, action?: string) {
 }
 
 describe("slides — cycle de vie", () => {
-  it("crée une présentation liée avec une diapositive vierge", async () => {
+  it("crée une présentation liée avec une diapositive de titre", async () => {
     const { entry } = await createPresentation(f.actorAlice, { title: "Pitch" });
     expect(entry.mimeType).toBe(SLIDES_MIME);
 
     const detail = await getPresentation(f.actorAlice, entry.id);
     expect(detail.slides).toHaveLength(1);
-    expect(detail.slides[0]?.elements).toHaveLength(0);
+    // La première diapositive porte la mise en page « Titre » : un titre et
+    // un sous-titre vides, prêts à remplir.
+    expect(detail.slides[0]?.elements).toHaveLength(2);
+    expect(detail.slides[0]?.elements.map((element) => element.placeholder)).toEqual([
+      "title",
+      "subtitle",
+    ]);
     expect(detail.canEdit).toBe(true);
     expect(detail.revision).toBe(1);
 

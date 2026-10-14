@@ -7,6 +7,7 @@ import {
   themeCanvasClass,
   themeHint,
   themeLabel,
+  themeLineClass,
   themeShapeClass,
   themeSwatchClass,
 } from "../src/slide-theme.ts";
@@ -28,7 +29,9 @@ describe("slides — thèmes", () => {
   it("n'emploie que des classes de jetons sémantiques", () => {
     for (const id of SLIDE_THEME_IDS) {
       const theme = SLIDE_THEMES[id];
-      const classes = `${theme.canvas} ${theme.shape} ${theme.ring}`.split(/\s+/).filter(Boolean);
+      const classes = `${theme.canvas} ${theme.shape} ${theme.line} ${theme.ring}`
+        .split(/\s+/)
+        .filter(Boolean);
       for (const value of classes) {
         // Préfixe d'utilité, jeton sémantique, opacité optionnelle.
         expect(value).toMatch(
@@ -49,6 +52,7 @@ describe("slides — thèmes", () => {
   it("applique un thème au canevas, aux formes et à la pastille", () => {
     expect(themeCanvasClass("encre")).toContain("bg-foreground");
     expect(themeShapeClass("encre")).toContain("bg-background/10");
+    expect(themeLineClass("encre")).toBe("bg-background/40");
     expect(themeCanvasClass("accent")).toContain("text-accent-foreground");
     expect(themeSwatchClass("papier")).toBe("bg-card border-border");
     expect(themeCanvasClass("inconnu" as "encre")).toBe(themeCanvasClass("papier"));

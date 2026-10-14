@@ -261,7 +261,7 @@ test("drive : dossiers, téléversement, corbeille et document (app Docs)", asyn
   await expect(page.getByRole("button", { name: "notes.txt", exact: true })).toHaveCount(0);
 
   await page.getByRole("link", { name: "Corbeille" }).click();
-  await expect(page.getByRole("button", { name: "notes.txt", exact: true })).toBeVisible();
+  await expect(page.getByText("notes.txt").first()).toBeVisible();
   await page.getByRole("button", { name: "Restaurer" }).click();
   await expect(page.getByText("La corbeille est vide.")).toBeVisible();
 

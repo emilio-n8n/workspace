@@ -18,7 +18,15 @@ import {
   slideElements,
 } from "./schema.ts";
 import { normalizeAspect, SLIDE_ASPECT_IDS, type SlideAspectId } from "./slide-aspect.ts";
+import {
+  layoutElements,
+  normalizePlaceholder,
+  type SlidePlaceholderRole,
+  TITLE_LAYOUT,
+} from "./slide-layouts.ts";
 import { MAX_NOTES_CHARS, notesForSave } from "./slide-notes.ts";
+import { SHAPE_ELEMENT_KINDS, type SlideShapeKind } from "./slide-shapes.ts";
+import { normalizeTextColor, type SlideTextColor } from "./slide-text.ts";
 import { normalizeTheme, SLIDE_THEME_IDS, type SlideThemeId } from "./slide-theme.ts";
 
 /** Type MIME du pointeur Drive d'une présentation Workspace. */
@@ -61,7 +69,7 @@ export class SlidesError extends Error {
   }
 }
 
-export type ElementKind = "text" | "shape" | "image";
+export type ElementKind = "text" | "image" | "shape" | SlideShapeKind;
 export type ElementAlign = "left" | "center" | "right";
 
 export type ElementView = {
@@ -76,6 +84,14 @@ export type ElementView = {
   mediaKey?: string | null;
   fontSize: number;
   bold: boolean;
+  /** Italique du texte. */
+  italic: boolean;
+  /** Soulignement du texte. */
+  underline: boolean;
+  /** Couleur sémantique du texte (« default » = héritée du thème). */
+  textColor: SlideTextColor;
+  /** Rôle de zone d'une mise en page ; null pour un élément libre. */
+  placeholder: SlidePlaceholderRole | null;
   align: ElementAlign;
 };
 
@@ -100,7 +116,21 @@ export type PresentationDetail = {
   slides: SlideView[];
 };
 
-export type ElementInput = Omit<ElementView, "id"> & { id?: string };
+/**
+ * Entrée d'un élément : les champs de mise en forme ajoutés en second temps
+ * restent optionnels (un ancien client peut les omettre) ; la validation les
+ * normalise vers leurs valeurs par défaut.
+ */
+export type ElementInput = Omit<
+  ElementView,
+  "id" | "italic" | "underline" | "textColor" | "placeholder"
+> & {
+  id?: string;
+  italic?: boolean;
+  underline?: boolean;
+  textColor?: SlideTextColor;
+  placeholder?: SlidePlaceholderRole | null;
+};
 export type SlideInput = {
   id?: string;
   title?: string | null;
@@ -140,7 +170,7 @@ function assertRevision(revision: unknown): number {
   return revision;
 }
 
-const ELEMENT_KINDS = ["text", "shape", "image"] as const;
+const ELEMENT_KINDS = ["text", "image", ...SHAPE_ELEMENT_KINDS] as const;
 const ELEMENT_ALIGNS = ["left", "center", "right"] as const;
 
 function assertSlides(input: unknown): SlideInput[] {
@@ -240,6 +270,11 @@ function assertSlides(input: unknown): SlideInput[] {
           mediaKey: element.kind === "image" ? (trimmedMediaKey as string) : null,
           fontSize,
           bold: Boolean(element.bold),
+          italic: Boolean(element.italic),
+          underline: Boolean(element.underline),
+          textColor: normalizeTextColor(element.textColor),
+          // Les zones de mise en page n'ont de sens que pour du texte.
+          placeholder: element.kind === "text" ? normalizePlaceholder(element.placeholder) : null,
           align: element.align as ElementAlign,
         };
       }),
@@ -309,6 +344,10 @@ async function loadSlides(presentationId: string): Promise<SlideView[]> {
       mediaKey: element.mediaKey,
       fontSize: element.fontSize,
       bold: element.bold,
+      italic: element.italic,
+      underline: element.underline,
+      textColor: normalizeTextColor(element.textColor),
+      placeholder: normalizePlaceholder(element.placeholder),
       align: element.align as ElementAlign,
     });
     bySlide.set(element.slideId, list);
@@ -345,12 +384,37 @@ export async function createPresentation(
       .values({ orgId: actor.orgId, fileId: entry.id })
       .returning({ id: presentations.id, fileId: presentations.fileId });
     if (!created) throw new SlidesError("conflict", "Création de la présentation impossible.");
-    await tx.insert(presentationSlides).values({
-      presentationId: created.id,
-      position: 0,
-      title: "Diapositive 1",
-      notes: null,
-    });
+    const [slide] = await tx
+      .insert(presentationSlides)
+      .values({
+        presentationId: created.id,
+        position: 0,
+        title: "Diapositive 1",
+        notes: null,
+      })
+      .returning({ id: presentationSlides.id });
+    if (!slide) throw new SlidesError("conflict", "Création de la présentation impossible.");
+    // La première diapositive porte la mise en page « Titre » : un titre et
+    // un sous-titre prêts à remplir, comme dans tout outil de présentation.
+    const zones = layoutElements(TITLE_LAYOUT);
+    if (zones.length > 0) {
+      await tx.insert(slideElements).values(
+        zones.map((zone, index) => ({
+          slideId: slide.id,
+          position: index,
+          kind: "text",
+          x: zone.x,
+          y: zone.y,
+          w: zone.w,
+          h: zone.h,
+          text: "",
+          fontSize: zone.fontSize,
+          bold: zone.bold,
+          align: zone.align,
+          placeholder: zone.placeholder,
+        })),
+      );
+    }
     return created;
   });
 
@@ -546,6 +610,10 @@ export async function savePresentation(
           mediaKey: element.mediaKey ?? null,
           fontSize: element.fontSize,
           bold: element.bold,
+          italic: element.italic,
+          underline: element.underline,
+          textColor: element.textColor,
+          placeholder: element.placeholder,
           align: element.align,
         };
         if (element.id && knownElementIds.has(element.id)) {

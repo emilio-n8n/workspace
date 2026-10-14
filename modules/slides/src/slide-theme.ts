@@ -19,6 +19,8 @@ export type SlideTheme = {
   canvas: string;
   /** Remplissage et bordure des formes. */
   shape: string;
+  /** Trait de la forme « ligne » (remplissage, sans bordure). */
+  line: string;
   /** Anneau de sélection d'un élément (jeton d'anneau commun). */
   ring: string;
 };
@@ -30,6 +32,7 @@ export const SLIDE_THEMES: Record<SlideThemeId, SlideTheme> = {
     hint: "Fond clair, encre foncée : le rendu par défaut, lisible partout.",
     canvas: "bg-card text-foreground border-border",
     shape: "border-border bg-muted",
+    line: "bg-border",
     ring: "outline-ring",
   },
   encre: {
@@ -38,6 +41,7 @@ export const SLIDE_THEMES: Record<SlideThemeId, SlideTheme> = {
     hint: "Fond sombre, texte clair : les couleurs suivent le thème clair/sombre.",
     canvas: "bg-foreground text-background border-transparent",
     shape: "border-background/40 bg-background/10",
+    line: "bg-background/40",
     ring: "outline-ring",
   },
   accent: {
@@ -46,6 +50,7 @@ export const SLIDE_THEMES: Record<SlideThemeId, SlideTheme> = {
     hint: "Fond teinté par l'accent evergreen, texte dédié.",
     canvas: "bg-accent text-accent-foreground border-transparent",
     shape: "border-accent-foreground/30 bg-accent-foreground/10",
+    line: "bg-accent-foreground/30",
     ring: "outline-ring",
   },
 };
@@ -72,6 +77,11 @@ export function themeCanvasClass(theme: SlideThemeId): string {
 /** Classes d'une forme pour un thème. */
 export function themeShapeClass(theme: SlideThemeId): string {
   return SLIDE_THEMES[normalizeTheme(theme)].shape;
+}
+
+/** Classes du trait d'une forme « ligne » pour un thème. */
+export function themeLineClass(theme: SlideThemeId): string {
+  return SLIDE_THEMES[normalizeTheme(theme)].line;
 }
 
 /** Pastille du sélecteur : même dégradé de jetons que le rendu final. */

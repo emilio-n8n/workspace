@@ -33,7 +33,7 @@ Toutes testées, committées et poussées. Compteurs par escouade (tests du modu
 | **Drive** | 6/14 | Fil d'Ariane, tri/densité persistés, sélection multiple + barre d'actions, navigation clavier de la grille (149 tests) |
 | **Docs** | 6/14 | Barre d'outils accessible, raccourcis B/I/U, panneau Plan, mode focus, statistiques, recherche interne (97 tests) |
 | **Sheets** | 6/14 | Redimensionnement, menu contextuel, barre de formule, presse-papiers TSV, figement, tri de plage, bouton Exporter CSV (123 tests) |
-| **Slides** | 6/14 | Vignettes, navigation clavier, notes, présentation plein écran, formats 4:3/16:9, thèmes (86 tests) |
+| **Slides** | 6/14 + refonte | Vignettes, navigation clavier, notes, présentation plein écran, formats, thèmes — puis refonte complète : mises en page à zones (« Cliquez pour ajouter un titre »), édition du texte en place, gras/italique/souligné/couleurs, tailles par paliers, clavier étendu (110 tests) |
 | **Calendar** | 3/14 | Vues J/S/M/Agenda persistées, mini calendrier, création rapide en français (« demain 9h ») (102 tests) |
 | **Tasks** | 3/14 | Panneau de listes (ordre persisté), tri/regroupement, étiquettes colorées (37 tests) |
 | **Forms** | 3/14 | Types date/oui-non, duplication annulable, ordre au clavier (41 tests) |

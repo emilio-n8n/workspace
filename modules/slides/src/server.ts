@@ -11,6 +11,8 @@ import {
   updatePresentationSetting,
 } from "./service.ts";
 import { SLIDE_ASPECT_IDS } from "./slide-aspect.ts";
+import { PLACEHOLDER_ROLES } from "./slide-layouts.ts";
+import { SLIDE_TEXT_COLOR_IDS, type SlideTextColor } from "./slide-text.ts";
 import { SLIDE_THEME_IDS } from "./slide-theme.ts";
 
 export type { ElementView, PresentationDetail, SlideView } from "./index.ts";
@@ -19,7 +21,7 @@ export type { SlideThemeId } from "./slide-theme.ts";
 
 const elementSchema = z.object({
   id: z.string().optional(),
-  kind: z.enum(["text", "shape", "image"]),
+  kind: z.enum(["text", "image", "shape", "rectangle", "ellipse", "line"]),
   x: z.number(),
   y: z.number(),
   w: z.number(),
@@ -28,6 +30,10 @@ const elementSchema = z.object({
   mediaKey: z.string().max(512).nullish(),
   fontSize: z.number().int().min(8).max(200),
   bold: z.boolean(),
+  italic: z.boolean().optional(),
+  underline: z.boolean().optional(),
+  textColor: z.enum(SLIDE_TEXT_COLOR_IDS as [SlideTextColor, ...SlideTextColor[]]).optional(),
+  placeholder: z.enum(PLACEHOLDER_ROLES).nullish(),
   align: z.enum(["left", "center", "right"]),
 });
 

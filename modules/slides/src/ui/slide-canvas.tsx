@@ -13,11 +13,15 @@ import {
   normalizeAspect,
   type SlideAspectId,
 } from "../slide-aspect.ts";
+import { placeholderHint, placeholderLabel } from "../slide-layouts.ts";
+import { isShapeKind, shapeFillClass, shapeLabel, shapeVariant } from "../slide-shapes.ts";
+import { textColorClass } from "../slide-text.ts";
 import {
   DEFAULT_SLIDE_THEME,
   normalizeTheme,
   type SlideThemeId,
   themeCanvasClass,
+  themeLineClass,
   themeShapeClass,
 } from "../slide-theme.ts";
 
@@ -29,6 +33,14 @@ export type SlideCanvasProps = {
   selectedElementKey?: string | null;
   onSelectElement?: (key: string | null) => void;
   onGeometryChange?: (key: string, patch: Partial<ElementGeometry>) => void;
+  /** Clé de l'élément dont le texte est en cours d'édition (en place). */
+  editingKey?: string | null;
+  /** Demande l'entrée en édition d'un élément (double-clic, zone vide). */
+  onStartEdit?: (key: string) => void;
+  /** Frappe dans l'éditeur en place : le texte est appliqué à chaque touche. */
+  onTextChange?: (key: string, text: string) => void;
+  /** Sortie du mode édition (Échap ou clic ailleurs). */
+  onEndEdit?: () => void;
   /** Format de la diapositive (défaut : écran large). */
   aspect?: SlideAspectId;
   /** Thème construit sur les jetons sémantiques (défaut : papier). */
@@ -39,11 +51,25 @@ export type SlideCanvasProps = {
 /** Seuil de déplacement (px) avant de considérer qu'un glisser commence. */
 const DRAG_THRESHOLD = 3;
 
+/** Libellé accessible d'un élément, pour la barre latérale et les tests. */
+export function elementAriaLabel(element: EditorElement): string {
+  if (element.kind === "image") return "Élément image";
+  if (element.placeholder) {
+    return `Élément ${placeholderLabel(element.placeholder)}`;
+  }
+  if (isShapeKind(element.kind)) return `Élément ${shapeLabel(element.kind).toLowerCase()}`;
+  return element.text.trim().length > 0 ? `Élément ${element.text}` : "Élément texte";
+}
+
 /**
  * Rend une diapositive et ses éléments. Positions en pourcentage de la
  * diapositive, corps de texte mis à l'échelle par requête de conteneur : le
  * même composant sert au canevas d'édition, aux vignettes, au mode
  * présentation et à l'impression, sans duplication de règles de mise en page.
+ *
+ * En mode édition interactive, une zone de mise en page vide affiche son
+ * invitation et s'ouvre au clic ; un double-clic (ou une zone vide) ouvre
+ * l'édition du texte en place, directement sur la diapositive.
  */
 export function SlideCanvas({
   slide,
@@ -52,6 +78,10 @@ export function SlideCanvas({
   selectedElementKey = null,
   onSelectElement,
   onGeometryChange,
+  editingKey = null,
+  onStartEdit,
+  onTextChange,
+  onEndEdit,
   aspect = DEFAULT_SLIDE_ASPECT,
   theme = DEFAULT_SLIDE_THEME,
   className,
@@ -59,12 +89,15 @@ export function SlideCanvas({
   const format = normalizeAspect(aspect);
   const palette = normalizeTheme(theme);
   const canvasRef = useRef<HTMLDivElement>(null);
+  /** Un glisser passé le seuil annule le clic qui le suit. */
+  const dragMovedRef = useRef(false);
 
   function startElementDrag(event: React.PointerEvent<HTMLButtonElement>, element: EditorElement) {
     if (!interactive) return;
     event.preventDefault();
     event.stopPropagation();
     onSelectElement?.(element.key);
+    dragMovedRef.current = false;
     const canvas = canvasRef.current;
     if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
@@ -79,6 +112,7 @@ export function SlideCanvas({
         // Un simple clic ne doit pas déplacer l'élément d'un demi-pixel.
         if (Math.abs(dx) + Math.abs(dy) < DRAG_THRESHOLD) return;
         dragging = true;
+        dragMovedRef.current = true;
       }
       onGeometryChange?.(element.key, {
         x: round1(clamp(origin.x + (dx / rect.width) * 100, 0, 100 - element.w)),
@@ -144,10 +178,14 @@ export function SlideCanvas({
       )}
     >
       {slide.elements.map((element) => {
+        // Forme concrète (rectangle, ellipse ou ligne) ; « shape » hérité rend
+        // un rectangle. Le reste (texte, image) n'est pas une forme.
+        const shape = isShapeKind(element.kind) ? shapeVariant(element.kind) : null;
         const className = cn(
           "absolute select-none whitespace-pre-wrap rounded",
-          // Les formes suivent le thème de la diapositive (jetons sémantiques).
-          element.kind === "shape" && themeShapeClass(palette),
+          // Les formes suivent le thème de la diapositive (jetons sémantiques),
+          // sauf la ligne qui n'a pas de remplissage : elle dessine un trait.
+          shape !== null && shape !== "line" && shapeFillClass(shape, themeShapeClass(palette)),
           element.kind === "image" && "bg-muted",
         );
         const style = {
@@ -157,9 +195,16 @@ export function SlideCanvas({
           height: `${element.h}%`,
           fontSize: `calc(${element.fontSize} * 100cqw / var(--slide-design-width))`,
           fontWeight: element.bold ? 700 : 400,
+          fontStyle: element.italic ? "italic" : "normal",
+          textDecorationLine: element.underline ? "underline" : "none",
           textAlign: element.align,
           lineHeight: 1.25,
         } as const;
+        const textClass = element.kind === "image" ? "" : textColorClass(element.textColor);
+        // Invitation d'une zone de mise en page vide : visible uniquement dans
+        // le canevas d'édition (jamais en présentation, impression, vignettes).
+        const showsPlaceholder =
+          interactive && element.placeholder !== null && element.text.trim().length === 0;
         // Image : le binaire est servi par la route média (clé anti-IDOR) ;
         // la zone garde ses poignées de déplacement/redimensionnement.
         const content =
@@ -170,13 +215,66 @@ export function SlideCanvas({
               draggable={false}
               alt=""
             />
+          ) : shape === "line" ? (
+            // Trait horizontal centré verticalement : la hauteur de la zone
+            // règle la marge autour du trait, pas son épaisseur.
+            <span
+              aria-hidden
+              className={cn(
+                "absolute left-0 right-0 top-1/2 h-0.5 -translate-y-1/2 rounded-full",
+                themeLineClass(palette),
+              )}
+            />
+          ) : showsPlaceholder && element.placeholder ? (
+            <span aria-hidden className="italic opacity-40">
+              {placeholderHint(element.placeholder)}
+            </span>
           ) : (
             element.text
           );
         if (!interactive) {
           return (
-            <div key={element.key} className={className} style={style}>
+            <div key={element.key} className={cn(className, textClass)} style={style}>
               {content}
+            </div>
+          );
+        }
+        // Édition en place : la zone devient un champ de saisie transparent,
+        // typographié exactement comme le rendu final (le texte affiché et le
+        // texte saisi ne peuvent pas diverger).
+        if (editingKey === element.key) {
+          return (
+            <div
+              key={element.key}
+              className={cn(className, textClass, "z-10 outline outline-2 outline-ring")}
+              style={style}
+              onPointerDown={(event) => event.stopPropagation()}
+            >
+              <textarea
+                ref={(node) => {
+                  // Focus à l'ouverture de l'édition (pas d'attribut autoFocus :
+                  // la règle d'accessibilité préfère un focus explicite).
+                  if (node && document.activeElement !== node) node.focus();
+                }}
+                aria-label="Modifier le texte"
+                value={element.text}
+                onChange={(event) => onTextChange?.(element.key, event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Escape") {
+                    event.stopPropagation();
+                    onEndEdit?.();
+                  }
+                }}
+                onBlur={() => onEndEdit?.()}
+                maxLength={2000}
+                className="size-full resize-none overflow-hidden border-none bg-transparent p-0 text-inherit outline-none"
+                style={{
+                  font: "inherit",
+                  color: "inherit",
+                  textAlign: "inherit",
+                  textDecorationLine: "inherit",
+                }}
+              />
             </div>
           );
         }
@@ -184,20 +282,32 @@ export function SlideCanvas({
           <button
             key={element.key}
             type="button"
-            aria-label={
-              element.kind === "image"
-                ? "Élément image"
-                : element.text
-                  ? `Élément ${element.text}`
-                  : `Élément ${element.kind === "shape" ? "forme" : "texte"}`
-            }
+            aria-label={elementAriaLabel(element)}
             onPointerDown={(event) => startElementDrag(event, element)}
             onClick={(event) => {
               event.stopPropagation();
+              if (dragMovedRef.current) {
+                dragMovedRef.current = false;
+                return;
+              }
               onSelectElement?.(element.key);
+              // Une zone de mise en page vide s'ouvre au simple clic, comme
+              // dans tout outil de présentation.
+              if (
+                element.kind !== "image" &&
+                element.placeholder !== null &&
+                element.text.trim().length === 0
+              ) {
+                onStartEdit?.(element.key);
+              }
+            }}
+            onDoubleClick={(event) => {
+              event.stopPropagation();
+              if (element.kind !== "image") onStartEdit?.(element.key);
             }}
             className={cn(
               className,
+              textClass,
               "cursor-move text-left focus-visible:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring",
               selectedElementKey === element.key &&
                 "outline outline-2 outline-offset-2 outline-ring",

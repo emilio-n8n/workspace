@@ -4,6 +4,7 @@ import {
   cloneSlide,
   type EditorSlide,
   mergeSavedIds,
+  rebindSlide,
   round1,
   slideTitle,
   toEditor,
@@ -27,6 +28,10 @@ function slideView(overrides: Partial<SlideView> = {}): SlideView {
         text: "Bonjour",
         fontSize: 24,
         bold: false,
+        italic: false,
+        underline: false,
+        textColor: "default",
+        placeholder: null,
         align: "left",
       },
     ],
@@ -77,6 +82,10 @@ describe("slides — modèle de l'éditeur", () => {
             text: "",
             fontSize: 24,
             bold: false,
+            italic: false,
+            underline: false,
+            textColor: "default",
+            placeholder: null,
             align: "left",
           },
         ],
@@ -114,6 +123,10 @@ describe("slides — modèle de l'éditeur", () => {
           text: "Bonjour",
           fontSize: 24,
           bold: false,
+          italic: false,
+          underline: false,
+          textColor: "default",
+          placeholder: null,
           align: "left",
         },
       ],
@@ -127,6 +140,43 @@ describe("slides — modèle de l'éditeur", () => {
     expect(copy.elements[0]?.key).not.toBe(source.elements[0]?.key);
     expect(copy.elements[0]?.text).toBe("Bonjour");
     // La source n'est pas modifiée par le clonage.
+    expect(source.elements[0]?.id).toBe("el-1");
+  });
+
+  it("prépare une diapositive rétablie sans identifiant serveur périmé", () => {
+    const source: EditorSlide = {
+      id: "slide-1",
+      key: "key-a",
+      title: "Intro",
+      notes: "",
+      elements: [
+        {
+          key: "key-el",
+          id: "el-1",
+          kind: "shape",
+          x: 5,
+          y: 5,
+          w: 20,
+          h: 10,
+          text: "",
+          fontSize: 24,
+          bold: false,
+          italic: false,
+          underline: false,
+          textColor: "default",
+          placeholder: null,
+          align: "left",
+        },
+      ],
+    };
+    const rebound = rebindSlide(source);
+    expect(rebound.id).toBeUndefined();
+    expect(rebound.elements[0]?.id).toBeUndefined();
+    // Les clés React sont conservées : aucun remontage à l'annulation.
+    expect(rebound.key).toBe(source.key);
+    expect(rebound.elements[0]?.key).toBe("key-el");
+    // La source reste intacte.
+    expect(source.id).toBe("slide-1");
     expect(source.elements[0]?.id).toBe("el-1");
   });
 

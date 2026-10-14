@@ -13,6 +13,8 @@ import {
   uuid,
 } from "drizzle-orm/pg-core";
 import { DEFAULT_SLIDE_ASPECT, type SlideAspectId } from "./slide-aspect.ts";
+import type { SlidePlaceholderRole } from "./slide-layouts.ts";
+import type { SlideTextColor } from "./slide-text.ts";
 import { DEFAULT_SLIDE_THEME, type SlideThemeId } from "./slide-theme.ts";
 
 /**
@@ -80,6 +82,18 @@ export const slideElements = pgTable(
     mediaKey: text("media_key"),
     fontSize: integer("font_size").notNull().default(24),
     bold: boolean("bold").notNull().default(false),
+    /** Italique du texte. */
+    italic: boolean("italic").notNull().default(false),
+    /** Soulignement du texte. */
+    underline: boolean("underline").notNull().default(false),
+    /** Couleur sémantique du texte (« default » = héritée du thème). */
+    textColor: text("text_color").$type<SlideTextColor>().notNull().default("default"),
+    /**
+     * Rôle de zone d'une mise en page (« title », « subtitle », « body ») :
+     * une zone vide affiche son invitation et participe aux mises en page.
+     * Null pour un élément libre.
+     */
+    placeholder: text("placeholder").$type<SlidePlaceholderRole | null>(),
     align: text("align").notNull().default("left"),
   },
   (table) => [index("slide_elements_slide_idx").on(table.slideId)],

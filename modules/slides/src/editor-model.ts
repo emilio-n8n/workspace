@@ -85,6 +85,21 @@ export function cloneSlide(slide: EditorSlide, title: string): EditorSlide {
   };
 }
 
+/**
+ * Copie d'une diapositive privée de ses identifiants serveur, clés React
+ * conservées. Sert au rétablissement après suppression : les lignes ayant
+ * disparu côté serveur, des identifiants morts seraient sinon ignorés à
+ * l'insertion — et un élément garderait une clé périmée, réinsérée (donc
+ * dupliquée) à chaque sauvegarde.
+ */
+export function rebindSlide(slide: EditorSlide): EditorSlide {
+  return {
+    ...slide,
+    id: undefined,
+    elements: slide.elements.map((element) => ({ ...element, id: undefined })),
+  };
+}
+
 /** Titre affiché d'une diapositive (« Diapositive 3 » à défaut de titre). */
 export function slideTitle(slide: EditorSlide, index: number): string {
   const trimmed = slide.title.trim();
