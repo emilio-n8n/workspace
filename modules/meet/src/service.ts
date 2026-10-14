@@ -3,8 +3,10 @@ import { recordAudit } from "@workspace/audit";
 import { getServerEnv } from "@workspace/config";
 import { schema as core, getDb } from "@workspace/database";
 import type { Actor } from "@workspace/permissions";
-import { and, desc, eq, sql } from "drizzle-orm";
-import { meetLobby, meetRooms } from "./schema.ts";
+import { and, asc, desc, eq, gt, isNull, sql } from "drizzle-orm";
+import { validateChatBody } from "./chat.ts";
+import { canModerate, REMOVED_MESSAGE } from "./participants.ts";
+import { type MeetRole, meetLobby, meetMembers, meetMessages, meetRooms } from "./schema.ts";
 
 export type MeetErrorCode = "not_found" | "forbidden" | "validation";
 
@@ -43,6 +45,54 @@ export type LobbyStatusView = {
   state: LobbyStateView;
   /** Nombre de personnes en attente d'admission. */
   waiting: number;
+  /** L'acteur a été retiré de la réunion par l'organisateur. */
+  removed: boolean;
+};
+
+/** Une personne dans la salle, avec son rôle et son état de modération. */
+export type ParticipantView = {
+  userId: string;
+  name: string;
+  role: MeetRole;
+  self: boolean;
+  /** Micro coupé par l'organisateur (la personne ne peut pas le rétablir). */
+  mutedByHost: boolean;
+  removed: boolean;
+  handRaised: boolean;
+  /** Horodatage de levée de main (`null` si la main est baissée). */
+  handRaisedAt: string | null;
+};
+
+/** Effectif de la salle et droits de la personne qui regarde. */
+export type RosterView = {
+  participants: ParticipantView[];
+  /** Nombre de personnes présentes (retirées et sorties exclues). */
+  count: number;
+  /** La personne connectée peut modérer la salle. */
+  canModerate: boolean;
+  /** Mains levées, dans l'ordre de levée. */
+  hands: ParticipantView[];
+  /**
+   * Ligne de la personne qui regarde, même si elle a été retirée — c'est ainsi
+   * qu'elle apprend qu'elle doit quitter la salle. `null` si jamais entrée.
+   */
+  self: ParticipantView | null;
+};
+
+/** Un message du chat de réunion (portée salle, jamais audité). */
+export type ChatMessageView = {
+  id: string;
+  userId: string;
+  userName: string;
+  body: string;
+  createdAt: string;
+  own: boolean;
+};
+
+/** Historique du chat et compteur de non lus propre à la personne connectée. */
+export type ChatHistoryView = {
+  messages: ChatMessageView[];
+  unread: number;
 };
 
 export type LobbyEntryView = {
@@ -153,6 +203,430 @@ async function requireRoom(actor: Actor, slug: string) {
   return row;
 }
 
+/* ------------------------------------------------------------------ *
+ * Présence et modération des participants
+ * ------------------------------------------------------------------ */
+
+async function userNameOf(userId: string): Promise<string> {
+  const [row] = await db()
+    .select({ name: core.user.name })
+    .from(core.user)
+    .where(eq(core.user.id, userId))
+    .limit(1);
+  return row?.name ?? "Participant";
+}
+
+function toParticipantView(
+  row: typeof meetMembers.$inferSelect,
+  viewerId: string,
+  name: string,
+): ParticipantView {
+  return {
+    userId: row.userId,
+    name,
+    role: row.role,
+    self: row.userId === viewerId,
+    mutedByHost: row.mutedAt !== null,
+    removed: row.removedAt !== null,
+    handRaised: row.handRaisedAt !== null,
+    handRaisedAt: row.handRaisedAt === null ? null : row.handRaisedAt.toISOString(),
+  };
+}
+
+/** Ligne de présence de l'acteur, absente = jamais entré. */
+async function findMember(roomId: string, userId: string) {
+  const [row] = await db()
+    .select()
+    .from(meetMembers)
+    .where(and(eq(meetMembers.roomId, roomId), eq(meetMembers.userId, userId)))
+    .limit(1);
+  return row ?? null;
+}
+
+async function requireModerator(actor: Actor, room: typeof meetRooms.$inferSelect): Promise<void> {
+  if (room.createdBy === actor.userId) return;
+  const row = await findMember(room.id, actor.userId);
+  if (
+    row &&
+    canModerate({
+      isCreator: false,
+      role: row.role,
+      removed: row.removedAt !== null,
+      left: row.leftAt !== null,
+    })
+  ) {
+    return;
+  }
+  throw new MeetError("forbidden", "Seul l'organisateur peut admettre les participants.");
+}
+
+/**
+ * Entrée dans la salle : enregistre la présence (ou la relance après un
+ * raccrochage). Appelée à l'émission du jeton, donc une seule fois par entrée.
+ */
+export async function joinRoom(actor: Actor, slug: string): Promise<void> {
+  const room = await requireRoom(actor, slug);
+  const existing = await findMember(room.id, actor.userId);
+  const role: MeetRole = room.createdBy === actor.userId ? "host" : "participant";
+
+  if (existing) {
+    // Retour après un raccrochage : le rôle attribué est conservé, seul le
+    // créateur est remis « hôte » (son rôle lui revient de droit).
+    const nextRole: MeetRole = room.createdBy === actor.userId ? "host" : existing.role;
+    await db()
+      .update(meetMembers)
+      .set({ joinedAt: sql`now()`, leftAt: null, role: nextRole })
+      .where(eq(meetMembers.id, existing.id));
+    return;
+  }
+  await db().insert(meetMembers).values({ roomId: room.id, userId: actor.userId, role });
+}
+
+/** Sortie de la salle : la personne arrête de compter dans l'effectif. */
+export async function leaveRoom(actor: Actor, slug: string): Promise<void> {
+  const room = await requireRoom(actor, slug);
+  const existing = await findMember(room.id, actor.userId);
+  if (!existing) return;
+  await db()
+    .update(meetMembers)
+    .set({ leftAt: sql`now()`, handRaisedAt: null })
+    .where(eq(meetMembers.id, existing.id));
+}
+
+/**
+ * Effectif de la salle : rôles, micros coupés, mains levées. Les personnes
+ * retirées restent listées pour l'organisateur (il doit voir son action) mais
+ * ne comptent pas dans l'effectif.
+ */
+export async function listParticipants(actor: Actor, slug: string): Promise<RosterView> {
+  const room = await requireRoom(actor, slug);
+  const rows = await db()
+    .select({ member: meetMembers, name: core.user.name })
+    .from(meetMembers)
+    .innerJoin(core.user, eq(core.user.id, meetMembers.userId))
+    .where(eq(meetMembers.roomId, room.id))
+    .orderBy(asc(meetMembers.joinedAt))
+    .limit(200);
+
+  const viewer = rows.find((row) => row.member.userId === actor.userId)?.member ?? null;
+  const moderate = canModerate({
+    isCreator: room.createdBy === actor.userId,
+    role: viewer?.role ?? "participant",
+    removed: viewer?.removedAt !== null,
+    left: viewer?.leftAt !== null,
+  });
+
+  const participants = rows
+    .filter((row) => row.member.removedAt === null && row.member.leftAt === null)
+    .map((row) => toParticipantView(row.member, actor.userId, row.name ?? "Participant"));
+  // Les personnes retirées n'apparaissent pas dans la galerie ; l'organisateur
+  // garde la trace de son action dans le journal d'audit.
+
+  const selfRow = rows.find((row) => row.member.userId === actor.userId) ?? null;
+
+  return {
+    participants,
+    count: participants.length,
+    canModerate: moderate,
+    hands: participants.filter((state) => state.handRaised),
+    self: selfRow
+      ? toParticipantView(selfRow.member, actor.userId, selfRow.name ?? "Participant")
+      : null,
+  };
+}
+
+async function requireTarget(
+  actor: Actor,
+  room: typeof meetRooms.$inferSelect,
+  userId: string,
+): Promise<typeof meetMembers.$inferSelect> {
+  await requireModerator(actor, room);
+  await requireOrgMember(userId, room.orgId);
+  if (userId === actor.userId) {
+    throw new MeetError("validation", "Utilisez vos propres commandes pour vous modifier.");
+  }
+  const row = await findMember(room.id, userId);
+  if (!row) throw new MeetError("not_found", "Cette personne n'est pas dans la salle.");
+  if (row.role === "host") {
+    throw new MeetError("forbidden", "L'organisateur de la salle ne peut pas être modéré.");
+  }
+  return row;
+}
+
+/** Coupe ou rétablit le micro d'un participant (organisateur ou animateur). */
+export async function setParticipantMuted(
+  actor: Actor,
+  slug: string,
+  userId: string,
+  muted: boolean,
+): Promise<ParticipantView> {
+  const room = await requireRoom(actor, slug);
+  const row = await requireTarget(actor, room, userId);
+
+  const [updated] = await db()
+    .update(meetMembers)
+    .set({
+      mutedAt: muted ? sql`now()` : null,
+      mutedBy: muted ? actor.userId : null,
+    })
+    .where(eq(meetMembers.id, row.id))
+    .returning();
+  if (!updated) throw new MeetError("validation", "Modification du micro impossible.");
+
+  await recordAudit({
+    orgId: actor.orgId,
+    actorUserId: actor.userId,
+    action: muted ? "meet.member.mute" : "meet.member.unmute",
+    resourceType: "room",
+    resourceId: room.slug,
+    result: "success",
+    metadata: { targetUserId: userId },
+  });
+
+  return toParticipantView(updated, actor.userId, await userNameOf(userId));
+}
+
+/** Retire une personne de la réunion (elle est refusée à l'entrée ensuite). */
+export async function removeParticipant(
+  actor: Actor,
+  slug: string,
+  userId: string,
+): Promise<ParticipantView> {
+  const room = await requireRoom(actor, slug);
+  const row = await requireTarget(actor, room, userId);
+
+  const [updated] = await db()
+    .update(meetMembers)
+    .set({ removedAt: sql`now()`, removedBy: actor.userId, leftAt: sql`now()`, handRaisedAt: null })
+    .where(eq(meetMembers.id, row.id))
+    .returning();
+  if (!updated) throw new MeetError("validation", "Retrait du participant impossible.");
+
+  // La personne ne doit pas revenir par la salle d'attente.
+  await db()
+    .delete(meetLobby)
+    .where(and(eq(meetLobby.roomId, room.id), eq(meetLobby.userId, userId)));
+
+  await recordAudit({
+    orgId: actor.orgId,
+    actorUserId: actor.userId,
+    action: "meet.member.remove",
+    resourceType: "room",
+    resourceId: room.slug,
+    result: "success",
+    metadata: { targetUserId: userId },
+  });
+
+  return toParticipantView(updated, actor.userId, await userNameOf(userId));
+}
+
+/**
+ * Nomme un animateur (ou le rétrograde) — réservé au créateur de la salle :
+ * donner ce droit à un animateur créerait une escalade de privilèges.
+ */
+export async function setParticipantRole(
+  actor: Actor,
+  slug: string,
+  userId: string,
+  role: "moderator" | "participant",
+): Promise<ParticipantView> {
+  const room = await requireRoom(actor, slug);
+  if (room.createdBy !== actor.userId) {
+    throw new MeetError("forbidden", "Seul l'organisateur nomme les animateurs.");
+  }
+  await requireOrgMember(userId, room.orgId);
+  if (userId === actor.userId) {
+    throw new MeetError("validation", "Vous êtes déjà l'organisateur de la salle.");
+  }
+  const row = await findMember(room.id, userId);
+  if (!row) throw new MeetError("not_found", "Cette personne n'est pas dans la salle.");
+
+  const [updated] = await db()
+    .update(meetMembers)
+    .set({ role })
+    .where(eq(meetMembers.id, row.id))
+    .returning();
+  if (!updated) throw new MeetError("validation", "Modification du rôle impossible.");
+
+  await recordAudit({
+    orgId: actor.orgId,
+    actorUserId: actor.userId,
+    action: role === "moderator" ? "meet.member.promote" : "meet.member.demote",
+    resourceType: "room",
+    resourceId: room.slug,
+    result: "success",
+    metadata: { targetUserId: userId },
+  });
+
+  return toParticipantView(updated, actor.userId, await userNameOf(userId));
+}
+
+/* -------------------------------- mains levées -------------------------------- */
+
+/** Lève ou baisse sa propre main (une seule levée par personne à la fois). */
+export async function setHandRaised(
+  actor: Actor,
+  slug: string,
+  raised: boolean,
+): Promise<ParticipantView> {
+  const room = await requireRoom(actor, slug);
+  const existing = await findMember(room.id, actor.userId);
+  if (!existing) {
+    throw new MeetError("not_found", "Rejoignez la salle avant de lever la main.");
+  }
+
+  const [updated] = await db()
+    .update(meetMembers)
+    .set({ handRaisedAt: raised ? sql`now()` : null })
+    .where(eq(meetMembers.id, existing.id))
+    .returning();
+  if (!updated) throw new MeetError("validation", "Modification de la main levée impossible.");
+
+  return toParticipantView(updated, actor.userId, await userNameOf(actor.userId));
+}
+
+/** Mains levées dans l'ordre de levée (visible par tout le monde). */
+export async function listRaisedHands(actor: Actor, slug: string): Promise<ParticipantView[]> {
+  const room = await requireRoom(actor, slug);
+  const rows = await db()
+    .select({ member: meetMembers, name: core.user.name })
+    .from(meetMembers)
+    .innerJoin(core.user, eq(core.user.id, meetMembers.userId))
+    .where(
+      and(
+        eq(meetMembers.roomId, room.id),
+        isNull(meetMembers.leftAt),
+        isNull(meetMembers.removedAt),
+      ),
+    )
+    .orderBy(asc(meetMembers.handRaisedAt))
+    .limit(200);
+
+  return rows
+    .map((row) => toParticipantView(row.member, actor.userId, row.name ?? "Participant"))
+    .filter((state) => state.handRaised);
+}
+
+/**
+ * Baisse la main d'une personne (modération) — baisser la sienne revient à
+ * `setHandRaised(false)`.
+ */
+export async function lowerParticipantHand(
+  actor: Actor,
+  slug: string,
+  userId: string,
+): Promise<ParticipantView> {
+  const room = await requireRoom(actor, slug);
+  if (userId === actor.userId) return setHandRaised(actor, slug, false);
+  const row = await requireTarget(actor, room, userId);
+
+  const [updated] = await db()
+    .update(meetMembers)
+    .set({ handRaisedAt: null })
+    .where(eq(meetMembers.id, row.id))
+    .returning();
+  if (!updated) throw new MeetError("validation", "Modification de la main levée impossible.");
+
+  return toParticipantView(updated, actor.userId, await userNameOf(userId));
+}
+
+/* ------------------------------------------------------------------ *
+ * Chat de réunion
+ * ------------------------------------------------------------------ */
+
+/** Envoie un message dans la salle (portée salle, jamais audité). */
+export async function sendChatMessage(
+  actor: Actor,
+  slug: string,
+  body: string,
+): Promise<ChatMessageView> {
+  const room = await requireRoom(actor, slug);
+  const validation = validateChatBody(body);
+  if (!validation.ok) throw new MeetError("validation", validation.error);
+
+  const member = await findMember(room.id, actor.userId);
+  if (!member || member.removedAt !== null) {
+    throw new MeetError("forbidden", "Rejoignez la salle pour discuter.");
+  }
+
+  const [created] = await db()
+    .insert(meetMessages)
+    .values({ roomId: room.id, userId: actor.userId, body: validation.body })
+    .returning();
+  if (!created) throw new MeetError("validation", "Envoi du message impossible.");
+
+  return {
+    id: created.id,
+    userId: created.userId,
+    userName: await userNameOf(actor.userId),
+    body: created.body,
+    createdAt: created.createdAt.toISOString(),
+    own: true,
+  };
+}
+
+/** Historique du chat et compte des messages non lus de la personne connectée. */
+export async function listChatMessages(actor: Actor, slug: string): Promise<ChatHistoryView> {
+  const room = await requireRoom(actor, slug);
+  const viewer = await findMember(room.id, actor.userId);
+
+  const rows = await db()
+    .select({ message: meetMessages, name: core.user.name })
+    .from(meetMessages)
+    .innerJoin(core.user, eq(core.user.id, meetMessages.userId))
+    .where(
+      and(
+        eq(meetMessages.roomId, room.id),
+        gt(meetMessages.createdAt, sql`now() - interval '24 hours'`),
+      ),
+    )
+    .orderBy(asc(meetMessages.createdAt))
+    .limit(200);
+
+  const messages: ChatMessageView[] = rows.map((row) => ({
+    id: row.message.id,
+    userId: row.message.userId,
+    userName: row.name ?? "Participant",
+    body: row.message.body,
+    createdAt: row.message.createdAt.toISOString(),
+    own: row.message.userId === actor.userId,
+  }));
+
+  const lastReadAt = viewer?.chatReadAt ? viewer.chatReadAt.toISOString() : null;
+  const unread =
+    lastReadAt === null
+      ? messages.filter((message) => !message.own).length
+      : messages.filter(
+          (message) => !message.own && Date.parse(message.createdAt) > Date.parse(lastReadAt),
+        ).length;
+
+  return { messages, unread };
+}
+
+/** Marque le chat comme lu (remet le compteur de non lus à zéro). */
+export async function markChatRead(actor: Actor, slug: string): Promise<{ unread: number }> {
+  const room = await requireRoom(actor, slug);
+  const existing = await findMember(room.id, actor.userId);
+  if (!existing) return { unread: 0 };
+
+  await db()
+    .update(meetMembers)
+    .set({ chatReadAt: sql`now()` })
+    .where(eq(meetMembers.id, existing.id));
+
+  const after = await db()
+    .select({ total: sql<number>`count(*)::int` })
+    .from(meetMessages)
+    .where(
+      and(
+        eq(meetMessages.roomId, room.id),
+        gt(meetMessages.userId, actor.userId),
+        gt(meetMessages.createdAt, sql`now()`),
+      ),
+    );
+  return { unread: after[0]?.total ?? 0 };
+}
+
 export async function getRoom(actor: Actor, slug: string): Promise<RoomView> {
   const row = await requireRoom(actor, slug);
   return toRoomView(row, actor);
@@ -165,9 +639,7 @@ export async function setRoomAdmission(
   required: boolean,
 ): Promise<RoomView> {
   const row = await requireRoom(actor, slug);
-  if (row.createdBy !== actor.userId) {
-    throw new MeetError("forbidden", "Seul l'organisateur peut modifier la salle d'attente.");
-  }
+  await requireModerator(actor, row);
 
   // Entrée libre : les personnes déjà en attente sont admises d'office.
   if (!required) {
@@ -244,8 +716,10 @@ async function lobbyStateFor(
 ): Promise<LobbyStatusView> {
   const waiting = await countWaiting(room.id);
   const host = room.createdBy === actor.userId;
+  const member = await findMember(room.id, actor.userId);
+  const removed = member !== null && member.removedAt !== null;
   if (!room.requireAdmission || host) {
-    return { required: room.requireAdmission, host, state: "admitted", waiting };
+    return { required: room.requireAdmission, host, state: "admitted", waiting, removed };
   }
 
   const [entry] = await db()
@@ -254,7 +728,13 @@ async function lobbyStateFor(
     .where(and(eq(meetLobby.roomId, room.id), eq(meetLobby.userId, actor.userId)))
     .limit(1);
 
-  return { required: room.requireAdmission, host, state: entry?.state ?? "none", waiting };
+  return {
+    required: room.requireAdmission,
+    host,
+    state: removed ? "denied" : (entry?.state ?? "none"),
+    waiting,
+    removed,
+  };
 }
 
 export async function getLobbyStatus(actor: Actor, slug: string): Promise<LobbyStatusView> {
@@ -272,9 +752,7 @@ function toEntryView(row: typeof meetLobby.$inferSelect, userName: string): Lobb
 }
 
 async function requireHost(actor: Actor, room: typeof meetRooms.$inferSelect): Promise<void> {
-  if (room.createdBy !== actor.userId) {
-    throw new MeetError("forbidden", "Seul l'organisateur peut admettre les participants.");
-  }
+  await requireModerator(actor, room);
 }
 
 async function requireOrgMember(userId: string, orgId: string): Promise<void> {
@@ -422,10 +900,19 @@ export async function withdrawAdmission(actor: Actor, slug: string): Promise<voi
 /** Jeton de connexion : `configured: false` si aucun serveur média (ADR-0011). */
 export async function getRoomToken(actor: Actor, slug: string): Promise<RoomToken> {
   const room = await requireRoom(actor, slug);
+
+  // Retrait de la réunion : refusé avant toute autre vérification, serveur
+  // média configuré ou non — la sanction ne dépend pas de l'infrastructure.
+  const existing = await findMember(room.id, actor.userId);
+  if (existing?.removedAt) {
+    throw new MeetError("forbidden", REMOVED_MESSAGE);
+  }
+
   const env = getServerEnv();
   if (!env.LIVEKIT_URL || !env.LIVEKIT_API_KEY || !env.LIVEKIT_API_SECRET) {
     return { configured: false };
   }
+
   if (room.requireAdmission && room.createdBy !== actor.userId) {
     const status = await lobbyStateFor(room, actor);
     if (status.state !== "admitted") {
@@ -435,6 +922,9 @@ export async function getRoomToken(actor: Actor, slug: string): Promise<RoomToke
       );
     }
   }
+
+  // Présence effective : le jeton n'est émis qu'une fois par entrée.
+  await joinRoom(actor, slug);
 
   const [user] = await db()
     .select({ name: core.user.name })

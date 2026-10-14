@@ -6,6 +6,7 @@ import {
   type ParticipantState,
   participantLabel,
 } from "../participant-states.ts";
+import { raisedHandLabel } from "../participants.ts";
 
 /** Une vignette de la galerie : un participant, ses pistes, ses états. */
 export type MeetingTileData = ParticipantState & {
@@ -30,8 +31,15 @@ function AudioTrack({ track }: { track: MediaStreamTrack }) {
 /**
  * Vignette d'un participant — vidéo si la caméra est ouverte, sinon un cartouche
  * avec le nom et les états « micro coupé » / « caméra coupée » bien visibles.
+ * La main levée est signalée à tout le monde, au-dessus de la vignette.
  */
-export function MeetingTile({ tile }: { tile: MeetingTileData }) {
+export function MeetingTile({
+  tile,
+  handRaised = false,
+}: {
+  tile: MeetingTileData;
+  handRaised?: boolean;
+}) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const live = tile.video !== undefined && tile.cameraEnabled;
 
@@ -64,6 +72,15 @@ export function MeetingTile({ tile }: { tile: MeetingTileData }) {
         </div>
       )}
 
+      {handRaised ? (
+        <span
+          className="absolute right-2 top-2 rounded-md bg-rail/80 px-2 py-0.5 text-xs font-medium text-rail-foreground"
+          aria-hidden
+        >
+          {raisedHandLabel()}
+        </span>
+      ) : null}
+
       <div className="absolute inset-x-2 bottom-2 flex flex-wrap items-center gap-1">
         <span className="rounded-md bg-rail/80 px-2 py-0.5 text-xs text-rail-foreground">
           {tile.local ? "Vous" : tile.name}
@@ -81,7 +98,10 @@ export function MeetingTile({ tile }: { tile: MeetingTileData }) {
       </div>
 
       {/* Résumé identique pour tout le monde, lu en plus du visuel. */}
-      <p className="sr-only">{participantLabel(tile)}</p>
+      <p className="sr-only">
+        {participantLabel(tile)}
+        {handRaised ? `, ${raisedHandLabel()}` : ""}
+      </p>
 
       {tile.audio && !tile.local ? <AudioTrack track={tile.audio} /> : null}
     </div>

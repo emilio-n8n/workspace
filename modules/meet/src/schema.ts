@@ -67,3 +67,73 @@ export const meetLobby = pgTable(
 
 export type MeetRoomRow = typeof meetRooms.$inferSelect;
 export type MeetLobbyRow = typeof meetLobby.$inferSelect;
+
+/** Rôles d'une personne dans une salle : créateur, animateur, participant. */
+export const MEET_ROLES = ["host", "moderator", "participant"] as const;
+export type MeetRole = (typeof MEET_ROLES)[number];
+
+/**
+ * Présence et modération dans une salle — une ligne par personne et par salle,
+ * écrite à l'émission du jeton (entrée effective) et supprimée en cascade avec
+ * la salle.
+ *
+ * Elle porte l'état de modération (rôle, micro coupé par l'organisateur, retrait
+ * de la réunion, main levée) ainsi que le repère de lecture du chat. Le média ne
+ * passe pas par cette table : elle ne fait que rendre visibles des décisions que
+ * les clients appliquent ensuite.
+ */
+export const meetMembers = pgTable(
+  "meet_members",
+  {
+    id: uuid("id").primaryKey().default(sql`uuidv7()`),
+    roomId: uuid("room_id")
+      .notNull()
+      .references(() => meetRooms.id, { onDelete: "cascade" }),
+    userId: text("user_id")
+      .notNull()
+      .references(() => core.user.id, { onDelete: "cascade" }),
+    role: text("role").$type<MeetRole>().notNull().default("participant"),
+    joinedAt: timestamp("joined_at", { withTimezone: true }).defaultNow().notNull(),
+    /** Sortie de la salle (raccroché) — la personne peut revenir. */
+    leftAt: timestamp("left_at", { withTimezone: true }),
+    /** Micro coupé par l'organisateur : la personne ne peut plus le rallumer. */
+    mutedAt: timestamp("muted_at", { withTimezone: true }),
+    mutedBy: text("muted_by").references(() => core.user.id, { onDelete: "set null" }),
+    /** Retrait de la réunion par l'organisateur — l'entrée est refusée ensuite. */
+    removedAt: timestamp("removed_at", { withTimezone: true }),
+    removedBy: text("removed_by").references(() => core.user.id, { onDelete: "set null" }),
+    /** Main levée : l'horodatage donne la position dans la file. */
+    handRaisedAt: timestamp("hand_raised_at", { withTimezone: true }),
+    /** Dernière lecture du chat (compte des messages non lus). */
+    chatReadAt: timestamp("chat_read_at", { withTimezone: true }),
+  },
+  (table) => [
+    uniqueIndex("meet_members_room_user_uidx").on(table.roomId, table.userId),
+    index("meet_members_room_role_idx").on(table.roomId, table.role),
+    index("meet_members_room_hand_idx").on(table.roomId, table.handRaisedAt),
+  ],
+);
+
+/**
+ * Messages du chat de réunion — portée salle uniquement, jamais audités (le
+ * volume rendrait le journal d'audit inexploitable). Supprimés en cascade avec
+ * la salle.
+ */
+export const meetMessages = pgTable(
+  "meet_messages",
+  {
+    id: uuid("id").primaryKey().default(sql`uuidv7()`),
+    roomId: uuid("room_id")
+      .notNull()
+      .references(() => meetRooms.id, { onDelete: "cascade" }),
+    userId: text("user_id")
+      .notNull()
+      .references(() => core.user.id, { onDelete: "cascade" }),
+    body: text("body").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [index("meet_messages_room_created_idx").on(table.roomId, table.createdAt)],
+);
+
+export type MeetMemberRow = typeof meetMembers.$inferSelect;
+export type MeetMessageRow = typeof meetMessages.$inferSelect;

@@ -39,3 +39,7 @@ périphériques sont actionnables ; la salle d'attente bloque puis admet.
 
 ## Hors périmètre
 Enregistrement, transcription, effets, invités externes.
+
+## Vague « participants et chat » (14 oct. 2026)
+- **Panneau des participants** : liste en direct, rôle (hôte/invité), état micro/caméra, mute dispositif, admission depuis la salle d'attente (`participants.ts` + `participants-panel.tsx`) — logique pure testée.
+- **Chat de réunion** : messages horodatés, longueur bornée, envoi optimiste, nettoyage à la fermeture (`chat.ts` + `chat-panel.tsx`).
