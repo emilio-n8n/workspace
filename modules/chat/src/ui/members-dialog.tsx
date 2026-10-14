@@ -1,9 +1,8 @@
 import { Badge, Button, Dialog } from "@workspace/ui";
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import {
   addChannelMemberFn,
   type ChannelMemberView,
-  listChannelMembersFn,
   listOrgMembersFn,
   type OrgMemberView,
 } from "../server.ts";
@@ -17,7 +16,12 @@ export type MembersDialogProps = {
   privateChannel: boolean;
   /** Vrai si l'acteur peut inviter (créateur du canal, canal non archivé). */
   canInvite: boolean;
-  /** Appelé après une invitation : la barre latérale doit se rafraîchir. */
+  /** Membres de la conversation, fournis par la vue (source unique). */
+  members: readonly ChannelMemberView[];
+  loading: boolean;
+  error: string | null;
+  onRetry: () => void;
+  /** Appelé après une invitation : la liste et la barre latérale se rafraîchissent. */
   onInvited: () => void;
 };
 
@@ -34,36 +38,19 @@ export function MembersDialog({
   channelName,
   privateChannel,
   canInvite,
+  members,
+  loading,
+  error,
+  onRetry,
   onInvited,
 }: MembersDialogProps) {
-  const [members, setMembers] = useState<ChannelMemberView[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [orgMembers, setOrgMembers] = useState<OrgMemberView[]>([]);
   const [invitee, setInvitee] = useState("");
   const [inviting, setInviting] = useState(false);
+  const [inviteError, setInviteError] = useState<string | null>(null);
 
-  const load = useCallback(async () => {
-    if (!channelId) return;
-    setLoading(true);
-    setError(null);
-    try {
-      setMembers(await listChannelMembersFn({ data: { channelId } }));
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Chargement des membres impossible.");
-    } finally {
-      setLoading(false);
-    }
-  }, [channelId]);
-
-  // Chargement à l'ouverture et à chaque changement de conversation : la liste
-  // ne bouge pas toute seule, inutile de la réinterroger.
-  useEffect(() => {
-    if (!open) return;
-    setInvitee("");
-    void load();
-  }, [open, load]);
-
+  // L'annuaire de l'organisation n'est utile qu'au formulaire d'invitation : il
+  // n'est chargé que si le panneau est ouvert par une personne qui peut inviter.
   useEffect(() => {
     if (!open || !canInvite) return;
     let cancelled = false;
@@ -72,7 +59,7 @@ export function MembersDialog({
         if (!cancelled) setOrgMembers(rows);
       })
       .catch(() => {
-        // Formulaire d'invitation masqué : pas de bruit pour l'utilisateur.
+        // Formulaire masqué : pas de bruit pour l'utilisateur.
         if (!cancelled) setOrgMembers([]);
       });
     return () => {
@@ -80,18 +67,23 @@ export function MembersDialog({
     };
   }, [open, canInvite]);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: remise à zéro à chaque ouverture ou changement de canal.
+  useEffect(() => {
+    setInvitee("");
+    setInviteError(null);
+  }, [open, channelId]);
+
   async function onInvite(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!channelId || invitee.length === 0) return;
     setInviting(true);
+    setInviteError(null);
     try {
       await addChannelMemberFn({ data: { channelId, userId: invitee } });
       setInvitee("");
       onInvited();
-      // Relecture immédiate : l'effectif affiché suit l'invitation.
-      setMembers(await listChannelMembersFn({ data: { channelId } }));
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Invitation impossible.");
+      setInviteError(caught instanceof Error ? caught.message : "Invitation impossible.");
     } finally {
       setInviting(false);
     }
@@ -109,7 +101,7 @@ export function MembersDialog({
             {error}
           </p>
           <div>
-            <Button type="button" variant="ghost" onClick={() => void load()}>
+            <Button type="button" variant="ghost" onClick={onRetry}>
               Réessayer
             </Button>
           </div>
@@ -172,6 +164,12 @@ export function MembersDialog({
                 Inviter
               </Button>
             </form>
+          ) : null}
+
+          {inviteError ? (
+            <p role="alert" className="text-sm text-destructive">
+              {inviteError}
+            </p>
           ) : null}
         </div>
       )}

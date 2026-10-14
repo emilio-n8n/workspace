@@ -9,21 +9,26 @@ import {
   Toasts,
   useToasts,
 } from "@workspace/ui";
-import { type ChangeEvent, type FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type {
+  AttachmentToken,
+  ChannelMemberView,
+  ChannelView,
+  ChannelVisibility,
+} from "../server.ts";
 import {
-  type AttachmentToken,
   archiveChannelFn,
-  type ChannelView,
-  type ChannelVisibility,
   createChannelFn,
   getUnreadStateFn,
   type JoinableChannelView,
   joinChannelFn,
+  listChannelMembersFn,
   listChannelsFn,
   listJoinableChannelsFn,
   listMessagesFn,
   listOrgMembersFn,
   listPinsFn,
+  listTypingUsersFn,
   type MessageView,
   markReadFn,
   type OrgMemberView,
@@ -33,37 +38,32 @@ import {
   sendMessageFn,
   startDmFn,
   unpinMessageFn,
-  uploadChatAttachmentFn,
 } from "../server.ts";
+import { pruneTypingUsers, type TypingUser } from "../typing.ts";
 import { ChannelHeader } from "./channel-header.tsx";
 import { ChannelSidebar } from "./channel-sidebar.tsx";
+import { Composer } from "./composer.tsx";
 import { DiscoverDialog } from "./discover-dialog.tsx";
-import { fmtSize } from "./format.ts";
 import { MembersDialog } from "./members-dialog.tsx";
+import type { MentionCandidate } from "./mentions.ts";
 import { MessageList } from "./message-list.tsx";
 import { PinsDialog } from "./pins-dialog.tsx";
+import {
+  EMPTY_FILTERS,
+  formatResultAnnouncement,
+  hasActiveFilters,
+  type MatchRange,
+  matchRanges,
+  resultCounter,
+  type SearchFilters,
+  searchMessages,
+  stepIndex,
+} from "./search.ts";
+import { SearchBar } from "./search-bar.tsx";
+import { TypingIndicator } from "./typing-indicator.tsx";
 
-/** Bornes du compositeur, alignées sur le serveur : 5 fichiers de 10 Mo. */
-const COMPOSER_MAX_ATTACHMENTS = 5;
-const COMPOSER_MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
-
-/** Lit un fichier local en base64 (sans préfixe data:) pour le serveur. */
-function fileToBase64(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onerror = () => reject(new Error(`Lecture de « ${file.name} » impossible.`));
-    reader.onload = () => {
-      const result = typeof reader.result === "string" ? reader.result : "";
-      const comma = result.indexOf(",");
-      if (comma < 0) {
-        reject(new Error(`Lecture de « ${file.name} » impossible.`));
-        return;
-      }
-      resolve(result.slice(comma + 1));
-    };
-    reader.readAsDataURL(file);
-  });
-}
+/** Repli du flux SSE : interrogation des états éphémères toutes les 2,5 s. */
+const TYPING_POLL_MS = 2500;
 
 /** Lots d'un événement SSE `messages` : données JSON non fiables, jamais de throw. */
 function parseMessageRows(raw: string): MessageView[] {
@@ -75,39 +75,58 @@ function parseMessageRows(raw: string): MessageView[] {
   }
 }
 
+/** Lots d'un événement SSE `typing` : instantané des personnes en train d'écrire. */
+function parseTypingRows(raw: string): TypingUser[] {
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.flatMap((entry) => {
+      if (typeof entry !== "object" || entry === null) return [];
+      const row = entry as { userId?: unknown; name?: unknown; at?: unknown };
+      if (
+        typeof row.userId !== "string" ||
+        typeof row.name !== "string" ||
+        typeof row.at !== "number"
+      ) {
+        return [];
+      }
+      return [{ userId: row.userId, name: row.name, at: row.at }];
+    });
+  } catch {
+    return [];
+  }
+}
+
 /**
  * Chat — canaux d'organisation et discussions directes. Temps réel par
  * Server-Sent Events (`/api/chat/stream`) avec repli automatique sur
  * l'interrogation courte (2,5 s) si le flux échoue ; la liste des canaux reste
  * rafraîchie toutes les 5 s.
  *
- * Trois conforts structurent la lecture : le séparateur de messages non lus
- * (borne lue avant le marquage), les épingles (panneau dédié, épingle sur chaque
- * message) et la gestion des canaux (privés, archivage, membres visibles).
+ * Lecture : séparateur de non-lus, épingles, mentions en puces, recherche dans
+ * le canal. Écriture : compositeur à mentions autocomplétées et indicateur de
+ * frappe diffusé aux autres membres connectés.
  */
 export function ChatView() {
   const [channels, setChannels] = useState<ChannelView[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [messages, setMessages] = useState<MessageView[]>([]);
-  const [input, setInput] = useState("");
-  /** Jetons d'upload en attente de rattachement à l'envoi. */
-  const [attachments, setAttachments] = useState<AttachmentToken[]>([]);
-  const [uploading, setUploading] = useState(false);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
-  const fileInputRef = useRef<HTMLInputElement>(null);
   const [channelDialog, setChannelDialog] = useState(false);
   const [channelName, setChannelName] = useState("");
   const [channelVisibility, setChannelVisibility] = useState<ChannelVisibility>("public");
   const [dmDialog, setDmDialog] = useState(false);
   const [orgMembers, setOrgMembers] = useState<OrgMemberView[]>([]);
-  const [membersLoading, setMembersLoading] = useState(false);
-  const [membersError, setMembersError] = useState<string | null>(null);
+  /** Annuaire de l'organisation, pour le dialogue « Nouvelle discussion ». */
+  const [directoryLoading, setDirectoryLoading] = useState(false);
+  const [directoryError, setDirectoryError] = useState<string | null>(null);
   const { toasts, push, dismiss } = useToasts();
   const scrollRef = useRef<HTMLDivElement>(null);
   /** Transport temps réel : SSE tant qu'il fonctionne, sinon interrogation. */
   const [useSse, setUseSse] = useState(true);
   const previousChannelRef = useRef<string | null>(null);
+  const searchButtonRef = useRef<HTMLButtonElement>(null);
 
   // --- Séparateur de non-lus -------------------------------------------------
   /** Curseur de lecture au moment de l'ouverture : tout ce qui suit est nouveau. */
@@ -123,8 +142,19 @@ export function ChatView() {
   /** Identifiants des messages épinglés — marque sur la bulle. */
   const pinnedIds = new Set(pins.map((pin) => pin.messageId));
 
-  // --- Membres et découverte -------------------------------------------------
+  // --- Membres (panneau + autocomplétion des mentions) -----------------------
+  const [members, setMembers] = useState<ChannelMemberView[]>([]);
+  const [membersLoading, setMembersLoading] = useState(false);
+  const [membersError, setMembersError] = useState<string | null>(null);
   const [membersOpen, setMembersOpen] = useState(false);
+
+  /** Membres du canal, prêts pour l'autocomplétion des @mentions. */
+  const mentionCandidates = useMemo<MentionCandidate[]>(
+    () => members.map((member) => ({ id: member.id, name: member.name, email: member.email })),
+    [members],
+  );
+
+  // --- Découverte ------------------------------------------------------------
   const [discoverOpen, setDiscoverOpen] = useState(false);
   const [joinable, setJoinable] = useState<JoinableChannelView[]>([]);
   const [joinableLoading, setJoinableLoading] = useState(false);
@@ -133,12 +163,25 @@ export function ChatView() {
   // --- Archivage -------------------------------------------------------------
   const [archiveTarget, setArchiveTarget] = useState<ChannelView | null>(null);
 
-  /** Region aria-live : le dernier message reçu d'autrui, jamais les nôtres. */
+  // --- Indicateur de frappe --------------------------------------------------
+  const [typingUsers, setTypingUsers] = useState<TypingUser[]>([]);
+  /** Table vivante des signaux reçus : l'expiration y fait le ménage. */
+  const typingRef = useRef(new Map<string, TypingUser>());
+
+  // --- Recherche -------------------------------------------------------------
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [filters, setFilters] = useState<SearchFilters>(EMPTY_FILTERS);
+  /** Index global de la correspondance active (-1 = aucune). */
+  const [activeMatchIndex, setActiveMatchIndex] = useState(-1);
+
+  /** Région aria-live : nouveaux messages, mentions insérées, résultats. */
   const [announcement, setAnnouncement] = useState("");
   /** Dernier identifiant déjà annoncé — évite les répétitions au rendu. */
   const announcedIdRef = useRef<string | null>(null);
   /** Vrai une fois la liste initiale chargée : avant, rien à annoncer. */
   const warmRef = useRef(false);
+
+  const active = channels.find((channel) => channel.id === activeId) ?? null;
 
   const refreshChannels = useCallback(async () => {
     try {
@@ -170,6 +213,26 @@ export function ChatView() {
   }, []);
 
   /**
+   * Membres de la conversation — source unique du panneau Membres et de
+   * l'autocomplétion des mentions. Un échec est signalé par le panneau ; le
+   * compositeur se contente de ne plus suggérer (dégradation sûre).
+   */
+  const loadMembers = useCallback(async (channelId: string) => {
+    setMembersLoading(true);
+    try {
+      setMembers(await listChannelMembersFn({ data: { channelId } }));
+      setMembersError(null);
+    } catch (caught) {
+      setMembers([]);
+      setMembersError(
+        caught instanceof Error ? caught.message : "Chargement des membres impossible.",
+      );
+    } finally {
+      setMembersLoading(false);
+    }
+  }, []);
+
+  /**
    * Épingles de la conversation. `silent` sert aux relectures après une action :
    * l'erreur vient d'être signalée par un toast, inutile de basculer le panneau
    * en état d'erreur par-dessus.
@@ -193,14 +256,39 @@ export function ChatView() {
     }
   }, []);
 
+  /** Fusionne les signaux de frappe reçus dans la table vivante. */
+  const mergeTyping = useCallback((rows: readonly TypingUser[]) => {
+    if (rows.length === 0) return;
+    for (const row of rows) typingRef.current.set(row.userId, row);
+    setTypingUsers([...typingRef.current.values()]);
+  }, []);
+
+  /** Purge les signaux expirés puis publie l'état visible. */
+  const pruneTyping = useCallback(() => {
+    const fresh = pruneTypingUsers([...typingRef.current.values()], Date.now());
+    typingRef.current = new Map(fresh.map((user) => [user.userId, user]));
+    setTypingUsers(fresh);
+  }, []);
+
   useEffect(() => {
     if (!activeId) {
+      typingRef.current.clear();
+      setTypingUsers([]);
       setPins([]);
       setPinsError(null);
+      setMembers([]);
       return;
     }
     void loadPins(activeId, false);
-  }, [activeId, loadPins]);
+    void loadMembers(activeId);
+  }, [activeId, loadPins, loadMembers]);
+
+  useEffect(() => {
+    // Le balayage ne tourne que lorsqu'il y a quelque chose à expirer.
+    if (typingUsers.length === 0) return;
+    const timer = window.setInterval(pruneTyping, 1000);
+    return () => window.clearInterval(timer);
+  }, [typingUsers.length, pruneTyping]);
 
   useEffect(() => {
     if (!activeId) {
@@ -209,11 +297,14 @@ export function ChatView() {
       announcedIdRef.current = null;
       setMessages([]);
       setUnreadCutoff(null);
+      setActiveMatchIndex(-1);
       return;
     }
     // Nouvelle conversation : les annonces repartent de zéro (le premier
     // chargement ne doit rien énoncer, l'utilisateur vient d'arriver).
     warmRef.current = false;
+    typingRef.current.clear();
+    setTypingUsers([]);
     // Changement de canal : on retente SSE (le précédent a pu échouer).
     if (previousChannelRef.current !== activeId) {
       previousChannelRef.current = activeId;
@@ -226,6 +317,7 @@ export function ChatView() {
     let cancelled = false;
     let source: EventSource | null = null;
     let interval: ReturnType<typeof setInterval> | null = null;
+    let typingPoll: ReturnType<typeof setInterval> | null = null;
 
     const markReadNow = () => {
       void markReadFn({ data: { channelId: activeId } })
@@ -255,9 +347,15 @@ export function ChatView() {
       warmRef.current = true;
       markReadNow();
 
-      // Repli : sans SSE (navigateur ou flux en échec), interrogation courte.
+      // Repli : sans SSE (navigateur ou flux en échec), interrogation courte —
+      // l'indicateur de frappe est alors interrogé au même rythme.
       if (!useSse || typeof EventSource === "undefined") {
         interval = setInterval(() => void refreshMessages(activeId), 2500);
+        typingPoll = setInterval(() => {
+          void listTypingUsersFn({ data: { channelId: activeId } })
+            .then(mergeTyping)
+            .catch(() => undefined);
+        }, TYPING_POLL_MS);
         return;
       }
 
@@ -283,6 +381,9 @@ export function ChatView() {
         });
         if (document.visibilityState === "visible") markReadNow();
       });
+      nextSource.addEventListener("typing", (event) => {
+        mergeTyping(parseTypingRows((event as MessageEvent<string>).data));
+      });
       nextSource.onerror = () => {
         // Flux refusé ou coupé : on ferme et on repasse à l'interrogation ;
         // le prochain canal retentera SSE.
@@ -295,15 +396,9 @@ export function ChatView() {
       cancelled = true;
       source?.close();
       if (interval !== null) clearInterval(interval);
+      if (typingPoll !== null) clearInterval(typingPoll);
     };
-  }, [activeId, refreshChannels, refreshMessages, useSse]);
-
-  // Changement de conversation : un jeton téléversé ne suit jamais un autre
-  // canal — il est oublié (le blob reste, orphelin, nettoyé hors ligne).
-  // biome-ignore lint/correctness/useExhaustiveDependencies: remise à zéro à chaque changement de canal.
-  useEffect(() => {
-    setAttachments([]);
-  }, [activeId]);
+  }, [activeId, refreshChannels, refreshMessages, useSse, mergeTyping]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: défilement vers le bas à chaque nouveau message.
   useEffect(() => {
@@ -325,10 +420,96 @@ export function ChatView() {
     setAnnouncement(`Nouveau message de ${last.authorName} : ${last.body}`);
   }, [messages]);
 
-  async function onSend(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const body = input.trim();
-    if (body.length === 0 || !activeId) return;
+  // --- Recherche dans le canal courant ---------------------------------------
+
+  const searching = hasActiveFilters(filters);
+
+  /** Messages affichés : le filtre de recherche réduit le fil quand il est actif. */
+  const visibleMessages = useMemo(
+    () => (searching ? searchMessages(messages, filters) : messages),
+    [messages, filters, searching],
+  );
+
+  /** Correspondances par message et nombre total (compteur + navigation). */
+  const { searchRanges, totalMatches } = useMemo(() => {
+    if (!searching || filters.query.trim().length === 0) {
+      return { searchRanges: undefined, totalMatches: 0 };
+    }
+    const ranges = new Map<string, MatchRange[]>();
+    let total = 0;
+    for (const message of visibleMessages) {
+      const found = matchRanges(message.body, filters.query);
+      if (found.length === 0) continue;
+      ranges.set(message.id, found);
+      total += found.length;
+    }
+    return { searchRanges: ranges, totalMatches: total };
+  }, [searching, visibleMessages, filters.query]);
+
+  // Nouvelle recherche : le curseur de résultats repart du premier.
+  useEffect(() => {
+    setActiveMatchIndex(totalMatches > 0 ? 0 : -1);
+  }, [totalMatches]);
+
+  // Annonce du décompte de résultats (le focus reste dans le champ).
+  useEffect(() => {
+    if (!searching) return;
+    const author = filters.authorId
+      ? (members.find((member) => member.id === filters.authorId)?.name ?? null)
+      : null;
+    setAnnouncement(formatResultAnnouncement(totalMatches, filters.query.trim(), author));
+  }, [searching, totalMatches, filters, members]);
+
+  // Ouverture/fermeture de la recherche : le focus revient au bouton, mais
+  // jamais au premier rendu (il n'a jamais quitté le bouton).
+  const searchWasOpenRef = useRef(false);
+  useEffect(() => {
+    if (searchOpen) {
+      searchWasOpenRef.current = true;
+      return;
+    }
+    if (!searchWasOpenRef.current) return;
+    searchWasOpenRef.current = false;
+    setFilters(EMPTY_FILTERS);
+    setActiveMatchIndex(-1);
+    searchButtonRef.current?.focus();
+  }, [searchOpen]);
+
+  /** Raccourci : « / » ouvre la recherche depuis n'importe où sauf un champ. */
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key !== "/" || event.metaKey || event.ctrlKey || event.altKey) return;
+      const target = event.target as HTMLElement | null;
+      if (
+        target &&
+        (target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName))
+      ) {
+        return;
+      }
+      event.preventDefault();
+      setSearchOpen(true);
+    }
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, []);
+
+  function stepMatch(delta: number) {
+    if (totalMatches === 0) return;
+    setActiveMatchIndex((current) => stepIndex(current, totalMatches, delta));
+  }
+
+  // La correspondance active est amenée au centre de l'écran et reçoit le focus.
+  useEffect(() => {
+    if (activeMatchIndex < 0) return;
+    const node = document.getElementById("chat-match-active");
+    node?.scrollIntoView({ block: "center", behavior: "smooth" });
+    node?.focus({ preventScroll: true });
+  }, [activeMatchIndex]);
+
+  // --- Actions ---------------------------------------------------------------
+
+  async function onSend(body: string, attachments: AttachmentToken[]) {
+    if (!activeId) return;
     setBusy(true);
     try {
       const sent = await sendMessageFn({
@@ -338,72 +519,12 @@ export function ChatView() {
           attachments: attachments.length > 0 ? attachments : undefined,
         },
       });
-      setInput("");
-      setAttachments([]);
       setMessages((current) => [...current, sent]);
     } catch (caught) {
       push("danger", caught instanceof Error ? caught.message : "Envoi impossible.");
     } finally {
       setBusy(false);
     }
-  }
-
-  /**
-   * Téléverse les fichiers choisis un par un (jetons provisoires), avec les
-   * bornes du serveur appliquées côté client : 5 fichiers, 10 Mo chacun.
-   */
-  async function onPickAttachments(event: ChangeEvent<HTMLInputElement>) {
-    const files = [...(event.target.files ?? [])];
-    event.target.value = "";
-    if (files.length === 0) return;
-
-    const remaining = COMPOSER_MAX_ATTACHMENTS - attachments.length;
-    if (remaining <= 0) {
-      push("danger", `${COMPOSER_MAX_ATTACHMENTS} pièces jointes au maximum.`);
-      return;
-    }
-    if (files.length > remaining) {
-      push(
-        "danger",
-        `${COMPOSER_MAX_ATTACHMENTS} pièces jointes au maximum (${remaining} emplacement${remaining > 1 ? "s" : ""} restant${remaining > 1 ? "s" : ""}).`,
-      );
-    }
-
-    setUploading(true);
-    try {
-      let updated = attachments;
-      for (const file of files.slice(0, remaining)) {
-        if (file.size > COMPOSER_MAX_ATTACHMENT_BYTES) {
-          push("danger", `« ${file.name} » dépasse 10 Mo.`);
-          continue;
-        }
-        try {
-          const contentBase64 = await fileToBase64(file);
-          const token = await uploadChatAttachmentFn({
-            data: {
-              filename: file.name,
-              contentType: file.type || "application/octet-stream",
-              contentBase64,
-            },
-          });
-          updated = [...updated, token];
-          setAttachments(updated);
-        } catch (caught) {
-          push(
-            "danger",
-            caught instanceof Error
-              ? caught.message
-              : `Téléversement de « ${file.name} » impossible.`,
-          );
-        }
-      }
-    } finally {
-      setUploading(false);
-    }
-  }
-
-  function removeAttachment(storageKey: string) {
-    setAttachments((current) => current.filter((token) => token.storageKey !== storageKey));
   }
 
   async function onCreateChannel(event: FormEvent<HTMLFormElement>) {
@@ -434,16 +555,16 @@ export function ChatView() {
   }
 
   async function loadOrgMembers() {
-    setMembersLoading(true);
-    setMembersError(null);
+    setDirectoryLoading(true);
+    setDirectoryError(null);
     try {
       setOrgMembers(await listOrgMembersFn());
     } catch (caught) {
-      setMembersError(
+      setDirectoryError(
         caught instanceof Error ? caught.message : "Chargement des membres impossible.",
       );
     } finally {
-      setMembersLoading(false);
+      setDirectoryLoading(false);
     }
   }
 
@@ -550,7 +671,7 @@ export function ChatView() {
     }
   }
 
-  const active = channels.find((channel) => channel.id === activeId) ?? null;
+  const typingNames = typingUsers.map((user) => user.name);
 
   // Pas de PageHeader : Chat est un shell à deux panneaux pleine hauteur, un
   // en-tête de page volerait l'espace vertical de la conversation ; le h1
@@ -577,18 +698,47 @@ export function ChatView() {
               onOpenMembers={() => setMembersOpen(true)}
               onArchive={() => setArchiveTarget(active)}
               onRestore={() => void onRestore(active)}
+              searchOpen={searchOpen}
+              onToggleSearch={() => setSearchOpen((open) => !open)}
+              searchButtonRef={searchButtonRef}
               busy={busy}
             />
 
-            <MessageList
-              messages={messages}
-              pinnedIds={pinnedIds}
-              pinPendingId={pinPendingId}
-              onTogglePin={(message) => void onTogglePin(message)}
-              unreadCutoff={unreadCutoff}
-              announcement={announcement}
-              scrollRef={scrollRef}
-            />
+            {searchOpen ? (
+              <SearchBar
+                channelName={active.name}
+                authors={mentionCandidates}
+                filters={filters}
+                onFiltersChange={setFilters}
+                counter={searching ? resultCounter(activeMatchIndex, totalMatches) : null}
+                onPrevious={() => stepMatch(-1)}
+                onNext={() => stepMatch(1)}
+                onClose={() => setSearchOpen(false)}
+              />
+            ) : null}
+
+            {visibleMessages.length === 0 && searching ? (
+              <div className="grid flex-1 place-items-center p-6">
+                <EmptyState
+                  title="Aucun message ne correspond"
+                  hint="Changez de mot-clé, d'auteur, ou fermez la recherche pour revoir tout le canal."
+                />
+              </div>
+            ) : (
+              <MessageList
+                messages={visibleMessages}
+                pinnedIds={pinnedIds}
+                pinPendingId={pinPendingId}
+                onTogglePin={(message) => void onTogglePin(message)}
+                unreadCutoff={unreadCutoff}
+                announcement={announcement}
+                searchRanges={searchRanges}
+                activeMatchIndex={activeMatchIndex}
+                scrollRef={scrollRef}
+              />
+            )}
+
+            <TypingIndicator names={typingNames} />
 
             {active.archived ? (
               <p className="border-t border-border p-4 text-sm text-muted-foreground">
@@ -596,81 +746,15 @@ export function ChatView() {
                 consultable.
               </p>
             ) : (
-              <form
-                onSubmit={onSend}
-                method="post"
-                className="flex flex-col gap-2 border-t border-border p-3"
-              >
-                {attachments.length > 0 ? (
-                  <ul aria-label="Pièces jointes en attente" className="flex flex-wrap gap-1">
-                    {attachments.map((attachment) => (
-                      <li
-                        key={attachment.storageKey}
-                        className="flex items-center gap-2 rounded-md border border-border bg-muted/40 px-2 py-1 text-xs"
-                      >
-                        <span className="max-w-52 truncate" title={attachment.filename}>
-                          {attachment.filename}
-                        </span>
-                        <span className="shrink-0 text-muted-foreground">
-                          {fmtSize(attachment.sizeBytes)}
-                        </span>
-                        <button
-                          type="button"
-                          aria-label={`Retirer ${attachment.filename}`}
-                          onClick={() => removeAttachment(attachment.storageKey)}
-                          className="shrink-0 text-muted-foreground transition-colors hover:text-destructive"
-                        >
-                          ✕
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
-                ) : null}
-                <div className="flex items-end gap-2">
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    aria-label="Pièces jointes"
-                    title="Pièces jointes (5 max, 10 Mo chacune)"
-                    disabled={uploading || busy}
-                    onClick={() => fileInputRef.current?.click()}
-                  >
-                    📎
-                  </Button>
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    multiple
-                    aria-label="Pièces jointes"
-                    className="hidden"
-                    onChange={(event) => void onPickAttachments(event)}
-                  />
-                  <textarea
-                    aria-label="Message"
-                    value={input}
-                    onChange={(event) => setInput(event.target.value)}
-                    onKeyDown={(event) => {
-                      if (event.key !== "Enter" || event.shiftKey) return;
-                      // Composition IME (accents, langues CJK) : Entrée valide la composition.
-                      if (event.nativeEvent.isComposing) return;
-                      event.preventDefault();
-                      event.currentTarget.form?.requestSubmit();
-                    }}
-                    rows={1}
-                    maxLength={4000}
-                    placeholder="Écrire un message… (Entrée pour envoyer)"
-                    className="max-h-32 min-h-9 flex-1 resize-y rounded-md border border-input bg-background px-3 py-2 text-sm"
-                  />
-                  <Button
-                    type="submit"
-                    loading={busy}
-                    disabled={input.trim().length === 0 || uploading}
-                  >
-                    Envoyer
-                  </Button>
-                </div>
-              </form>
+              <Composer
+                channelId={activeId}
+                channelName={active.name}
+                members={mentionCandidates}
+                onSend={(body, attachments) => void onSend(body, attachments)}
+                busy={busy}
+                onMention={(name) => setAnnouncement(`Mention insérée : @${name}`)}
+                onNotice={(message) => push("danger", message)}
+              />
             )}
           </>
         ) : (
@@ -727,12 +811,12 @@ export function ChatView() {
       </Dialog>
 
       <Dialog open={dmDialog} onClose={() => setDmDialog(false)} title="Nouvelle discussion">
-        {membersLoading ? (
+        {directoryLoading ? (
           <p className="text-sm text-muted-foreground">Chargement des membres…</p>
-        ) : membersError ? (
+        ) : directoryError ? (
           <div className="flex flex-col gap-3">
             <p role="alert" className="text-sm text-destructive">
-              {membersError}
+              {directoryError}
             </p>
             <div>
               <Button type="button" variant="ghost" onClick={() => void loadOrgMembers()}>
@@ -770,7 +854,16 @@ export function ChatView() {
         channelName={active?.name ?? ""}
         privateChannel={active?.kind === "channel" && active.visibility === "private"}
         canInvite={Boolean(active?.managedByMe && active.kind === "channel" && !active.archived)}
-        onInvited={() => void refreshChannels()}
+        members={members}
+        loading={membersLoading}
+        error={membersError}
+        onRetry={() => {
+          if (activeId) void loadMembers(activeId);
+        }}
+        onInvited={() => {
+          if (activeId) void loadMembers(activeId);
+          void refreshChannels();
+        }}
       />
 
       <PinsDialog

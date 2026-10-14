@@ -14,9 +14,11 @@ import {
   listMessages,
   listOrgMembers,
   listPins,
+  listTypingUsers,
   MAX_ATTACHMENT_BYTES,
   MAX_ATTACHMENTS,
   markRead,
+  notifyTyping,
   pinMessage,
   restoreChannel,
   sendMessage,
@@ -35,6 +37,7 @@ export type {
   MessageView,
   OrgMemberView,
   PinView,
+  TypingUser,
   UnreadState,
 } from "./index.ts";
 
@@ -208,6 +211,28 @@ export const getUnreadStateFn = createServerFn({ method: "GET" })
   .handler(async ({ data }) => {
     const { actor } = await requireActor(getRequest().headers);
     return getUnreadState(actor, data.channelId);
+  });
+
+/**
+ * Indicateur de frappe : diffusé aux autres membres connectés par le flux
+ * SSE du canal (`event: typing`). `typing: false` signale l'arrêt.
+ */
+export const notifyTypingFn = createServerFn({ method: "POST" })
+  .validator((input: unknown) =>
+    z.object({ channelId: channelIdSchema, typing: z.boolean().optional() }).parse(input),
+  )
+  .handler(async ({ data }) => {
+    const { actor } = await requireActor(getRequest().headers);
+    await notifyTyping(actor, data.channelId, data.typing ?? true);
+    return { ok: true };
+  });
+
+/** Repli du flux SSE : personnes en train d'écrire, soi-même exclue. */
+export const listTypingUsersFn = createServerFn({ method: "GET" })
+  .validator((input: unknown) => z.object({ channelId: channelIdSchema }).parse(input))
+  .handler(async ({ data }) => {
+    const { actor } = await requireActor(getRequest().headers);
+    return listTypingUsers(actor, data.channelId);
   });
 
 export const listPinsFn = createServerFn({ method: "GET" })

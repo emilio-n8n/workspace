@@ -15,6 +15,7 @@ import {
   chatMessages,
   chatPins,
 } from "./schema.ts";
+import { activeTypingSignals, publishTyping, stopTyping, type TypingUser } from "./typing.ts";
 
 export type ChatErrorCode = "not_found" | "forbidden" | "validation";
 
@@ -1084,6 +1085,55 @@ export async function sendMessage(
 export async function markRead(actor: Actor, channelId: string): Promise<void> {
   await requireMembership(actor, channelId);
   await touchReadCursor(db(), channelId, actor.userId);
+}
+
+// ---------------------------------------------------------------------------
+// Indicateur « en train d'écrire »
+// ---------------------------------------------------------------------------
+
+/**
+ * Signale que l'acteur est en train d'écrire dans une conversation dont il
+ * est membre. `typing: false` signale l'arrêt (message envoyé, canal
+ * quitté).
+ *
+ * Aucune écriture en base et aucun audit : un indicateur de frappe est un
+ * état éphémère, pas une donnée métier — le journal
+ * d'audit se noierait.
+ */
+export async function notifyTyping(
+  actor: Actor,
+  channelId: string,
+  typing: boolean = true,
+): Promise<void> {
+  await requireMembership(actor, channelId);
+  if (!typing) {
+    stopTyping(channelId, actor.userId);
+    return;
+  }
+  const [author] = await db()
+    .select({ name: core.user.name })
+    .from(core.user)
+    .where(eq(core.user.id, actor.userId))
+    .limit(1);
+  publishTyping({
+    channelId,
+    userId: actor.userId,
+    name: author?.name ?? "Quelqu'un",
+    at: Date.now(),
+  });
+}
+
+/**
+ * Personnes en train d'écrire dans une conversation, soi-même exclu (on
+ * ne s'annonce pas à soi-même). Sert de repli au flux SSE indisponible :
+ * même source d'information, latence d'interrogation.
+ */
+export async function listTypingUsers(actor: Actor, channelId: string): Promise<TypingUser[]> {
+  await requireMembership(actor, channelId);
+  return activeTypingSignals(channelId)
+    .filter((signal) => signal.userId !== actor.userId)
+    .map((signal) => ({ userId: signal.userId, name: signal.name, at: signal.at }))
+    .sort((a, b) => a.name.localeCompare(b.name, "fr"));
 }
 
 // ---------------------------------------------------------------------------

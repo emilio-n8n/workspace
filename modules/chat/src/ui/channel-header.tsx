@@ -1,4 +1,5 @@
-import { Badge, Button, IconArchive } from "@workspace/ui";
+import { Badge, Button, IconArchive, IconSearch } from "@workspace/ui";
+import type { Ref } from "react";
 import type { ChannelView } from "../server.ts";
 import { fmtTime } from "./format.ts";
 import { IconLock, IconPin, IconUsers } from "./icons.tsx";
@@ -11,6 +12,11 @@ export type ChannelHeaderProps = {
   onOpenMembers: () => void;
   onArchive: () => void;
   onRestore: () => void;
+  /** Ouverture / fermeture de la recherche du canal. */
+  searchOpen: boolean;
+  onToggleSearch: () => void;
+  /** Focus rendu au bouton de recherche à la fermeture. */
+  searchButtonRef?: Ref<HTMLButtonElement>;
   busy: boolean;
 };
 
@@ -27,6 +33,9 @@ export function ChannelHeader({
   onOpenMembers,
   onArchive,
   onRestore,
+  searchOpen,
+  onToggleSearch,
+  searchButtonRef,
   busy,
 }: ChannelHeaderProps) {
   return (
@@ -70,6 +79,17 @@ export function ChannelHeader({
         >
           <IconPin />
           {pinCount > 0 ? <span className="text-xs text-muted-foreground">{pinCount}</span> : null}
+        </Button>
+        <Button
+          ref={searchButtonRef}
+          size="sm"
+          variant="ghost"
+          onClick={onToggleSearch}
+          aria-label="Rechercher dans le canal"
+          aria-expanded={searchOpen}
+          title="Rechercher dans le canal"
+        >
+          <IconSearch />
         </Button>
         {channel.managedByMe ? (
           channel.archived ? (
