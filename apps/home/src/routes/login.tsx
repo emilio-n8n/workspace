@@ -22,7 +22,8 @@ export const Route = createFileRoute("/login")({
       },
       {
         name: "description",
-        content: "Connectez-vous à votre espace Workspace pour accéder à vos documents, fichiers et équipes.",
+        content:
+          "Connectez-vous à votre espace Workspace pour accéder à vos documents, fichiers et équipes.",
       },
     ],
   }),

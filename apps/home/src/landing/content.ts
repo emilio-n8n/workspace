@@ -311,7 +311,8 @@ export const FOOTER = {
       ],
     },
   ],
-  legal: "Licence AGPL-3.0-only · Interface en français · Polices auto-hébergées · Raccourcis globaux ⌘K (Ctrl+K)",
+  legal:
+    "Licence AGPL-3.0-only · Interface en français · Polices auto-hébergées · Raccourcis globaux ⌘K (Ctrl+K)",
 } as const;
 
 /** Lien de pied de page : ancre interne ou route de l'application. */

@@ -18,12 +18,16 @@ const PAGES: NavigationPage[] = [
   { id: "33333333-3333-4333-8333-333333333333", title: "Contact", slug: "contact" },
 ];
 
+// Fixture partagée : l'assertion évite les `!` dispersés dans les tests.
+const [ACCUEIL, JOURNAL, CONTACT] = PAGES;
+if (!ACCUEIL || !JOURNAL || !CONTACT) throw new Error("pages de test manquantes");
+
 describe("sites — menu de navigation (TASK-006)", () => {
   it("dérive le menu des pages, dans leur ordre", () => {
     expect(navigationFromPages(PAGES)).toEqual([
-      { pageId: PAGES[0]!.id, label: "Accueil", visible: true },
-      { pageId: PAGES[1]!.id, label: "Journal", visible: true },
-      { pageId: PAGES[2]!.id, label: "Contact", visible: true },
+      { pageId: ACCUEIL.id, label: "Accueil", visible: true },
+      { pageId: JOURNAL.id, label: "Journal", visible: true },
+      { pageId: CONTACT.id, label: "Contact", visible: true },
     ]);
     // L'ordre du menu suit celui des pages : déplacer une page déplace son
     // entrée, il n'existe jamais deux ordres divergents.
@@ -40,23 +44,23 @@ describe("sites — menu de navigation (TASK-006)", () => {
     expect(normalizeNavigation("n'importe quoi", PAGES)).toEqual(navigationFromPages(PAGES));
     const mixed = normalizeNavigation(
       [
-        { pageId: PAGES[2]!.id, label: "Nous écrire", visible: false },
+        { pageId: CONTACT.id, label: "Nous écrire", visible: false },
         { pageId: "inconnu", label: "Fantôme" },
-        { pageId: PAGES[2]!.id, label: "Doublon" },
+        { pageId: CONTACT.id, label: "Doublon" },
         "entrée illisible",
       ],
       PAGES,
     );
     // L'ordre suit les pages, la page inconnue et le doublon sont écartés.
     expect(mixed).toEqual([
-      { pageId: PAGES[0]!.id, label: "Accueil", visible: true },
-      { pageId: PAGES[1]!.id, label: "Journal", visible: true },
-      { pageId: PAGES[2]!.id, label: "Nous écrire", visible: false },
+      { pageId: ACCUEIL.id, label: "Accueil", visible: true },
+      { pageId: JOURNAL.id, label: "Journal", visible: true },
+      { pageId: CONTACT.id, label: "Nous écrire", visible: false },
     ]);
   });
 
   it("ajoute au menu une page créée après la dernière sauvegarde", () => {
-    const stored = normalizeNavigation([{ pageId: PAGES[1]!.id, label: "Actus" }], PAGES);
+    const stored = normalizeNavigation([{ pageId: JOURNAL.id, label: "Actus" }], PAGES);
     const nouvelle: NavigationPage[] = [
       ...PAGES,
       { id: "44444444-4444-4444-8444-444444444444", title: "Foire aux questions", slug: "faq" },
@@ -75,17 +79,16 @@ describe("sites — menu de navigation (TASK-006)", () => {
     expect(checkNavigation([{ pageId: "inconnu" }], PAGES).error).toBe(
       "Le menu référence une page inconnue.",
     );
-    expect(checkNavigation([{ pageId: PAGES[0]!.id }, { pageId: PAGES[0]!.id }], PAGES).error).toBe(
+    expect(checkNavigation([{ pageId: ACCUEIL.id }, { pageId: ACCUEIL.id }], PAGES).error).toBe(
       "Une page apparaît deux fois dans le menu.",
     );
-    expect(checkNavigation([{ pageId: PAGES[0]!.id, label: 12 }], PAGES).error).toBe(
+    expect(checkNavigation([{ pageId: ACCUEIL.id, label: 12 }], PAGES).error).toBe(
       "Libellé de menu invalide.",
     );
     expect(
-      checkNavigation([{ pageId: PAGES[0]!.id, label: "a".repeat(NAV_LABEL_MAX + 1) }], PAGES)
-        .error,
+      checkNavigation([{ pageId: ACCUEIL.id, label: "a".repeat(NAV_LABEL_MAX + 1) }], PAGES).error,
     ).toBe(`Libellé de menu limité à ${NAV_LABEL_MAX} caractères.`);
-    expect(checkNavigation([{ pageId: PAGES[0]!.id, visible: "oui" }], PAGES).error).toBe(
+    expect(checkNavigation([{ pageId: ACCUEIL.id, visible: "oui" }], PAGES).error).toBe(
       "Visibilité de menu invalide.",
     );
   });
@@ -97,37 +100,37 @@ describe("sites — menu de navigation (TASK-006)", () => {
     });
     const checked = checkNavigation(
       [
-        { pageId: PAGES[1]!.id, label: "  Actus  ", visible: false },
-        { pageId: PAGES[0]!.id, label: "Accueil", visible: true },
+        { pageId: JOURNAL.id, label: "  Actus  ", visible: false },
+        { pageId: ACCUEIL.id, label: "Accueil", visible: true },
       ],
       PAGES,
     );
     expect(checked.error).toBeNull();
     expect(checked.navigation).toEqual([
-      { pageId: PAGES[0]!.id, label: "Accueil", visible: true },
-      { pageId: PAGES[1]!.id, label: "Actus", visible: false },
-      { pageId: PAGES[2]!.id, label: "Contact", visible: true },
+      { pageId: ACCUEIL.id, label: "Accueil", visible: true },
+      { pageId: JOURNAL.id, label: "Actus", visible: false },
+      { pageId: CONTACT.id, label: "Contact", visible: true },
     ]);
   });
 
   it("modifie un libellé et une visibilité", () => {
     const items = navigationFromPages(PAGES);
-    expect(setNavigationLabel(items, PAGES[1]!.id, "  Actus  ")).toEqual([
-      { pageId: PAGES[0]!.id, label: "Accueil", visible: true },
-      { pageId: PAGES[1]!.id, label: "Actus", visible: true },
-      { pageId: PAGES[2]!.id, label: "Contact", visible: true },
+    expect(setNavigationLabel(items, JOURNAL.id, "  Actus  ")).toEqual([
+      { pageId: ACCUEIL.id, label: "Accueil", visible: true },
+      { pageId: JOURNAL.id, label: "Actus", visible: true },
+      { pageId: CONTACT.id, label: "Contact", visible: true },
     ]);
     // Un identifiant inconnu ne change rien.
     expect(setNavigationLabel(items, "inconnu", "Rien")).toEqual(items);
     // Le libellé est borné.
-    expect(setNavigationLabel(items, PAGES[0]!.id, "a".repeat(200))[0]?.label).toHaveLength(
+    expect(setNavigationLabel(items, ACCUEIL.id, "a".repeat(200))[0]?.label).toHaveLength(
       NAV_LABEL_MAX,
     );
 
-    const masque = toggleNavigationVisibility(items, PAGES[2]!.id);
-    expect(masque[2]).toEqual({ pageId: PAGES[2]!.id, label: "Contact", visible: false });
+    const masque = toggleNavigationVisibility(items, CONTACT.id);
+    expect(masque[2]).toEqual({ pageId: CONTACT.id, label: "Contact", visible: false });
     // Un double appel annule l'opération ; les autres entrées sont intactes.
-    expect(toggleNavigationVisibility(masque, PAGES[2]!.id)).toEqual(items);
+    expect(toggleNavigationVisibility(masque, CONTACT.id)).toEqual(items);
     expect(toggleNavigationVisibility(items, "inconnu")).toEqual(items);
   });
 
@@ -137,7 +140,7 @@ describe("sites — menu de navigation (TASK-006)", () => {
     expect(
       hiddenNavigationCount([
         ...items.slice(0, 2),
-        { pageId: PAGES[2]!.id, label: "Contact", visible: false },
+        { pageId: CONTACT.id, label: "Contact", visible: false },
       ]),
     ).toBe(1);
   });
@@ -146,10 +149,10 @@ describe("sites — menu de navigation (TASK-006)", () => {
 describe("sites — rendu du menu", () => {
   it("rend les entrées visibles avec des liens internes échappés", () => {
     const items: NavigationItem[] = [
-      { pageId: PAGES[0]!.id, label: "Accueil", visible: true },
-      { pageId: PAGES[1]!.id, label: '<script>alert("x")</script>', visible: true },
+      { pageId: ACCUEIL.id, label: "Accueil", visible: true },
+      { pageId: JOURNAL.id, label: '<script>alert("x")</script>', visible: true },
     ];
-    const html = renderNavigation(PAGES, items, PAGES[0]!.id);
+    const html = renderNavigation(PAGES, items, ACCUEIL.id);
     expect(html).toContain('<nav aria-label="Menu du site"');
     expect(html).toContain('<a href="/accueil"');
     expect(html).toContain('aria-current="page"');
@@ -162,8 +165,8 @@ describe("sites — rendu du menu", () => {
     const html = renderNavigation(
       PAGES,
       [
-        { pageId: PAGES[0]!.id, label: "Accueil", visible: true },
-        { pageId: PAGES[1]!.id, label: "Journal", visible: false },
+        { pageId: ACCUEIL.id, label: "Accueil", visible: true },
+        { pageId: JOURNAL.id, label: "Journal", visible: false },
         { pageId: "inconnu", label: "Fantôme", visible: true },
       ],
       null,
@@ -176,7 +179,7 @@ describe("sites — rendu du menu", () => {
   });
 
   it("marque la page active, quelle que soit sa position", () => {
-    const html = renderNavigation(PAGES, navigationFromPages(PAGES), PAGES[2]!.id);
+    const html = renderNavigation(PAGES, navigationFromPages(PAGES), CONTACT.id);
     expect(html.match(/aria-current="page"/g)).toHaveLength(1);
     expect(html.indexOf("Contact")).toBeGreaterThan(0);
     expect(html).toContain('<a href="/contact"');
@@ -185,8 +188,8 @@ describe("sites — rendu du menu", () => {
   it("rend un menu vide quand aucune entrée n'est visible", () => {
     const html = renderNavigation(
       PAGES,
-      [{ pageId: PAGES[0]!.id, label: "Accueil", visible: false }],
-      PAGES[0]!.id,
+      [{ pageId: ACCUEIL.id, label: "Accueil", visible: false }],
+      ACCUEIL.id,
     );
     expect(html).not.toContain("<li>");
     expect(html).toContain("<nav");

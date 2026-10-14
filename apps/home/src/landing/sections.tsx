@@ -561,7 +561,7 @@ export function LandingFooter() {
           <dl className="flex flex-col gap-1 text-xs text-muted-foreground">
             <div className="flex items-center gap-2">
               <dt className="font-medium">Raccourci clavier principal</dt>
-              <dd aria-label="Ctrl ou Meta K">
+              <dd>
                 <span className="sr-only">Ctrl ou Commande K</span>
                 <kbd className="rounded border border-border bg-background px-1.5 py-0.5 font-sans text-[10px] font-medium">
                   ⌘K

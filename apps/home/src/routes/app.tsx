@@ -28,7 +28,8 @@ export const Route = createFileRoute("/app")({
       },
       {
         name: "description",
-        content: "Tableau de bord de Workspace : raccourcis, fichiers récents, applications et gestion de votre espace de travail.",
+        content:
+          "Tableau de bord de Workspace : raccourcis, fichiers récents, applications et gestion de votre espace de travail.",
       },
     ],
   }),

@@ -121,9 +121,13 @@ export function TaskRow({
         <span
           className="shrink-0 text-[10px] tabular-nums text-muted-foreground"
           title={`Sous-tâches : ${task.subtaskDone} sur ${task.subtaskTotal} terminées`}
-          aria-label={`Sous-tâches : ${task.subtaskDone} sur ${task.subtaskTotal} terminées`}
         >
-          {task.subtaskDone}/{task.subtaskTotal}
+          <span className="sr-only">
+            Sous-tâches : {task.subtaskDone} sur {task.subtaskTotal} terminées
+          </span>
+          <span aria-hidden>
+            {task.subtaskDone}/{task.subtaskTotal}
+          </span>
         </span>
       ) : null}
 

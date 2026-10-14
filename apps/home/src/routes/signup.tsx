@@ -29,7 +29,8 @@ export const Route = createFileRoute("/signup")({
       },
       {
         name: "description",
-        content: "Créez votre espace Workspace en une minute : gratuit, auto-hébergeable, AGPL-3.0-only.",
+        content:
+          "Créez votre espace Workspace en une minute : gratuit, auto-hébergeable, AGPL-3.0-only.",
       },
     ],
   }),

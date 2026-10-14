@@ -19,7 +19,12 @@ describe("sites — gabarits d'aperçu (TASK-004)", () => {
     expect(widths).toEqual([1280, 834, 390]);
     // Ordre décroissant strict : la liste se lit du grand écran au téléphone.
     for (let index = 1; index < widths.length; index += 1) {
-      expect(widths[index]!).toBeLessThan(widths[index - 1]!);
+      const current = widths[index];
+      const previous = widths[index - 1];
+      if (current === undefined || previous === undefined) {
+        throw new Error("largeur de gabarit manquante");
+      }
+      expect(current).toBeLessThan(previous);
     }
   });
 

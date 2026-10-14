@@ -77,7 +77,9 @@ async function auditRows(orgId: string, action: string) {
 async function createSiteFixture() {
   const { entry } = await createSite(f.actorAlice, { title: tag("Site") });
   const site = await getSite(f.actorAlice, entry.id);
-  return { fileId: entry.id, home: site.pages[0]!, pages: site.pages };
+  const home = site.pages[0];
+  if (!home) throw new Error("page d'accueil manquante");
+  return { fileId: entry.id, home, pages: site.pages };
 }
 
 let f: Fixtures;
@@ -187,7 +189,8 @@ describe("sites — ordre des pages et menu (TASK-006)", () => {
     expect(added.pages.map((page) => page.title)).toEqual(["Accueil", "Journal"]);
     expect(ajoutee.pages.map((page) => page.title)).toEqual(["Accueil", "Journal", "Contact"]);
 
-    const journal = (await getSite(f.actorAlice, fileId)).pages[1]!;
+    const journal = (await getSite(f.actorAlice, fileId)).pages[1];
+    if (!journal) throw new Error("page Journal manquante");
     const descendue = await movePage(f.actorAlice, fileId, journal.id, "down");
     expect(titres(descendue)).toEqual(["Accueil", "Contact", "Journal"]);
     // Le menu suit l'ordre des pages : une seule source de vérité.
@@ -208,7 +211,8 @@ describe("sites — ordre des pages et menu (TASK-006)", () => {
   it("laisse l'ordre inchangé aux extrémités de la liste", async () => {
     const { entry } = await createSite(f.actorAlice, { title: tag("Bords") });
     const pages = (await getSite(f.actorAlice, entry.id)).pages;
-    const premiere = pages[0]!;
+    const premiere = pages[0];
+    if (!premiere) throw new Error("première page manquante");
 
     expect(titres(await movePage(f.actorAlice, entry.id, premiere.id, "up"))).toEqual(["Accueil"]);
     // Une page inconnue est refusée, pas ignorée en silence.
@@ -220,7 +224,8 @@ describe("sites — ordre des pages et menu (TASK-006)", () => {
   it("journalise chaque déplacement", async () => {
     const { entry } = await createSite(f.actorAlice, { title: tag("Audit ordre") });
     await addPage(f.actorAlice, entry.id, { title: "Journal" });
-    const page = (await getSite(f.actorAlice, entry.id)).pages[0]!;
+    const page = (await getSite(f.actorAlice, entry.id)).pages[0];
+    if (!page) throw new Error("page manquante");
 
     await movePage(f.actorAlice, entry.id, page.id, "down");
     const rows = await auditRows(f.orgId, "sites.page.move");
@@ -240,9 +245,11 @@ describe("sites — ordre des pages et menu (TASK-006)", () => {
     await addPage(f.actorAlice, fileId, { title: "Journal" });
 
     const site = await getSite(f.actorAlice, fileId);
+    const [accueil, journal] = site.pages;
+    if (!accueil || !journal) throw new Error("pages manquantes");
     expect(site.navigation).toEqual([
-      { pageId: site.pages[0]!.id, label: "Accueil", visible: true },
-      { pageId: site.pages[1]!.id, label: "Journal", visible: true },
+      { pageId: accueil.id, label: "Accueil", visible: true },
+      { pageId: journal.id, label: "Journal", visible: true },
     ]);
   });
 
@@ -251,19 +258,21 @@ describe("sites — ordre des pages et menu (TASK-006)", () => {
     const fileId = entry.id;
     await addPage(f.actorAlice, fileId, { title: "Journal" });
     const pages = (await getSite(f.actorAlice, fileId)).pages;
+    const [accueil, journal] = pages;
+    if (!accueil || !journal) throw new Error("pages manquantes");
 
     await saveNavigation(f.actorAlice, fileId, {
       items: [
-        { pageId: pages[1]!.id, label: "Actus", visible: true },
-        { pageId: pages[0]!.id, label: "Accueil", visible: false },
+        { pageId: journal.id, label: "Actus", visible: true },
+        { pageId: accueil.id, label: "Accueil", visible: false },
       ],
     });
 
     const site = await getSite(f.actorAlice, fileId);
     // L'ordre reste celui des pages ; seul le contenu des entrées est libre.
     expect(site.navigation).toEqual([
-      { pageId: pages[0]!.id, label: "Accueil", visible: false },
-      { pageId: pages[1]!.id, label: "Actus", visible: true },
+      { pageId: accueil.id, label: "Accueil", visible: false },
+      { pageId: journal.id, label: "Actus", visible: true },
     ]);
   });
 
@@ -271,8 +280,10 @@ describe("sites — ordre des pages et menu (TASK-006)", () => {
     const { entry } = await createSite(f.actorAlice, { title: tag("Menu tardif") });
     const fileId = entry.id;
     const pages = (await getSite(f.actorAlice, fileId)).pages;
+    const accueil = pages[0];
+    if (!accueil) throw new Error("page d'accueil manquante");
     await saveNavigation(f.actorAlice, fileId, {
-      items: [{ pageId: pages[0]!.id, label: "Bienvenue", visible: true }],
+      items: [{ pageId: accueil.id, label: "Bienvenue", visible: true }],
     });
 
     await addPage(f.actorAlice, fileId, { title: "Contact" });
@@ -292,12 +303,16 @@ describe("sites — ordre des pages et menu (TASK-006)", () => {
     await deletePage(f.actorAlice, fileId, added.pageId);
     const site = await getSite(f.actorAlice, fileId);
     expect(site.pages).toHaveLength(1);
-    expect(site.navigation).toEqual([{ pageId: pages[0]!.id, label: "Accueil", visible: true }]);
+    const accueil = pages[0];
+    if (!accueil) throw new Error("page d'accueil manquante");
+    expect(site.navigation).toEqual([{ pageId: accueil.id, label: "Accueil", visible: true }]);
   });
 
   it("refuse un menu invalide avec un message en français", async () => {
     const { entry } = await createSite(f.actorAlice, { title: tag("Menu invalide") });
     const pages = (await getSite(f.actorAlice, entry.id)).pages;
+    const accord = pages[0];
+    if (!accord) throw new Error("page manquante");
 
     await expect(
       saveNavigation(f.actorAlice, entry.id, {
@@ -314,8 +329,8 @@ describe("sites — ordre des pages et menu (TASK-006)", () => {
     await expect(
       saveNavigation(f.actorAlice, entry.id, {
         items: [
-          { pageId: pages[0]!.id, label: "A", visible: true },
-          { pageId: pages[0]!.id, label: "B", visible: true },
+          { pageId: accord.id, label: "A", visible: true },
+          { pageId: accord.id, label: "B", visible: true },
         ],
       }),
     ).rejects.toMatchObject({ code: "validation", message: expect.stringContaining("deux fois") });
@@ -329,9 +344,11 @@ describe("sites — ordre des pages et menu (TASK-006)", () => {
   it("refuse d'enregistrer le menu sans droit d'écriture", async () => {
     const { entry } = await createSite(f.actorAlice, { title: tag("Menu protégé") });
     const pages = (await getSite(f.actorAlice, entry.id)).pages;
+    const premiere = pages[0];
+    if (!premiere) throw new Error("page manquante");
     await expect(
       saveNavigation(f.actorBruno, entry.id, {
-        items: [{ pageId: pages[0]!.id, label: "Pirate", visible: true }],
+        items: [{ pageId: premiere.id, label: "Pirate", visible: true }],
       }),
     ).rejects.toThrow(SitesError);
   });

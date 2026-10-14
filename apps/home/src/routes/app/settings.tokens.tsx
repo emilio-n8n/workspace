@@ -27,7 +27,8 @@ export const Route = createFileRoute("/app/settings/tokens")({
       },
       {
         name: "description",
-        content: "Gérez les jetons d'accès pour agents IA compatibles MCP : minimaux, scopés et révocables.",
+        content:
+          "Gérez les jetons d'accès pour agents IA compatibles MCP : minimaux, scopés et révocables.",
       },
     ],
   }),

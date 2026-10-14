@@ -33,7 +33,8 @@ export const Route = createFileRoute("/app/")({
       },
       {
         name: "description",
-        content: "Tableau de bord : raccourcis, fichiers récents, applications et stockage de votre espace de travail.",
+        content:
+          "Tableau de bord : raccourcis, fichiers récents, applications et stockage de votre espace de travail.",
       },
     ],
   }),

@@ -41,7 +41,8 @@ export const Route = createRootRoute({
       { name: "twitter:title", content: "Workspace — la suite bureautique libre" },
       {
         name: "twitter:description",
-        content: "Suite bureautique libre et auto-hébergeable, avec permissions révisées côté serveur.",
+        content:
+          "Suite bureautique libre et auto-hébergeable, avec permissions révisées côté serveur.",
       },
       { name: "twitter:image", content: "/pwa/icon.svg" },
     ],

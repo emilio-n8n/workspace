@@ -42,7 +42,8 @@ export const Route = createFileRoute("/app/recherche")({
       },
       {
         name: "description",
-        content: "Recherche globale dans Workspace : fichiers, documents, formulaires, tâches et événements.",
+        content:
+          "Recherche globale dans Workspace : fichiers, documents, formulaires, tâches et événements.",
       },
     ],
   }),
