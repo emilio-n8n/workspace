@@ -16,6 +16,7 @@ import { DEFAULT_SLIDE_ASPECT, type SlideAspectId } from "./slide-aspect.ts";
 import type { SlidePlaceholderRole } from "./slide-layouts.ts";
 import type { SlideTextColor } from "./slide-text.ts";
 import { DEFAULT_SLIDE_THEME, type SlideThemeId } from "./slide-theme.ts";
+import type { SlideTransitionId } from "./slide-transition.ts";
 
 /**
  * Schéma du module Slides — voir docs/modules/slides.md.
@@ -42,6 +43,10 @@ export const presentations = pgTable(
     aspect: text("aspect").$type<SlideAspectId>().notNull().default(DEFAULT_SLIDE_ASPECT),
     /** Thème de la diapositive (« papier », « encre », « accent »). */
     theme: text("theme").$type<SlideThemeId>().notNull().default(DEFAULT_SLIDE_THEME),
+    /** Transition jouée à chaque changement de diapositive en présentation. */
+    transition: text("transition").$type<SlideTransitionId>().notNull().default("none"),
+    /** Durée de la transition, en millisecondes. */
+    transitionMs: integer("transition_ms").notNull().default(400),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (table) => [

@@ -18,6 +18,7 @@ import {
   type SlideInput,
   SlidesError,
   type SlideThemeId,
+  type SlideTransitionId,
   savePresentation,
   updatePresentationSetting,
   uploadSlideImage,
@@ -681,6 +682,39 @@ describe("slides — réglages de présentation", () => {
       "forbidden",
     );
     expect((await getPresentation(f.actorAlice, entry.id)).aspect).toBe("16:9");
+  });
+
+  it("applique une transition et sa durée, les persiste et borne la durée", async () => {
+    const { entry } = await createPresentation(f.actorAlice, { title: "Transitions" });
+    const initial = await getPresentation(f.actorAlice, entry.id);
+    expect(initial.transition).toBe("none");
+    expect(initial.transitionMs).toBe(400);
+
+    const updated = await updatePresentationSetting(f.actorAlice, entry.id, {
+      transition: "fade",
+      transitionMs: 700,
+    });
+    expect(updated.transition).toBe("fade");
+    expect(updated.transitionMs).toBe(700);
+
+    const reloaded = await getPresentation(f.actorAlice, entry.id);
+    expect(reloaded.transition).toBe("fade");
+    expect(reloaded.transitionMs).toBe(700);
+
+    // La durée est bornée (200-2000) plutôt que refusée : jamais de valeur folle.
+    const clamped = await updatePresentationSetting(f.actorAlice, entry.id, {
+      transitionMs: 99_999,
+    });
+    expect(clamped.transitionMs).toBe(2000);
+
+    // Une transition inconnue est refusée sans rien écrire.
+    await expectSlidesError(
+      updatePresentationSetting(f.actorAlice, entry.id, {
+        transition: "vortex" as unknown as SlideTransitionId,
+      }),
+      "validation",
+    );
+    expect((await getPresentation(f.actorAlice, entry.id)).transition).toBe("fade");
   });
 });
 

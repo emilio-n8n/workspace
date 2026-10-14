@@ -14,10 +14,12 @@ import { SLIDE_ASPECT_IDS } from "./slide-aspect.ts";
 import { PLACEHOLDER_ROLES } from "./slide-layouts.ts";
 import { SLIDE_TEXT_COLOR_IDS, type SlideTextColor } from "./slide-text.ts";
 import { SLIDE_THEME_IDS } from "./slide-theme.ts";
+import { SLIDE_TRANSITION_IDS, type SlideTransitionId } from "./slide-transition.ts";
 
 export type { ElementView, PresentationDetail, SlideView } from "./index.ts";
 export type { SlideAspectId } from "./slide-aspect.ts";
 export type { SlideThemeId } from "./slide-theme.ts";
+export type { SlideTransitionId } from "./slide-transition.ts";
 
 const elementSchema = z.object({
   id: z.string().optional(),
@@ -114,10 +116,21 @@ export const updatePresentationSettingFn = createServerFn({ method: "POST" })
         fileId: z.string().uuid(),
         aspect: z.enum(SLIDE_ASPECT_IDS).optional(),
         theme: z.enum(SLIDE_THEME_IDS).optional(),
+        transition: z
+          .enum(SLIDE_TRANSITION_IDS as [SlideTransitionId, ...SlideTransitionId[]])
+          .optional(),
+        transitionMs: z.number().int().min(200).max(2000).optional(),
       })
-      .refine((data) => data.aspect !== undefined || data.theme !== undefined, {
-        message: "Aucun réglage à modifier.",
-      })
+      .refine(
+        (data) =>
+          data.aspect !== undefined ||
+          data.theme !== undefined ||
+          data.transition !== undefined ||
+          data.transitionMs !== undefined,
+        {
+          message: "Aucun réglage à modifier.",
+        },
+      )
       .parse(input),
   )
   .handler(async ({ data }) => {
@@ -125,5 +138,7 @@ export const updatePresentationSettingFn = createServerFn({ method: "POST" })
     return updatePresentationSetting(actor, data.fileId, {
       aspect: data.aspect,
       theme: data.theme,
+      transition: data.transition,
+      transitionMs: data.transitionMs,
     });
   });

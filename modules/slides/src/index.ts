@@ -10,4 +10,5 @@ export * from "./slide-presentation.ts";
 export * from "./slide-shapes.ts";
 export * from "./slide-text.ts";
 export * from "./slide-theme.ts";
+export * from "./slide-transition.ts";
 export * from "./slide-zorder.ts";

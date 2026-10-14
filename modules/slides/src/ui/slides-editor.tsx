@@ -75,6 +75,18 @@ import {
   themeSwatchClass,
 } from "../slide-theme.ts";
 import {
+  DEFAULT_SLIDE_TRANSITION,
+  normalizeTransition,
+  normalizeTransitionMs,
+  SLIDE_TRANSITION_IDS,
+  type SlideTransitionId,
+  transitionDuration,
+  transitionFrames,
+  transitionHint,
+  transitionLabel,
+  transitionSummary,
+} from "../slide-transition.ts";
+import {
   canMoveZ,
   Z_MOVE_ORDER,
   type ZMove,
@@ -108,6 +120,24 @@ function elementLabel(element: EditorElement): string {
   if (element.kind === "image") return "Image";
   if (isShapeKind(element.kind)) return shapeLabel(element.kind);
   return "Texte";
+}
+
+/**
+ * Joue la transition choisie sur un nœud (scène de présentation ou canevas
+ * d'aperçu), en respectant la préférence « animations réduites » : aucune
+ * image-clé ni durée dans ce cas, donc aucun mouvement.
+ */
+function animateTransition(
+  node: HTMLElement | null,
+  transition: SlideTransitionId,
+  durationMs: number,
+): void {
+  if (!node) return;
+  const reduce = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
+  const frames = transitionFrames(transition, { reduceMotion: reduce });
+  const duration = transitionDuration(transition, durationMs, { reduceMotion: reduce });
+  if (!frames || duration === 0) return;
+  node.animate([frames.from, frames.to], { duration, easing: "ease-out", fill: "both" });
 }
 
 /** Modèle d'élément libre (texte ou forme) : mêmes valeurs par défaut partout. */
@@ -144,6 +174,8 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
   const [canEdit, setCanEdit] = useState(false);
   const [aspect, setAspect] = useState<SlideAspectId>(DEFAULT_SLIDE_ASPECT);
   const [theme, setTheme] = useState<SlideThemeId>(DEFAULT_SLIDE_THEME);
+  const [transition, setTransition] = useState<SlideTransitionId>(DEFAULT_SLIDE_TRANSITION);
+  const [transitionMs, setTransitionMs] = useState(400);
   const [slides, setSlides] = useState<EditorSlide[]>([]);
   const [selectedSlide, setSelectedSlide] = useState(0);
   const [selectedElementKey, setSelectedElementKey] = useState<string | null>(null);
@@ -158,6 +190,12 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
   /** Vrai quand le mode présentation a demandé le plein écran. */
   const fullscreenRequestedRef = useRef(false);
   const stageRef = useRef<HTMLDivElement>(null);
+  /** Scène de présentation : cible de l'animation de transition. */
+  const sceneRef = useRef<HTMLDivElement>(null);
+  /** Canevas d'édition : cible de l'aperçu de transition. */
+  const previewRef = useRef<HTMLDivElement>(null);
+  /** Dernière diapositive animée en présentation (-1 : aucune session). */
+  const lastAnimatedIndexRef = useRef(-1);
   const [notesOpen, setNotesOpen] = useState(false);
   const [elapsed, setElapsed] = useState(0);
   const [printToken, setPrintToken] = useState(0);
@@ -193,6 +231,8 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
       canEditRef.current = data.canEdit;
       setAspect(normalizeAspect(data.aspect));
       setTheme(normalizeTheme(data.theme));
+      setTransition(normalizeTransition(data.transition));
+      setTransitionMs(normalizeTransitionMs(data.transitionMs));
       revisionRef.current = data.revision;
       setSlides(toEditor(data.slides));
       setError(null);
@@ -549,18 +589,43 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
    * l'interface change tout de suite, le serveur confirme, et un échec rend sa
    * valeur précédente au réglage.
    */
-  async function persistSetting(patch: { aspect?: SlideAspectId; theme?: SlideThemeId }) {
+  async function persistSetting(patch: {
+    aspect?: SlideAspectId;
+    theme?: SlideThemeId;
+    transition?: SlideTransitionId;
+    transitionMs?: number;
+  }) {
     if (!canEditRef.current) return;
     try {
       const saved = await updatePresentationSettingFn({ data: { fileId, ...patch } });
       setAspect(normalizeAspect(saved.aspect));
       setTheme(normalizeTheme(saved.theme));
+      setTransition(normalizeTransition(saved.transition));
+      setTransitionMs(normalizeTransitionMs(saved.transitionMs));
       setError(null);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Réglage impossible.");
       // Retour à la valeur serveur : l'interface ne ment jamais longtemps.
       void load();
     }
+  }
+
+  function changeTransition(next: SlideTransitionId) {
+    if (next === transition || !canEdit) return;
+    setTransition(next);
+    setAnnouncement(
+      next === "none"
+        ? "Transitions désactivées."
+        : `Transition « ${transitionLabel(next)} » : ${transitionHint(next)}`,
+    );
+    void persistSetting({ transition: next });
+  }
+
+  function changeTransitionMs(next: number) {
+    if (!canEdit) return;
+    const value = normalizeTransitionMs(next);
+    setTransitionMs(value);
+    void persistSetting({ transitionMs: value });
   }
 
   /**
@@ -790,6 +855,22 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [presenting, notesOpen, presentIndex, slides.length]);
+
+  // Transitions : chaque changement de diapositive en présentation joue la
+  // transition choisie ; la toute première diapositive n'est jamais animée.
+  useEffect(() => {
+    if (!presenting) {
+      lastAnimatedIndexRef.current = -1;
+      return;
+    }
+    if (lastAnimatedIndexRef.current === -1) {
+      lastAnimatedIndexRef.current = presentIndex;
+      return;
+    }
+    if (lastAnimatedIndexRef.current === presentIndex) return;
+    lastAnimatedIndexRef.current = presentIndex;
+    animateTransition(sceneRef.current, transition, transitionMs);
+  }, [presenting, presentIndex, transition, transitionMs]);
 
   // Chronomètre du présentateur : remis à zéro à chaque ouverture.
   useEffect(() => {
@@ -1040,26 +1121,70 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
                     </button>
                   ))}
                 </fieldset>
+                <fieldset className="flex items-center gap-2">
+                  <legend className="sr-only">Transition des diapositives</legend>
+                  <span className="text-xs font-medium text-muted-foreground">Transition</span>
+                  <select
+                    aria-label="Transition"
+                    value={transition}
+                    onChange={(event) => changeTransition(event.target.value as SlideTransitionId)}
+                    className="h-8 rounded-md border border-input bg-background px-2 text-sm"
+                  >
+                    {SLIDE_TRANSITION_IDS.map((value) => (
+                      <option key={value} value={value}>
+                        {transitionLabel(value)}
+                      </option>
+                    ))}
+                  </select>
+                  <Input
+                    type="number"
+                    aria-label="Durée de la transition (ms)"
+                    min={200}
+                    max={2000}
+                    step={50}
+                    value={transitionMs}
+                    disabled={transition === "none"}
+                    onChange={(event) =>
+                      setTransitionMs(Number(event.target.value) || transitionMs)
+                    }
+                    onBlur={(event) => changeTransitionMs(Number(event.target.value))}
+                    className="h-8 w-20"
+                  />
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    disabled={transition === "none"}
+                    title={transitionHint(transition)}
+                    onClick={() => {
+                      setAnnouncement(`Aperçu : ${transitionSummary(transition, transitionMs)}`);
+                      animateTransition(previewRef.current, transition, transitionMs);
+                    }}
+                  >
+                    Aperçu
+                  </Button>
+                </fieldset>
               </div>
             ) : null}
 
-            <SlideCanvas
-              slide={current}
-              fileId={fileId}
-              interactive={canEdit}
-              selectedElementKey={selectedElementKey}
-              onSelectElement={(key) => {
-                setSelectedElementKey(key);
-                if (key === null) setEditingKey(null);
-              }}
-              onGeometryChange={updateElement}
-              editingKey={editingKey}
-              onStartEdit={startEdit}
-              onTextChange={changeText}
-              onEndEdit={endEdit}
-              aspect={aspect}
-              theme={theme}
-            />
+            <div ref={previewRef}>
+              <SlideCanvas
+                slide={current}
+                fileId={fileId}
+                interactive={canEdit}
+                selectedElementKey={selectedElementKey}
+                onSelectElement={(key) => {
+                  setSelectedElementKey(key);
+                  if (key === null) setEditingKey(null);
+                }}
+                onGeometryChange={updateElement}
+                editingKey={editingKey}
+                onStartEdit={startEdit}
+                onTextChange={changeText}
+                onEndEdit={endEdit}
+                aspect={aspect}
+                theme={theme}
+              />
+            </div>
           </div>
 
           <aside className="flex w-full shrink-0 flex-col gap-3 rounded-xl border border-border bg-card p-3 lg:w-60 print-hide">
@@ -1429,6 +1554,7 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
           </div>
           <div className="flex flex-1 items-center justify-center gap-4 overflow-auto p-6">
             <div
+              ref={sceneRef}
               className={cn(
                 "w-full",
                 notesOpen ? "max-w-3xl" : "max-w-5xl",

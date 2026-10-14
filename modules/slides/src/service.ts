@@ -28,6 +28,12 @@ import { MAX_NOTES_CHARS, notesForSave } from "./slide-notes.ts";
 import { SHAPE_ELEMENT_KINDS, type SlideShapeKind } from "./slide-shapes.ts";
 import { normalizeTextColor, type SlideTextColor } from "./slide-text.ts";
 import { normalizeTheme, SLIDE_THEME_IDS, type SlideThemeId } from "./slide-theme.ts";
+import {
+  normalizeTransition,
+  normalizeTransitionMs,
+  SLIDE_TRANSITION_IDS,
+  type SlideTransitionId,
+} from "./slide-transition.ts";
 
 /** Type MIME du pointeur Drive d'une présentation Workspace. */
 export const SLIDES_MIME = "application/vnd.workspace.slides+json";
@@ -113,6 +119,10 @@ export type PresentationDetail = {
   aspect: SlideAspectId;
   /** Thème construit sur les jetons sémantiques. */
   theme: SlideThemeId;
+  /** Transition jouée à chaque changement de diapositive (présentation). */
+  transition: SlideTransitionId;
+  /** Durée de la transition, en millisecondes. */
+  transitionMs: number;
   slides: SlideView[];
 };
 
@@ -291,6 +301,8 @@ async function requirePresentation(
   revision: number;
   aspect: SlideAspectId;
   theme: SlideThemeId;
+  transition: SlideTransitionId;
+  transitionMs: number;
 }> {
   const entry = await getEntry(actor, fileId);
   if (entry.mimeType !== SLIDES_MIME) {
@@ -310,6 +322,8 @@ async function requirePresentation(
     revision: row.revision,
     aspect: normalizeAspect(row.aspect),
     theme: normalizeTheme(row.theme),
+    transition: normalizeTransition(row.transition),
+    transitionMs: normalizeTransitionMs(row.transitionMs),
   };
 }
 
@@ -431,10 +445,8 @@ export async function createPresentation(
 }
 
 export async function getPresentation(actor: Actor, fileId: string): Promise<PresentationDetail> {
-  const { entry, presentationId, revision, aspect, theme } = await requirePresentation(
-    actor,
-    fileId,
-  );
+  const { entry, presentationId, revision, aspect, theme, transition, transitionMs } =
+    await requirePresentation(actor, fileId);
   const role = await effectiveRole(actor, fileId);
   return {
     fileId: entry.id,
@@ -443,6 +455,8 @@ export async function getPresentation(actor: Actor, fileId: string): Promise<Pre
     revision,
     aspect,
     theme,
+    transition,
+    transitionMs,
     slides: await loadSlides(presentationId),
   };
 }
@@ -460,14 +474,19 @@ function assertSetting<T extends string>(value: unknown, allowed: readonly T[], 
 }
 
 /**
- * Change un réglage de présentation (format de la diapositive, thème).
- * Ces réglages voyagent avec la scène : ils sont vérifiés ici puis
- * journalisés, car ils modifient l'aspect de toute la présentation.
+ * Change un réglage de présentation (format de la diapositive, thème,
+ * transition). Ces réglages voyagent avec la scène : ils sont vérifiés ici
+ * puis journalisés, car ils modifient l'aspect de toute la présentation.
  */
 export async function updatePresentationSetting(
   actor: Actor,
   fileId: string,
-  input: { aspect?: SlideAspectId; theme?: SlideThemeId },
+  input: {
+    aspect?: SlideAspectId;
+    theme?: SlideThemeId;
+    transition?: SlideTransitionId;
+    transitionMs?: number;
+  },
 ): Promise<PresentationDetail> {
   const { presentationId } = await requirePresentation(actor, fileId);
   const role = await effectiveRole(actor, fileId);
@@ -481,7 +500,18 @@ export async function updatePresentationSetting(
       : assertSetting(input.aspect, SLIDE_ASPECT_IDS, "Format de diapositive");
   const theme =
     input.theme === undefined ? undefined : assertSetting(input.theme, SLIDE_THEME_IDS, "Thème");
-  if (aspect === undefined && theme === undefined) {
+  const transition =
+    input.transition === undefined
+      ? undefined
+      : assertSetting(input.transition, SLIDE_TRANSITION_IDS, "Transition");
+  const transitionMs =
+    input.transitionMs === undefined ? undefined : normalizeTransitionMs(input.transitionMs);
+  if (
+    aspect === undefined &&
+    theme === undefined &&
+    transition === undefined &&
+    transitionMs === undefined
+  ) {
     throw new SlidesError("validation", "Aucun réglage à modifier.");
   }
 
@@ -490,6 +520,8 @@ export async function updatePresentationSetting(
     .set({
       ...(aspect === undefined ? {} : { aspect }),
       ...(theme === undefined ? {} : { theme }),
+      ...(transition === undefined ? {} : { transition }),
+      ...(transitionMs === undefined ? {} : { transitionMs }),
     })
     .where(eq(presentations.id, presentationId));
 
@@ -504,6 +536,8 @@ export async function updatePresentationSetting(
     metadata: {
       ...(aspect === undefined ? {} : { aspect }),
       ...(theme === undefined ? {} : { theme }),
+      ...(transition === undefined ? {} : { transition }),
+      ...(transitionMs === undefined ? {} : { transitionMs }),
     },
   });
 

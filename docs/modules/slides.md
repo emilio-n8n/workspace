@@ -30,6 +30,10 @@ Des présentations simples et propres : diapositives, mises en page avec zones
   autosave avec contrôle de révision, annulation de duplication/suppression
   (6 s).
 - Formats 16:9 / 4:3 (conversion des scènes), thèmes papier / encre / accent.
+- **Transitions** : aucune, fondu, glissement, poussée, balayage — durée
+  réglable (200-2 000 ms), aperçu dans l'éditeur, animation à chaque
+  changement de diapositive en présentation. Le respect de
+  « réduire les animations » (préférence système) annule tout mouvement.
 - Mode présentation plein écran (flèches, Échap), notes du présentateur,
   chronomètre, impression d'une diapositive par page.
 
@@ -38,7 +42,9 @@ Des présentations simples et propres : diapositives, mises en page avec zones
 `presentation_slides` (position, titre, notes), `slide_elements` (type,
 coordonnées relatives, texte, `font_size`, `bold`, `italic`, `underline`,
 `text_color`, `placeholder`, `media_key`, alignement).
-Migration `0004` : ajout de `italic`, `underline`, `text_color`, `placeholder`.
+Migrations `0004` (style du texte et zones) et `0005` (transition et durée) :
+`italic`, `underline`, `text_color`, `placeholder`, `transition`,
+`transition_ms`.
 
 ## Autorisations
 Droits Drive ; bornes validées côté service (pourcentages bornés, tailles,
@@ -52,6 +58,6 @@ forme et les mises en page persistent après rechargement ; un lecteur ouvre
 en lecture seule ; réordonnancement conservé (tests de service + E2E).
 
 ## Hors périmètre
-Vidéo et audio intégrés, transitions et animations, export PowerPoint/PDF,
-SmartArt et tableaux. Le MCP expose `slides.read` (plan : titres, notes,
-textes).
+Vidéo et audio intégrés, animations d'entrée par élément, export
+PowerPoint/PDF, SmartArt et tableaux. Le MCP expose `slides.read`
+(plan : titres, notes, textes).

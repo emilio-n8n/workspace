@@ -174,6 +174,9 @@ test("slides : mise en page de titre, édition en place et nouvelle diapositive"
     "true",
   );
 
+  // Transition choisie dans la barre de réglages (persistée avec la présentation).
+  await page.getByLabel("Transition").selectOption("fade");
+
   // Nouvelle diapositive avec la mise en page « Titre et contenu ».
   await expect(async () => {
     await page.getByRole("button", { name: "Nouvelle diapositive" }).click();
@@ -190,6 +193,7 @@ test("slides : mise en page de titre, édition en place et nouvelle diapositive"
   await page.reload();
   await page.waitForSelector("html[data-hydrated='true']", { timeout: 40_000 });
   await expect(page.getByText("Lancement 2026").first()).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByLabel("Transition")).toHaveValue("fade");
 });
 
 test("accueil : le lanceur expose les quatorze applications", async ({ page }) => {
