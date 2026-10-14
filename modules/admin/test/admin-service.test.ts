@@ -210,6 +210,24 @@ async function addSubmission(params: {
   });
 }
 
+/** Insère un évènement d'audit avec action, acteur et date contrôlés. */
+async function addAuditEvent(params: {
+  orgId: string;
+  action: string;
+  actorUserId?: string | null;
+  createdAt?: Date;
+}): Promise<void> {
+  await getDb()
+    .insert(auditEvents)
+    .values({
+      orgId: params.orgId,
+      actorUserId: params.actorUserId ?? null,
+      action: params.action,
+      result: "success",
+      createdAt: params.createdAt ?? new Date(),
+    });
+}
+
 let f: Fixtures;
 
 beforeEach(async () => {
@@ -294,6 +312,110 @@ describe("admin — organisation", () => {
     const entries = await listAudit(f.actorOwner, 10);
     expect(entries).toHaveLength(1);
     expect(entries[0]?.action).toBe("test.action");
+  });
+});
+
+describe("admin — journal d'audit (filtres et pagination)", () => {
+  it("filtre par préfixe d'action sans confondre les actions voisines", async () => {
+    await addAuditEvent({ orgId: f.orgId, action: "docs.document.create", actorUserId: f.owner });
+    await addAuditEvent({ orgId: f.orgId, action: "docs.document.delete", actorUserId: f.owner });
+    await addAuditEvent({ orgId: f.orgId, action: "docs.comment.create", actorUserId: f.owner });
+
+    // Préfixe : les deux actions proches remontent, le commentaire reste exclu.
+    const prefix = await listAudit(f.actorOwner, { action: "docs.document" });
+    expect(prefix.total).toBe(2);
+    expect(prefix.rows.map((row) => row.action).sort()).toEqual([
+      "docs.document.create",
+      "docs.document.delete",
+    ]);
+
+    // Préfixe plus long : une seule des deux actions voisines.
+    const precise = await listAudit(f.actorOwner, { action: "docs.document.delete" });
+    expect(precise.total).toBe(1);
+    expect(precise.rows[0]?.action).toBe("docs.document.delete");
+
+    // Insensible à la casse (ILIKE).
+    const upper = await listAudit(f.actorOwner, { action: "DOCS.DOCUMENT" });
+    expect(upper.total).toBe(2);
+  });
+
+  it("filtre par acteur", async () => {
+    await addAuditEvent({ orgId: f.orgId, action: "actor.one", actorUserId: f.owner });
+    await addAuditEvent({ orgId: f.orgId, action: "actor.two", actorUserId: f.simpleUser });
+
+    const page = await listAudit(f.actorOwner, { actorId: f.owner });
+    expect(page.total).toBe(1);
+    expect(page.rows.map((row) => row.action)).toEqual(["actor.one"]);
+  });
+
+  it("applique une plage de dates inclusive (jour entier)", async () => {
+    const from = new Date("2026-05-10T00:00:00.000Z");
+    const before = new Date(from.getTime() - 1);
+    const end = new Date("2026-05-12T23:59:59.999Z");
+    const after = new Date("2026-05-13T00:00:00.000Z");
+
+    await addAuditEvent({ orgId: f.orgId, action: "range.before", createdAt: before });
+    await addAuditEvent({ orgId: f.orgId, action: "range.start", createdAt: from });
+    await addAuditEvent({ orgId: f.orgId, action: "range.end", createdAt: end });
+    await addAuditEvent({ orgId: f.orgId, action: "range.after", createdAt: after });
+
+    // `before` (1 ms avant `from`) est exclu, `end` (dernière ms de `to`) inclus.
+    const page = await listAudit(f.actorOwner, { from: "2026-05-10", to: "2026-05-12" });
+    expect(page.total).toBe(2);
+    expect(page.rows.map((row) => row.action).sort()).toEqual(["range.end", "range.start"]);
+
+    // Les mêmes bornes en instants ISO donnent le même résultat.
+    const instants = await listAudit(f.actorOwner, {
+      from: "2026-05-10T00:00:00.000Z",
+      to: "2026-05-12T23:59:59.999Z",
+    });
+    expect(instants.rows.map((row) => row.action).sort()).toEqual(["range.end", "range.start"]);
+
+    // Plage inversée ou date invalide : refus explicite.
+    await expect(listAudit(f.actorOwner, { from: "2026-05-13", to: "2026-05-12" })).rejects.toThrow(
+      AdminError,
+    );
+    await expect(listAudit(f.actorOwner, { from: "12/05/2026" })).rejects.toThrow(/Date invalide/);
+  });
+
+  it("pagine avec un total stable et un tri décroissant", async () => {
+    const base = new Date("2026-06-01T12:00:00.000Z");
+    for (let index = 0; index < 15; index += 1) {
+      await addAuditEvent({
+        orgId: f.orgId,
+        action: `page.event.${String(index).padStart(2, "0")}`,
+        createdAt: new Date(base.getTime() + index * 1000),
+      });
+    }
+
+    const first = await listAudit(f.actorOwner, { page: 1, pageSize: 10 });
+    expect(first).toMatchObject({ total: 15, page: 1, pageSize: 10 });
+    expect(first.rows).toHaveLength(10);
+    expect(first.rows[0]?.action).toBe("page.event.14");
+
+    const second = await listAudit(f.actorOwner, { page: 2, pageSize: 10 });
+    expect(second.total).toBe(15);
+    expect(second.rows).toHaveLength(5);
+    expect(second.rows[0]?.action).toBe("page.event.04");
+    expect(second.rows[4]?.action).toBe("page.event.00");
+
+    // Aucun recouvrement entre les deux pages.
+    const firstIds = new Set(first.rows.map((row) => row.id));
+    expect(second.rows.some((row) => firstIds.has(row.id))).toBe(false);
+  });
+
+  it("borne pageSize entre 10 et 100 et page à partir de 1", async () => {
+    await addAuditEvent({ orgId: f.orgId, action: "bounds.event" });
+
+    // Trop petit → borne basse ; trop grand → borne haute ; absent → défaut 50.
+    expect((await listAudit(f.actorOwner, { pageSize: 2 })).pageSize).toBe(10);
+    expect((await listAudit(f.actorOwner, { pageSize: 500 })).pageSize).toBe(100);
+    expect((await listAudit(f.actorOwner, {})).pageSize).toBe(50);
+
+    // page 0 → page 1, total intact.
+    const floored = await listAudit(f.actorOwner, { page: 0 });
+    expect(floored.page).toBe(1);
+    expect(floored.total).toBe(1);
   });
 });
 

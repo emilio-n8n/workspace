@@ -5,7 +5,7 @@ import { docsComments, docsDocuments } from "@workspace/docs";
 import { driveFiles } from "@workspace/drive";
 import type { Actor } from "@workspace/permissions";
 import { tasks } from "@workspace/tasks";
-import { and, asc, desc, eq, gt, ne, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, ilike, lte, ne, or, type SQL, sql } from "drizzle-orm";
 
 export type AdminErrorCode = "not_found" | "forbidden" | "validation" | "conflict";
 
@@ -59,6 +59,30 @@ export type AuditEntry = {
   createdAt: string;
   /** Valeurs JSON sérialisables (contrainte des server functions TanStack). */
   metadata: Record<string, string | number | boolean | null> | null;
+};
+
+/** Requête du journal d'audit : filtres et pagination, tous optionnels. */
+export type AuditListQuery = {
+  /** Préfixe d'action insensible à la casse (ex. `docs.document`). */
+  action?: string;
+  /** Identifiant de l'acteur utilisateur (`audit_events.actor_user_id`). */
+  actorId?: string;
+  /** Début de plage inclus — `AAAA-MM-JJ` (début du jour, UTC) ou instant ISO. */
+  from?: string;
+  /** Fin de plage incluse — `AAAA-MM-JJ` (fin du jour, UTC) ou instant ISO. */
+  to?: string;
+  /** Page demandée (≥ 1, défaut 1). */
+  page?: number;
+  /** Taille de page bornée à 10..100 (défaut 50). */
+  pageSize?: number;
+};
+
+/** Page du journal d'audit : lignes de la page et total des lignes filtrées. */
+export type AuditPage = {
+  rows: AuditEntry[];
+  total: number;
+  page: number;
+  pageSize: number;
 };
 
 const db = () => getDb();
@@ -437,15 +461,88 @@ export async function updateQuota(actor: Actor, quotaBytes: number | null): Prom
   });
 }
 
-export async function listAudit(actor: Actor, limit = 100): Promise<AuditEntry[]> {
-  await requireAdmin(actor);
-  const rows = await db()
-    .select()
-    .from(core.auditEvents)
-    .where(eq(core.auditEvents.orgId, actor.orgId))
-    .orderBy(desc(core.auditEvents.createdAt))
-    .limit(Math.min(Math.max(limit, 1), 200));
-  return rows.map((row) => ({
+export const AUDIT_PAGE_SIZE_MIN = 10;
+export const AUDIT_PAGE_SIZE_MAX = 100;
+export const AUDIT_PAGE_SIZE_DEFAULT = 50;
+/** Plafond de `page` : garde l'offset loin des entiers non sûrs. */
+export const AUDIT_PAGE_MAX = 10_000;
+
+const AUDIT_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+const AUDIT_INSTANT_PATTERN =
+  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?(Z|[+-]\d{2}:\d{2})$/;
+
+/** Vrai si `value` est une date ISO valide (`AAAA-MM-JJ` ou instant ISO). */
+export function isAuditDate(value: string): boolean {
+  const clean = value.trim();
+  if (AUDIT_DATE_PATTERN.test(clean)) {
+    return !Number.isNaN(new Date(`${clean}T00:00:00.000Z`).getTime());
+  }
+  return AUDIT_INSTANT_PATTERN.test(clean) && !Number.isNaN(new Date(clean).getTime());
+}
+
+/** Borne `pageSize` à 10..100 (défaut 50). */
+export function clampAuditPageSize(value: number | undefined): number {
+  if (value === undefined || !Number.isFinite(value)) return AUDIT_PAGE_SIZE_DEFAULT;
+  return Math.min(Math.max(Math.trunc(value), AUDIT_PAGE_SIZE_MIN), AUDIT_PAGE_SIZE_MAX);
+}
+
+/** Borne `page` à ≥ 1 (défaut 1). */
+export function clampAuditPage(value: number | undefined): number {
+  if (value === undefined || !Number.isFinite(value)) return 1;
+  return Math.min(Math.max(Math.trunc(value), 1), AUDIT_PAGE_MAX);
+}
+
+/** Convertit `from`/`to` en instants ; une date seule couvre le jour entier (UTC). */
+function parseAuditBoundary(value: string, bound: "start" | "end"): Date {
+  const clean = value.trim();
+  if (!isAuditDate(clean)) {
+    throw new AdminError("validation", `Date invalide « ${value} » — format attendu AAAA-MM-JJ.`);
+  }
+  const dayOnly = AUDIT_DATE_PATTERN.test(clean);
+  const date = new Date(dayOnly ? `${clean}T00:00:00.000Z` : clean);
+  if (bound === "end" && dayOnly) date.setUTCHours(23, 59, 59, 999);
+  return date;
+}
+
+/** Échappe les caractères spéciaux LIKE (%, _) d'un préfixe littéral. */
+function escapeLikePrefix(value: string): string {
+  return value.replace(/[\\%_]/g, (match) => `\\${match}`);
+}
+
+type NormalizedAuditQuery = {
+  action: string | null;
+  actorId: string | null;
+  from: Date | null;
+  to: Date | null;
+  page: number;
+  pageSize: number;
+};
+
+/**
+ * Applique les règles du journal : trim des filtres, validation des dates
+ * (`from` ≤ `to`, jour inclusif en UTC) et bornage de la pagination.
+ */
+function normalizeAuditQuery(query: AuditListQuery = {}): NormalizedAuditQuery {
+  const action = query.action?.trim() ?? "";
+  const actorId = query.actorId?.trim() ?? "";
+  const from = query.from ? parseAuditBoundary(query.from, "start") : null;
+  const to = query.to ? parseAuditBoundary(query.to, "end") : null;
+  if (from && to && from.getTime() > to.getTime()) {
+    throw new AdminError("validation", "La date de début doit précéder la date de fin.");
+  }
+  return {
+    action: action.length > 0 ? action : null,
+    actorId: actorId.length > 0 ? actorId : null,
+    from,
+    to,
+    page: clampAuditPage(query.page),
+    pageSize: clampAuditPageSize(query.pageSize),
+  };
+}
+
+/** Projection publique d'une ligne `audit_events`. */
+function toAuditEntry(row: typeof core.auditEvents.$inferSelect): AuditEntry {
+  return {
     id: row.id,
     action: row.action,
     resourceType: row.resourceType,
@@ -455,7 +552,70 @@ export async function listAudit(actor: Actor, limit = 100): Promise<AuditEntry[]
     actorTokenId: row.actorTokenId,
     createdAt: row.createdAt.toISOString(),
     metadata: row.metadata as Record<string, string | number | boolean | null> | null,
-  }));
+  };
+}
+
+/**
+ * Journal d'audit de l'organisation.
+ *
+ * - `listAudit(actor, limit)` — appel historique : les N dernières lignes.
+ * - `listAudit(actor, query)` — page filtrée `{ rows, total, page, pageSize }` :
+ *   `action` est un préfixe insensible à la casse, `from`/`to` des dates ISO
+ *   inclusives (jour entier en UTC), `pageSize` borné à 10..100, tri
+ *   `createdAt DESC` stabilisé par `id DESC`.
+ */
+export async function listAudit(actor: Actor, limit?: number): Promise<AuditEntry[]>;
+export async function listAudit(actor: Actor, query: AuditListQuery): Promise<AuditPage>;
+export async function listAudit(
+  actor: Actor,
+  limitOrQuery?: number | AuditListQuery,
+): Promise<AuditEntry[] | AuditPage> {
+  await requireAdmin(actor);
+
+  // Compatibilité : l'appel numérique historique reste « les N dernières lignes ».
+  if (limitOrQuery === undefined || typeof limitOrQuery === "number") {
+    const limit = Math.min(Math.max(limitOrQuery ?? 100, 1), 200);
+    const rows = await db()
+      .select()
+      .from(core.auditEvents)
+      .where(eq(core.auditEvents.orgId, actor.orgId))
+      .orderBy(desc(core.auditEvents.createdAt), desc(core.auditEvents.id))
+      .limit(limit);
+    return rows.map(toAuditEntry);
+  }
+
+  const query = normalizeAuditQuery(limitOrQuery);
+  const filters: SQL[] = [eq(core.auditEvents.orgId, actor.orgId)];
+  if (query.action) {
+    filters.push(ilike(core.auditEvents.action, `${escapeLikePrefix(query.action)}%`));
+  }
+  if (query.actorId) {
+    filters.push(eq(core.auditEvents.actorUserId, query.actorId));
+  }
+  if (query.from) filters.push(gte(core.auditEvents.createdAt, query.from));
+  if (query.to) filters.push(lte(core.auditEvents.createdAt, query.to));
+  const where = and(...filters);
+
+  const [counted, rows] = await Promise.all([
+    db()
+      .select({ value: sql<number>`count(*)`.mapWith(Number) })
+      .from(core.auditEvents)
+      .where(where),
+    db()
+      .select()
+      .from(core.auditEvents)
+      .where(where)
+      .orderBy(desc(core.auditEvents.createdAt), desc(core.auditEvents.id))
+      .limit(query.pageSize)
+      .offset((query.page - 1) * query.pageSize),
+  ]);
+
+  return {
+    rows: rows.map(toAuditEntry),
+    total: counted[0]?.value ?? 0,
+    page: query.page,
+    pageSize: query.pageSize,
+  };
 }
 
 // ---------------------------------------------------------------------------

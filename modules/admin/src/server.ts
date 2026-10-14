@@ -4,10 +4,13 @@ import { requireActor } from "@workspace/auth";
 import { z } from "zod";
 import {
   addMemberByEmail,
+  clampAuditPage,
+  clampAuditPageSize,
   eraseUserAccount,
   exportUserData,
   getOverview,
   getPolicies,
+  isAuditDate,
   listActiveSessions,
   listAudit,
   listMembers,
@@ -25,6 +28,8 @@ import {
 export type {
   ActiveSession,
   AuditEntry,
+  AuditListQuery,
+  AuditPage,
   MemberFull,
   OrgOverview,
   OrgPolicies,
@@ -111,10 +116,34 @@ export const updatePoliciesFn = createServerFn({ method: "POST" })
     return { ok: true };
   });
 
-export const listAuditFn = createServerFn({ method: "GET" }).handler(async () => {
-  const { actor } = await requireActor(getRequest().headers);
-  return listAudit(actor, 100);
+/**
+ * Filtres et pagination du journal — mêmes règles que `listAudit` : dates ISO
+ * validées, `pageSize` borné à 10..100 (défaut 50), `page` ≥ 1.
+ */
+const auditQueryValidator = z.object({
+  action: z.string().trim().max(120).optional(),
+  actorId: z.string().trim().max(64).optional(),
+  from: z.string().trim().refine(isAuditDate, "Date invalide (format AAAA-MM-JJ).").optional(),
+  to: z.string().trim().refine(isAuditDate, "Date invalide (format AAAA-MM-JJ).").optional(),
+  page: z
+    .number()
+    .int()
+    .optional()
+    .transform((value) => clampAuditPage(value)),
+  pageSize: z
+    .number()
+    .int()
+    .optional()
+    .transform((value) => clampAuditPageSize(value)),
 });
+
+/** Journal d'audit filtré et paginé — sans argument : première page par défaut. */
+export const listAuditFn = createServerFn({ method: "GET" })
+  .validator((input: unknown) => auditQueryValidator.parse(input ?? {}))
+  .handler(async ({ data }) => {
+    const { actor } = await requireActor(getRequest().headers);
+    return listAudit(actor, data);
+  });
 
 export const listActiveSessionsFn = createServerFn({ method: "GET" }).handler(async () => {
   const { actor } = await requireActor(getRequest().headers);

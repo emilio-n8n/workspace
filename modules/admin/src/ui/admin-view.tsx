@@ -2,14 +2,12 @@ import { Alert, Badge, Button, ConfirmDialog, Dialog, Input, Label } from "@work
 import { useCallback, useEffect, useState } from "react";
 import {
   type ActiveSession,
-  type AuditEntry,
   addMemberFn,
   eraseUserAccountFn,
   exportUserDataFn,
   getOverviewFn,
   getPoliciesFn,
   listActiveSessionsFn,
-  listAuditFn,
   listMembersFn,
   type MemberFull,
   type OrgOverview,
@@ -21,6 +19,7 @@ import {
   updatePoliciesFn,
   updateQuotaFn,
 } from "../server.ts";
+import { AuditLog } from "./audit-log.tsx";
 
 function formatBytes(size: number): string {
   if (size < 1024) return `${size} o`;
@@ -126,12 +125,6 @@ function EraseAccountDialog({
   );
 }
 
-const RESULT_LABELS: Record<string, { label: string; bad?: boolean }> = {
-  success: { label: "Succès" },
-  denied: { label: "Refusé", bad: true },
-  error: { label: "Erreur", bad: true },
-};
-
 /**
  * Administration de l'organisation : profil, membres et rôles, sessions
  * actives, quota de stockage et journal d'audit. Réservé aux rôles owner/admin
@@ -144,7 +137,7 @@ export function AdminView() {
   const [revokeTarget, setRevokeTarget] = useState<ActiveSession | null>(null);
   const [eraseTarget, setEraseTarget] = useState<MemberFull | null>(null);
   const [eraseConfirm, setEraseConfirm] = useState("");
-  const [audit, setAudit] = useState<AuditEntry[]>([]);
+  const [auditRefreshKey, setAuditRefreshKey] = useState(0);
   const [orgName, setOrgName] = useState("");
   const [quotaGo, setQuotaGo] = useState("");
   const [inviteEmail, setInviteEmail] = useState("");
@@ -158,11 +151,10 @@ export function AdminView() {
 
   const refresh = useCallback(async () => {
     try {
-      const [data, memberList, sessionList, auditList, policyData] = await Promise.all([
+      const [data, memberList, sessionList, policyData] = await Promise.all([
         getOverviewFn(),
         listMembersFn(),
         listActiveSessionsFn(),
-        listAuditFn(),
         getPoliciesFn(),
       ]);
       setOverview(data);
@@ -170,7 +162,6 @@ export function AdminView() {
       setQuotaGo(data.quotaBytes ? String(Math.round(data.quotaBytes / 1024 ** 3)) : "");
       setMembers(memberList);
       setSessions(sessionList);
-      setAudit(auditList);
       setPolicies(policyData);
       setSharingDraft(policyData.allowExternalSharing);
       setRetentionDraft(String(policyData.versionRetentionDays));
@@ -197,6 +188,7 @@ export function AdminView() {
     try {
       await action();
       await refresh();
+      setAuditRefreshKey((key) => key + 1);
       flash(message);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Action impossible.");
@@ -540,38 +532,7 @@ export function AdminView() {
         </div>
       </section>
 
-      <section className="flex flex-col gap-3 rounded-xl border border-border bg-card p-4">
-        <h2 className="font-display text-sm font-semibold">Journal d'audit (100 derniers)</h2>
-        {audit.length === 0 ? (
-          <p className="text-sm text-muted-foreground">Aucun événement pour le moment.</p>
-        ) : (
-          <ul className="flex max-h-96 flex-col divide-y divide-border overflow-y-auto">
-            {audit.map((entry) => {
-              const result = RESULT_LABELS[entry.result] ?? { label: entry.result };
-              return (
-                <li key={entry.id} className="flex flex-wrap items-center gap-2 py-2 text-sm">
-                  <span className="font-mono text-xs">{entry.action}</span>
-                  {entry.resourceType ? (
-                    <span className="text-xs text-muted-foreground">
-                      {entry.resourceType}/{entry.resourceId?.slice(0, 8) ?? "?"}
-                    </span>
-                  ) : null}
-                  <Badge
-                    variant={result.bad ? "outline" : "accent"}
-                    className={result.bad ? "text-destructive" : undefined}
-                  >
-                    {result.label}
-                  </Badge>
-                  <span className="ml-auto text-xs text-muted-foreground">
-                    {entry.actorTokenId ? "jeton · " : ""}
-                    {new Date(entry.createdAt).toLocaleString("fr-FR")}
-                  </span>
-                </li>
-              );
-            })}
-          </ul>
-        )}
-      </section>
+      <AuditLog refreshKey={auditRefreshKey} />
 
       <ConfirmDialog
         open={revokeTarget !== null}
