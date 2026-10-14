@@ -2,12 +2,14 @@ import { cn } from "@workspace/ui";
 import { type KeyboardEvent, type ReactNode, useEffect, useId, useRef, useState } from "react";
 
 /**
- * Menu déroulant local au module Drive.
+ * Menu d'options cochées (groupe radio) local au module Drive.
  *
- * `@workspace/ui` prépare un primitif équivalent (pas encore exporté au moment
- * de l'écriture) : cette version couvre les besoins du navigateur — actions,
- * options radio cochées, séparateurs, navigation clavier complète — et pourra
- * céder la place à l'import du paquet d'interface le jour de son export.
+ * Le menu ordinaire vient du primitif `Menu` de `@workspace/ui`. Ce composant
+ * n'existe que pour ce que le primitif ne couvre pas encore : une option
+ * cochée (`checked`) avec le rôle `menuitemradio` et `aria-checked` — sans
+ * quoi un lecteur d'écran ne peut pas savoir quelle clé de tri ou quelle
+ * densité est active. Il pourra céder la place dès que le primitif exposera
+ * cet état.
  */
 
 /** Trait de séparation entre deux groupes d'entrées. */
@@ -57,7 +59,7 @@ function CheckGlyph() {
   );
 }
 
-export type MenuProps = {
+export type RadioMenuProps = {
   /** Libellé du déclencheur, aussi utilisé comme nom accessible du menu. */
   label: string;
   entries: MenuEntry[];
@@ -76,12 +78,12 @@ export type MenuProps = {
 };
 
 /**
- * Menu déroulant maniable au clavier dans son intégralité : flèches (bas/haut
+ * Menu d'options maniable au clavier dans son intégralité : flèches (bas/haut
  * avec bouclage), Début/Fin, frappe de lettres pour sauter à un libellé,
  * Entrée ou Espace pour activer, Échap pour refermer en rendant le focus au
  * déclencheur, Tab pour refermer et poursuivre la navigation.
  */
-export function Menu({
+export function RadioMenu({
   label,
   entries,
   open: controlledOpen,
@@ -91,7 +93,7 @@ export function Menu({
   triggerClassName,
   trigger,
   className,
-}: MenuProps) {
+}: RadioMenuProps) {
   const baseId = useId();
   const triggerId = `${baseId}-trigger`;
   const menuId = `${baseId}-menu`;

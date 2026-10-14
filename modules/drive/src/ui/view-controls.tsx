@@ -1,6 +1,6 @@
 import { cn, IconChevronDown, IconGrid } from "@workspace/ui";
 import type { ReactNode } from "react";
-import { Menu, type MenuEntry } from "./menu.tsx";
+import { type MenuEntry, RadioMenu } from "./radio-menu.tsx";
 import {
   ariaSortFor,
   DENSITIES,
@@ -79,7 +79,7 @@ export function ViewControls({ prefs, onChange }: ViewControlsProps) {
 
   return (
     <div className="flex items-center gap-2">
-      <Menu
+      <RadioMenu
         label={`Trier : ${sortSummary(prefs)}`}
         entries={sortEntries}
         trigger={() => (
@@ -91,7 +91,7 @@ export function ViewControls({ prefs, onChange }: ViewControlsProps) {
           </>
         )}
       />
-      <Menu
+      <RadioMenu
         label={`Densité : ${DENSITY_LABELS[prefs.density]}`}
         entries={densityEntries}
         trigger={() => (

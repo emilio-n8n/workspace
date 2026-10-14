@@ -41,7 +41,10 @@ Le coffre-fort de fichiers de la suite : dossiers, uploads, aperçus, partages, 
 - **Navigation** : fil d'Ariane cliquable, chemins longs repliés en menu « … », menu des sous-dossiers du dossier courant.
 - **Affichage** : tri (nom, date, taille) et densité persistés localement (`workspace.drive.view`), en-têtes de colonne triables avec `aria-sort`.
 - **Sélection multiple** : clic, Ctrl/⌘ + clic, Maj + clic (plage), Ctrl/⌘ + A, Échap ; barre d'actions (télécharger, déplacer, supprimer) avec comptes rendus par toast.
-- La logique de présentation (tri, repli du fil, sémantique de sélection) vit dans des modules purs sous `src/ui/`, testés sans DOM.
+- **Clavier** : le tableau porte le rôle ARIA `grid` ; flèches, Début/Fin, Page haut/bas déplacent le curseur de ligne, Entrée (ou flèche droite) ouvre, flèche gauche remonte au dossier parent, Espace sélectionne, Suppr met à la corbeille derrière confirmation. Position annoncée en `aria-live`.
+- **Création de dossier inline** : formulaire en tête de liste, validation immédiate en français (nom obligatoire, 255 caractères, séparateurs et contrôles refusés), Entrée crée, Échap annule.
+- **Zone de dépôt** : état actif au survol pendant un glisser-déposer, dossier de destination nommé, envoi séquentiel avec état et message d'erreur par fichier et relance individuelle.
+- La logique de présentation (tri, repli du fil, sémantique de sélection, navigation clavier, validation du nom, file d'envoi) vit dans des modules purs sous `src/ui/`, testés sans DOM.
 
 ## Outils MCP
 
@@ -55,7 +58,7 @@ Le coffre-fort de fichiers de la suite : dossiers, uploads, aperçus, partages, 
 
 - Service : 11 tests (cycle complet, conflits, limite de taille, partage/révocation, héritage, isolation inter-orgs, corbeille/purge, versions, liens).
 - **Actions groupées** : déplacement (lot, racine, dédoublonnage, refus de descendance, conflit de nom isolé, élément introuvable, corbeille, permission), cibles proposées, corbeille groupée (17 tests d'intégration).
-- **Interface** : tri et persistance des préférences (22), repli et libellés du fil d'Ariane (15), sémantique de la sélection et fichiers téléchargeables (18).
+- **Interface** : tri et persistance des préférences (22), repli et libellés du fil d'Ariane (15), sémantique de la sélection et fichiers téléchargeables (18), navigation clavier de la liste (19), validation du nom d'élément (10), file de téléversement (20).
 - E2E navigateur : dossier → upload → navigation → corbeille → restauration ; partage entre deux membres → accès réel → révocation effective.
 - MCP : recherche/lecture autorisées ; refus sans scope ; isolation inter-organisations.
 

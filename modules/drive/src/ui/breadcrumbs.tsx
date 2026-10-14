@@ -1,5 +1,5 @@
 import { Link, useRouter } from "@tanstack/react-router";
-import { IconChevronDown, IconFolder } from "@workspace/ui";
+import { IconChevronDown, IconFolder, Menu, type MenuItem } from "@workspace/ui";
 import { useCallback, useState } from "react";
 import { type BreadcrumbItem, listDriveFn } from "../server.ts";
 import {
@@ -10,7 +10,6 @@ import {
   trailLabel,
   trailParts,
 } from "./breadcrumb.ts";
-import { Menu, type MenuEntry } from "./menu.tsx";
 
 type Props = {
   /** Chemin du dossier courant, racine exclue, du plus haut au plus proche. */
@@ -80,19 +79,25 @@ export function Breadcrumbs({ crumbs }: Props) {
     }
   }, [currentId]);
 
-  function subfolderEntries(): MenuEntry[] {
-    if (stale) return [{ id: "idle", label: "Chargement…", disabled: true }];
-    if (subfolders.status === "loading") {
-      return [{ id: "loading", label: "Chargement…", disabled: true }];
-    }
+  function subfolderItems(): MenuItem[] {
+    // Une entrée désactivée n'a pas d'action, mais le type du primitif l'exige.
+    const inert = (id: string, label: string): MenuItem => ({
+      id,
+      label,
+      onSelect: () => undefined,
+      disabled: true,
+    });
+
+    if (stale) return [inert("idle", "Chargement…")];
+    if (subfolders.status === "loading") return [inert("loading", "Chargement…")];
     if (subfolders.status === "error") {
       return [
-        { id: "error", label: "Chargement impossible", disabled: true },
+        inert("error", "Chargement impossible"),
         { id: "retry", label: "Réessayer", onSelect: () => void loadSubfolders() },
       ];
     }
     const folders = subfolders.status === "ready" ? subfolders.folders : [];
-    if (folders.length === 0) return [{ id: "empty", label: "Aucun sous-dossier", disabled: true }];
+    if (folders.length === 0) return [inert("empty", "Aucun sous-dossier")];
     return folders.map((folder) => ({
       id: folder.id,
       label: folder.name,
@@ -133,12 +138,14 @@ export function Breadcrumbs({ crumbs }: Props) {
             <span className="text-muted-foreground" aria-hidden>
               /
             </span>
+            {/* Le primitif `Menu` de @workspace/ui, avec un déclencheur ramené
+                à la taille d'un segment de fil (variantes descendantes). */}
             <Menu
               label={overflowLabel(parts.overflow.length)}
               align="start"
               triggerIcon={<EllipsisGlyph />}
-              triggerClassName="h-7 w-8 px-0 text-muted-foreground"
-              entries={parts.overflow.map((crumb) => ({
+              className="[&>button]:size-7 [&>button]:border-transparent [&>button]:bg-transparent [&>button]:px-0"
+              items={parts.overflow.map((crumb) => ({
                 id: crumb.id,
                 label: crumb.name,
                 icon: <IconFolder />,
@@ -176,8 +183,8 @@ export function Breadcrumbs({ crumbs }: Props) {
                         }
                       }}
                       triggerIcon={<IconChevronDown />}
-                      triggerClassName="size-7 px-0 text-muted-foreground"
-                      entries={subfolderEntries()}
+                      className="[&>button]:size-7 [&>button]:border-transparent [&>button]:bg-transparent [&>button]:px-0"
+                      items={subfolderItems()}
                     />
                   ) : null}
                 </span>

@@ -22,6 +22,7 @@ import {
 import {
   type DragEvent,
   type FormEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
   useCallback,
   useEffect,
@@ -45,6 +46,8 @@ import {
 } from "../server.ts";
 import { Breadcrumbs } from "./breadcrumbs.tsx";
 import { NewMenu, RowMenu } from "./entry-menus.tsx";
+import { remainingNameChars, validateEntryName } from "./entry-name.ts";
+import { clampCursor, cursorAnnouncement, gridActionForKey, listAnnouncement } from "./grid-nav.ts";
 import { isLinkedMime, MAX_BULK_DOWNLOAD } from "./linked-files.ts";
 import {
   deselectId,
@@ -58,6 +61,15 @@ import {
 } from "./selection.ts";
 import { MoveDialog, SelectionActionBar } from "./selection-bar.tsx";
 import { ShareDialog } from "./share-dialog.tsx";
+import {
+  enqueueUploads,
+  markUploaded,
+  markUploadFailed,
+  markUploading,
+  pendingUploadIds,
+  type UploadItem,
+  uploadSummary,
+} from "./upload-queue.ts";
 import { SortableColumn, ViewControls, ViewControlsHint } from "./view-controls.tsx";
 import {
   DEFAULT_VIEW_PREFS,
@@ -65,6 +77,7 @@ import {
   rowPadding,
   serializeViewPrefs,
   sortEntries,
+  sortSummary,
   VIEW_PREFS_STORAGE_KEY,
   type ViewPrefs,
 } from "./view-prefs.ts";
@@ -325,7 +338,11 @@ export function DriveBrowser({
   const [crumbs, setCrumbs] = useState<BreadcrumbItem[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [uploading, setUploading] = useState(false);
+  const [uploads, setUploads] = useState<UploadItem[]>([]);
+
+  // Compte des entrées de glisser-déposer : `dragleave` se déclenche aussi en
+  // survolant un enfant, un booléen ferait clignoter la zone de dépôt.
+  const dragDepthRef = useRef(0);
   const [dragOver, setDragOver] = useState(false);
 
   const [query, setQuery] = useState("");
@@ -337,9 +354,12 @@ export function DriveBrowser({
   const [moveOpen, setMoveOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
 
-  const [folderDialogOpen, setFolderDialogOpen] = useState(false);
-  const [folderName, setFolderName] = useState("");
+  // Création de dossier inline : la feuille de saisie s'insère dans la liste.
+  const [inlineNew, setInlineNew] = useState(false);
+  const [newName, setNewName] = useState("");
+  const [newNameError, setNewNameError] = useState<string | null>(null);
   const [creatingFolder, setCreatingFolder] = useState(false);
+  const inlineInputRef = useRef<HTMLInputElement>(null);
 
   const [createKind, setCreateKind] = useState<CreationKind | null>(null);
   const [createTitle, setCreateTitle] = useState("");
@@ -354,6 +374,15 @@ export function DriveBrowser({
   const [preview, setPreview] = useState<PreviewState | null>(null);
   const [previewText, setPreviewText] = useState<TextPreviewState>({ status: "loading" });
 
+  // Curseur de la navigation clavier : index de la ligne focalisée.
+  const [cursor, setCursor] = useState<number | null>(null);
+  const rowRefs = useRef(new Map<number, HTMLTableRowElement>());
+  /** Pose le focus seulement quand la navigation vient du clavier. */
+  const shouldFocusRowRef = useRef(false);
+
+  // Fichiers en cours d'envoi, indexés par la clé utilisée dans la file.
+  const uploadFilesRef = useRef(new Map<string, File>());
+  const uploadIdRef = useRef(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const refresh = useCallback(async () => {
@@ -461,44 +490,99 @@ export function DriveBrowser({
         // Un dialogue modal est ouvert : Échap lui appartient, il ne doit pas
         // aussi vider la sélection en arrière-plan.
         if (!isModalOpen()) clearSelection();
+        return;
+      }
+      // Suppr : mise à la corbeille de la sélection, toujours derrière la
+      // confirmation (jamais de geste destructeur sous un seul doigt).
+      if (event.key === "Delete" && view === "drive" && selection.ids.size > 0 && !isModalOpen()) {
+        event.preventDefault();
+        setDeleteOpen(true);
       }
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [orderedIds, selection.ids.size, clearSelection]);
+  }, [orderedIds, selection.ids.size, clearSelection, view]);
 
-  async function onUpload(files: FileList | File[]) {
-    const list = Array.from(files);
-    if (list.length === 0) return;
+  /** Enregistre les fichiers reçus dans la file, avec une clé locale stable. */
+  function stashUploads(files: readonly File[]): UploadItem[] {
+    return files.map((file) => {
+      uploadIdRef.current += 1;
+      const id = `up-${uploadIdRef.current}`;
+      uploadFilesRef.current.set(id, file);
+      return { id, name: file.name, status: "pending", size: file.size };
+    });
+  }
 
-    setUploading(true);
+  /**
+   * Envoie les fichiers demandés les uns après les autres : chaque fichier a
+   * son propre sort dans la file, un échec ne coupe pas les suivants et se
+   * relance individuellement.
+   */
+  async function runUploads(ids: readonly string[]) {
+    if (ids.length === 0) return;
     setError(null);
-    try {
-      for (const file of list) {
-        const form = new FormData();
-        form.append("file", file);
-        if (folderId) form.append("parentId", folderId);
+    setUploads((current) => markUploading(current, ids));
 
+    for (const id of ids) {
+      const file = uploadFilesRef.current.get(id);
+      if (!file) continue;
+
+      const form = new FormData();
+      form.append("file", file);
+      if (folderId) form.append("parentId", folderId);
+
+      try {
         const response = await fetch("/api/drive/upload", { method: "POST", body: form });
         if (!response.ok) {
           const payload = (await response.json().catch(() => null)) as { message?: string } | null;
           throw new Error(payload?.message ?? `Échec de l'envoi de « ${file.name} ».`);
         }
+        setUploads((current) => markUploaded(current, id));
+      } catch (caught) {
+        setUploads((current) =>
+          markUploadFailed(
+            current,
+            id,
+            caught instanceof Error ? caught.message : `Échec de l'envoi de « ${file.name} ».`,
+          ),
+        );
       }
-      await refresh();
-      window.dispatchEvent(new Event("workspace:storage-changed"));
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Échec de l'envoi.");
-    } finally {
-      setUploading(false);
-      if (fileInputRef.current) fileInputRef.current.value = "";
     }
+
+    await refresh();
+    window.dispatchEvent(new Event("workspace:storage-changed"));
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  }
+
+  function onUpload(files: FileList | File[]) {
+    const list = Array.from(files);
+    if (list.length === 0) return;
+
+    const queued = stashUploads(list);
+    setUploads((current) => enqueueUploads(current, queued));
+    void runUploads(queued.map((item) => item.id));
+  }
+
+  /** Reprend les fichiers en attente ou en échec. */
+  function onRetryUploads() {
+    void runUploads(pendingUploadIds(uploads));
+  }
+
+  function onDragEnter() {
+    dragDepthRef.current += 1;
+    setDragOver(true);
+  }
+
+  function onDragLeave() {
+    dragDepthRef.current = Math.max(dragDepthRef.current - 1, 0);
+    if (dragDepthRef.current === 0) setDragOver(false);
   }
 
   function onDrop(event: DragEvent<HTMLDivElement>) {
     event.preventDefault();
+    dragDepthRef.current = 0;
     setDragOver(false);
-    void onUpload(event.dataTransfer.files);
+    onUpload(event.dataTransfer.files);
   }
 
   async function onOpen(entry: DriveEntryView) {
@@ -539,19 +623,51 @@ export function DriveBrowser({
     setDetails({ entry: loaded.entry, versions: loaded.versions });
   }
 
+  /** Ouvre la feuille de création inline, focus compris. */
+  function startInlineCreate() {
+    setNewName("");
+    setNewNameError(null);
+    setInlineNew(true);
+    // Le focus est posé après la peinture, quand le champ existe vraiment.
+    requestAnimationFrame(() => inlineInputRef.current?.focus());
+  }
+
+  function cancelInlineCreate() {
+    setInlineNew(false);
+    setNewName("");
+    setNewNameError(null);
+    // Le champ disparaît : rendre le focus à la liste pour que le clavier ne
+    // se retrouve pas dans le vide.
+    requestAnimationFrame(() => rowRefs.current.get(0)?.focus());
+  }
+
+  /**
+   * Validation immédiate : le message apparaît à la frappe et la soumission est
+   * bloquée tant que le nom n'est pas acceptable. Le serveur reste l'autorité.
+   */
+  function onNewNameChange(value: string) {
+    setNewName(value);
+    setNewNameError(value.trim().length === 0 ? null : validateEntryName(value));
+  }
+
   async function onCreateFolder(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const name = folderName.trim();
-    if (name.length === 0) return;
+    const name = newName.trim();
+    const problem = validateEntryName(name);
+    setNewNameError(problem);
+    if (problem) {
+      inlineInputRef.current?.focus();
+      return;
+    }
 
     setCreatingFolder(true);
     setError(null);
     try {
       await createFolderFn({ data: { parentId: folderId, name } });
-      setFolderName("");
-      setFolderDialogOpen(false);
+      cancelInlineCreate();
       await refresh();
     } catch (caught) {
+      // Conflit de nom surtout : le message du service est déjà explicite.
       setError(caught instanceof Error ? caught.message : "Création impossible.");
     } finally {
       setCreatingFolder(false);
@@ -752,15 +868,95 @@ export function DriveBrowser({
     if (node) node.indeterminate = someSelected;
   }, [someSelected]);
 
+  // Dossier affiché : son nom sert à nommer la destination du dépôt et le
+  // dossier atteint par la flèche gauche.
+  const currentFolderName = crumbs.length > 0 ? crumbs[crumbs.length - 1]?.name : undefined;
+  const parentCrumb = crumbs.length > 1 ? crumbs[crumbs.length - 2] : undefined;
+  const parentNavigation =
+    parentCrumb === undefined
+      ? ({ to: "/" } as const)
+      : ({ to: "/$entryId", params: { entryId: parentCrumb.id } } as const);
+
+  const uploadActive = pendingUploadIds(uploads).length > 0;
+  const uploadFailed = uploads.filter((item) => item.status === "error").length;
+
+  // Cible du curseur clavier, format attendu par les annonces.
+  const cursorTarget =
+    visibleEntries && cursor !== null
+      ? (() => {
+          const entry = visibleEntries[cursor];
+          return entry
+            ? { name: entry.name, kind: entry.kind, selected: selection.ids.has(entry.id) }
+            : null;
+        })()
+      : null;
+
+  // Le curseur suit la liste : une ligne qui disparaît (filtre, suppression,
+  // déplacement) ne peut pas rester la ligne focalisée.
+  useEffect(() => {
+    setCursor((current) => {
+      const next = clampCursor(current, orderedIds.length);
+      return next === current ? current : next;
+    });
+  }, [orderedIds.length]);
+
+  // Pose le focus sur la ligne visée, mais seulement après une action clavier :
+  // un rafraîchissement de la liste ne doit pas voler le focus.
+  useEffect(() => {
+    if (visibleEntries === null) return;
+    if (cursor === null || !shouldFocusRowRef.current) return;
+    shouldFocusRowRef.current = false;
+    rowRefs.current.get(cursor)?.focus();
+  }, [cursor, visibleEntries]);
+
+  /**
+   * Navigation clavier de la grille. Les touches n'appartiennent qu'à la ligne
+   * focalisée : si le focus est dans un contrôle (case, bouton, champ), c'est
+   * ce contrôle qui les traite.
+   */
+  function onRowKeyDown(
+    event: ReactKeyboardEvent<HTMLTableRowElement>,
+    entry: DriveEntryView,
+    index: number,
+  ) {
+    if (event.target !== event.currentTarget) return;
+    const action = gridActionForKey(event.key, index, visibleEntries?.length ?? 0);
+    if (action === null) return;
+
+    event.preventDefault();
+    switch (action.kind) {
+      case "move":
+        if (action.index !== index) shouldFocusRowRef.current = true;
+        setCursor(action.index);
+        return;
+      case "open":
+        void onOpen(entry);
+        return;
+      case "toggle":
+        setSelection((current) => ({
+          ids: toggleSelection(current.ids, entry.id),
+          anchorId: entry.id,
+        }));
+        return;
+      case "parent":
+        if (view === "drive" && folderId !== null) {
+          void router.navigate(parentNavigation);
+        }
+        return;
+    }
+  }
+
   return (
     // biome-ignore lint/a11y/noStaticElementInteractions: la zone de dépôt est une amélioration souris ; le chemin clavier reste le bouton « Téléverser ».
     <div
       className="relative flex flex-col gap-4"
+      onDragEnter={onDragEnter}
       onDragOver={(event) => {
+        // Sans `preventDefault`, le navigateur refuse le dépôt.
         event.preventDefault();
         setDragOver(true);
       }}
-      onDragLeave={() => setDragOver(false)}
+      onDragLeave={onDragLeave}
       onDrop={onDrop}
     >
       {/* Onglets de vues */}
@@ -791,13 +987,13 @@ export function DriveBrowser({
         {view === "drive" ? (
           <div className="flex flex-wrap items-center gap-2">
             <NewMenu
-              onFolder={() => setFolderDialogOpen(true)}
+              onFolder={startInlineCreate}
               onDoc={createDocument && docsUrl ? () => setCreateKind("doc") : undefined}
               onSheet={createSpreadsheet && sheetsUrl ? () => setCreateKind("sheet") : undefined}
               onSlide={createPresentation && slidesUrl ? () => setCreateKind("slide") : undefined}
               onForm={createForm && formsUrl ? () => setCreateKind("form") : undefined}
               onUpload={() => fileInputRef.current?.click()}
-              uploading={uploading}
+              uploading={uploadActive}
             />
             <input
               ref={fileInputRef}
@@ -805,7 +1001,7 @@ export function DriveBrowser({
               multiple
               className="hidden"
               onChange={(event) => {
-                if (event.target.files) void onUpload(event.target.files);
+                if (event.target.files) onUpload(event.target.files);
               }}
             />
           </div>
@@ -819,6 +1015,77 @@ export function DriveBrowser({
         >
           {error}
         </p>
+      ) : null}
+
+      {/* File de téléversement : un sort par fichier, reprise individuelle. */}
+      {uploads.length > 0 ? (
+        <section
+          aria-label="Téléversements en cours"
+          className="flex flex-col gap-2 rounded-lg border border-border bg-muted/30 px-3 py-2"
+        >
+          <div className="flex flex-wrap items-center gap-2">
+            <p aria-live="polite" className="text-sm font-medium">
+              {uploadSummary(uploads)}
+            </p>
+            {uploadFailed > 0 ? (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={onRetryUploads}
+                disabled={uploadActive || bulkBusy}
+              >
+                {uploadFailed === 1 ? "Réessayer l'envoi" : `Réessayer les ${uploadFailed} envois`}
+              </Button>
+            ) : null}
+            <Button
+              size="sm"
+              variant="ghost"
+              className="ml-auto"
+              disabled={uploadActive}
+              onClick={() => {
+                uploadFilesRef.current.clear();
+                setUploads([]);
+              }}
+            >
+              Effacer la liste
+            </Button>
+          </div>
+          <ul className="flex flex-col divide-y divide-border/60 text-sm">
+            {uploads.map((item) => (
+              <li key={item.id} className="flex flex-wrap items-center gap-2 py-1">
+                <span
+                  className={cn(
+                    "w-24 shrink-0 text-xs",
+                    item.status === "error" ? "text-destructive" : "text-muted-foreground",
+                  )}
+                >
+                  {item.status === "done"
+                    ? "Envoyé"
+                    : item.status === "error"
+                      ? "Échec"
+                      : item.status === "uploading"
+                        ? "Envoi…"
+                        : "En attente"}
+                </span>
+                <span className="min-w-0 flex-1 truncate">{item.name}</span>
+                {item.status === "error" ? (
+                  <>
+                    <span className="text-xs text-destructive">{item.message}</span>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      disabled={uploadActive}
+                      onClick={() => onRetryUploads()}
+                      aria-label={`Réessayer l'envoi de « ${item.name} »`}
+                    >
+                      Réessayer
+                    </Button>
+                  </>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+        </section>
       ) : null}
 
       {selection.ids.size > 0 ? (
@@ -873,7 +1140,7 @@ export function DriveBrowser({
         </Card>
       ) : visibleEntries === null ? (
         <p className="text-sm text-muted-foreground">Chargement…</p>
-      ) : visibleEntries.length === 0 ? (
+      ) : visibleEntries.length === 0 && !inlineNew ? (
         <Card>
           <div className="flex flex-col items-center gap-3 px-6 py-14 text-center">
             <IconFolder />
@@ -893,7 +1160,7 @@ export function DriveBrowser({
             </p>
             {view === "drive" ? (
               <div className="flex gap-2">
-                <Button size="sm" variant="outline" onClick={() => setFolderDialogOpen(true)}>
+                <Button size="sm" variant="outline" onClick={startInlineCreate}>
                   Nouveau dossier
                 </Button>
                 <Button size="sm" onClick={() => fileInputRef.current?.click()}>
@@ -906,7 +1173,13 @@ export function DriveBrowser({
       ) : (
         <div id="drive-list" className="rounded-xl border border-border">
           <div className="overflow-x-auto">
-            <table className="w-full text-sm">
+            {/* biome-ignore lint/a11y/noNoninteractiveElementToInteractiveRole: rôle « grid » du motif ARIA, posé sur le tableau natif pour que les lecteurs d'écran annoncent une grille navigable. */}
+            <table role="grid" aria-multiselectable="true" className="w-full text-sm">
+              <caption className="sr-only">
+                {listAnnouncement(visibleEntries.length, sortSummary(prefs))} Utilisez les flèches
+                pour parcourir la liste, Entrée pour ouvrir un élément, Espace pour le sélectionner,
+                Suppr pour le mettre à la corbeille.
+              </caption>
               <thead>
                 <tr className="border-b border-border bg-muted/40 text-left text-xs uppercase tracking-wider text-muted-foreground">
                   <th scope="col" className="w-9 px-2 py-2 font-medium">
@@ -962,18 +1235,101 @@ export function DriveBrowser({
                 </tr>
               </thead>
               <tbody>
-                {visibleEntries.map((entry) => {
+                {/* Création inline : une feuille de saisie en tête de liste. */}
+                {inlineNew ? (
+                  <tr className="border-b border-border bg-muted/20">
+                    <td className="w-9 px-2 align-middle text-muted-foreground">
+                      <IconFolder />
+                    </td>
+                    <td className="px-4 py-2" colSpan={5}>
+                      <form onSubmit={onCreateFolder} className="flex flex-col gap-1">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Label htmlFor="inline-folder-name" className="sr-only">
+                            Nom du nouveau dossier
+                          </Label>
+                          <Input
+                            id="inline-folder-name"
+                            ref={inlineInputRef}
+                            value={newName}
+                            onChange={(event) => onNewNameChange(event.target.value)}
+                            onKeyDown={(event) => {
+                              if (event.key === "Escape") {
+                                event.preventDefault();
+                                cancelInlineCreate();
+                              }
+                            }}
+                            placeholder="Nom du dossier"
+                            maxLength={255}
+                            autoFocus
+                            aria-invalid={newNameError !== null}
+                            aria-describedby={
+                              newNameError ? "inline-folder-error" : "inline-folder-hint"
+                            }
+                            className="h-8 max-w-xs"
+                          />
+                          <Button
+                            type="submit"
+                            size="sm"
+                            loading={creatingFolder}
+                            disabled={newName.trim().length === 0}
+                          >
+                            Créer
+                          </Button>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="ghost"
+                            onClick={cancelInlineCreate}
+                          >
+                            Annuler
+                          </Button>
+                          <span className="text-xs text-muted-foreground">
+                            {`${remainingNameChars(newName)} caractère(s) restant(s)`}
+                          </span>
+                        </div>
+                        {newNameError ? (
+                          <p
+                            id="inline-folder-error"
+                            role="alert"
+                            className="text-xs text-destructive"
+                          >
+                            {newNameError}
+                          </p>
+                        ) : (
+                          <p id="inline-folder-hint" className="text-xs text-muted-foreground">
+                            Entrée pour créer, Échap pour annuler.
+                          </p>
+                        )}
+                      </form>
+                    </td>
+                  </tr>
+                ) : null}
+
+                {visibleEntries.map((entry, index) => {
                   const selected = selection.ids.has(entry.id);
+                  const isCursor = cursor === index;
                   return (
                     <tr
                       key={entry.id}
+                      ref={(node) => {
+                        if (node) rowRefs.current.set(index, node);
+                        else rowRefs.current.delete(index);
+                      }}
                       aria-selected={selected}
+                      // Onglet mobile : une seule ligne est atteignable à la
+                      // fois (la première tant que le curseur n'est pas posé),
+                      // les flèches font le reste.
+                      tabIndex={isCursor || (cursor === null && index === 0) ? 0 : -1}
                       className={cn(
                         "border-b border-border/60 last:border-b-0 hover:bg-muted/30",
+                        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
                         selected ? "bg-accent/60" : undefined,
+                        isCursor && !selected ? "bg-muted/50" : undefined,
                       )}
+                      onFocus={() => setCursor(index)}
                       onClick={(event) => onRowClick(event, entry)}
                       onDoubleClick={() => void onOpen(entry)}
+                      onKeyDown={(event) => onRowKeyDown(event, entry, index)}
                       title="Cliquer pour sélectionner, double-cliquer pour ouvrir"
                     >
                       <td className="w-9 px-2 align-middle">
@@ -1051,10 +1407,19 @@ export function DriveBrowser({
           </div>
           <p className="border-t border-border px-4 py-2 text-xs text-muted-foreground">
             Cliquez sur une ligne pour la sélectionner · Maj + clic pour une plage · Ctrl/⌘ + A pour
-            tout sélectionner · Échap pour annuler
+            tout sélectionner · Échap pour annuler. Au clavier : les flèches parcourent la liste,
+            Entrée ouvre l'élément, la flèche gauche remonte au dossier parent, Espace sélectionne,
+            Suppr met à la corbeille.
           </p>
         </div>
       )}
+
+      {/* Position du curseur clavier, annoncée à chaque déplacement. La
+          composition de la liste (nombre, tri) est portée par la légende du
+          tableau : lue à l'entrée dans la grille, sans bavardage à la frappe. */}
+      <p aria-live="polite" className="sr-only">
+        {cursorAnnouncement(cursorTarget, cursor ?? 0, visibleEntries?.length ?? 0)}
+      </p>
 
       {dragOver ? (
         <div
@@ -1063,45 +1428,20 @@ export function DriveBrowser({
             "rounded-lg border-2 border-dashed border-primary bg-background/80",
           )}
         >
-          <p className="text-sm font-medium text-primary">
-            Déposez les fichiers pour les téléverser ici
-          </p>
+          <div className="flex flex-col items-center gap-1 text-center">
+            <p className="text-sm font-medium text-primary">
+              {currentFolderName
+                ? `Déposez les fichiers pour les téléverser dans « ${currentFolderName} »`
+                : "Déposez les fichiers pour les téléverser dans Mon Drive"}
+            </p>
+            <p className="text-xs text-muted-foreground">
+              Chaque fichier est envoyé séparément ; un échec se relance individuellement.
+            </p>
+          </div>
         </div>
       ) : null}
 
       {/* --- Dialogues --------------------------------------------------------- */}
-
-      <Dialog
-        open={folderDialogOpen}
-        onClose={() => setFolderDialogOpen(false)}
-        title="Nouveau dossier"
-      >
-        <form onSubmit={onCreateFolder} method="post" className="flex flex-col gap-4">
-          <div className="flex flex-col gap-2">
-            <Label htmlFor="folder-name">Nom du dossier</Label>
-            <Input
-              id="folder-name"
-              value={folderName}
-              onChange={(event) => setFolderName(event.target.value)}
-              placeholder="Projets 2026"
-              maxLength={255}
-              autoFocus
-            />
-          </div>
-          <div className="flex justify-end gap-2">
-            <Button type="button" variant="ghost" onClick={() => setFolderDialogOpen(false)}>
-              Annuler
-            </Button>
-            <Button
-              type="submit"
-              loading={creatingFolder}
-              disabled={folderName.trim().length === 0}
-            >
-              Créer le dossier
-            </Button>
-          </div>
-        </form>
-      </Dialog>
 
       <Dialog
         open={createKind !== null}
