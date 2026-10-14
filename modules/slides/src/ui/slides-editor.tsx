@@ -66,7 +66,6 @@ import {
   SLIDE_TEXT_COLOR_IDS,
   type SlideTextColor,
   textColorLabel,
-  textColorSwatch,
   toggleBulletList,
   toggleNumberedList,
 } from "../slide-text.ts";
@@ -90,6 +89,13 @@ import {
   transitionLabel,
   transitionSummary,
 } from "../slide-transition.ts";
+import {
+  clampZoom,
+  fitZoomPercent,
+  nextZoom,
+  SLIDE_BASE_WIDTH,
+  SLIDE_ZOOM_PRESETS,
+} from "../slide-zoom.ts";
 import {
   canMoveZ,
   Z_MOVE_ORDER,
@@ -165,13 +171,20 @@ function freeElement(
   };
 }
 
+/** Classe commune des sélecteurs de la barre d'outils. */
+const TOOLBAR_SELECT_CLASS =
+  "h-8 rounded-md border border-input bg-background px-1.5 text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
+
 /**
- * Éditeur de présentation : diapositives en 16:9 à positions relatives (%),
- * bande de vignettes (sélection, réordonnancement), mises en page avec zones
- * à remplir (« Cliquez pour ajouter un titre »), édition du texte en place,
- * mise en forme (gras, italique, souligné, couleur, taille, alignement),
- * déplacement et redimensionnement à la souris comme au clavier, notes du
- * présentateur, autosave et mode présentation plein écran.
+ * Éditeur de présentation, organisé comme un outil de présentation :
+ * bandeau du titre, barre d'outils unique (annuler, zoom, insertion, mise en
+ * forme contextuelle, transitions), colonne des diapositives à gauche,
+ * canevas centré sur un fond de travail, panneau de mise en forme à droite,
+ * barre de notes du présentateur en pied, mode présentation plein écran.
+ *
+ * La scène vit en pourcentages de la diapositive ; les mises en page créent
+ * des zones à remplir (« Cliquez pour ajouter un titre ») et l'édition du
+ * texte se fait en place, avec la typographie exacte du rendu final.
  */
 export function SlidesEditor({ fileId }: { fileId: string }) {
   const [title, setTitle] = useState("");
@@ -209,6 +222,10 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
   const [imageError, setImageError] = useState<string | null>(null);
   /** Dialogue de choix de mise en page d'une nouvelle diapositive. */
   const [layoutOpen, setLayoutOpen] = useState(false);
+  /** Zoom d'affichage du canevas : ajusté à la fenêtre par défaut. */
+  const [zoom, setZoom] = useState(100);
+  const [fitZoom, setFitZoom] = useState(true);
+  const workspaceRef = useRef<HTMLDivElement>(null);
   const slidesRef = useRef<EditorSlide[]>([]);
   const canEditRef = useRef(false);
   /** Vrai quand un élément est sélectionné : les flèches le déplacent alors. */
@@ -330,6 +347,19 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
     },
     [],
   );
+
+  // Zoom « ajuster à la fenêtre » : recalculé quand la zone de travail change
+  // de largeur (panneau ouvert, fenêtre redimensionnée).
+  useEffect(() => {
+    if (!fitZoom) return;
+    const node = workspaceRef.current;
+    if (!node) return;
+    const update = () => setZoom(fitZoomPercent(node.clientWidth));
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [fitZoom]);
 
   function mutateSlide(index: number, updater: (slide: EditorSlide) => EditorSlide) {
     setSlides((current) =>
@@ -589,9 +619,9 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
   }
 
   /**
-   * Enregistre un réglage de présentation (format, thème) de façon optimiste :
-   * l'interface change tout de suite, le serveur confirme, et un échec rend sa
-   * valeur précédente au réglage.
+   * Enregistre un réglage de présentation (format, thème, transition) de
+   * façon optimiste : l'interface change tout de suite, le serveur confirme,
+   * et un échec rend sa valeur précédente au réglage.
    */
   async function persistSetting(patch: {
     aspect?: SlideAspectId;
@@ -691,10 +721,26 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
     }
   }
 
+  /** Applique le choix du sélecteur de zoom (« fit » = ajuster à la fenêtre). */
+  function onZoomChange(value: string) {
+    if (value === "fit") {
+      setFitZoom(true);
+      return;
+    }
+    setFitZoom(false);
+    setZoom(clampZoom(Number(value)));
+  }
+
+  /** Monte ou descend d'un niveau de zoom ; quitte le mode « ajuster ». */
+  function stepZoom(direction: -1 | 1) {
+    setFitZoom(false);
+    setZoom((current) => nextZoom(current, direction));
+  }
+
   // Navigation clavier entre diapositives, partout dans l'éditeur : flèches,
   // Page préc./suiv., Début/Fin. Les champs de saisie et les fenêtres modales
-  // gardent le clavier (la bande de vignettes traite ses propres flèches), et
-  // un élément sélectionné garde les flèches pour son propre déplacement.
+  // gardent le clavier (la colonne traite ses propres flèches), et un élément
+  // sélectionné garde les flèches pour son propre déplacement.
   useEffect(() => {
     if (presenting) return;
     const onKeyDown = (event: KeyboardEvent) => {
@@ -911,6 +957,8 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
   const selectedShape =
     selectedElement && isShapeKind(selectedElement.kind) ? selectedElement.kind : null;
   const elementCount = current?.elements.length ?? 0;
+  /** Élément porteur de texte (tout sauf une image) : cible du formatage. */
+  const textElement = selectedElement && selectedElement.kind !== "image" ? selectedElement : null;
 
   const statusLabel =
     status === "saving"
@@ -922,9 +970,12 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
           : "";
 
   return (
-    <div className="flex flex-col gap-3">
-      <header className="flex flex-wrap items-center gap-2 print-hide">
-        <a href="/" className="text-sm text-muted-foreground hover:text-foreground">
+    <div className="flex min-h-0 flex-1 flex-col">
+      <header className="flex flex-wrap items-center gap-2 border-b border-border bg-card px-3 py-2 print-hide">
+        <a
+          href="/"
+          className="rounded-md px-1.5 py-1 text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
           ← Présentations
         </a>
         <input
@@ -936,7 +987,7 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
             if (event.key === "Enter") event.currentTarget.blur();
           }}
           disabled={!canEdit}
-          className="min-w-40 border-none bg-transparent font-display text-lg font-semibold tracking-tight outline-none"
+          className="min-w-40 flex-1 border-none bg-transparent px-1 font-display text-base font-medium tracking-tight outline-none"
         />
         <span
           role="status"
@@ -953,6 +1004,26 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
               Lecture seule
             </span>
           ) : null}
+          {canEdit ? (
+            <fieldset className="flex items-center gap-1" aria-label="Thème de la présentation">
+              {SLIDE_THEME_IDS.map((value) => (
+                <button
+                  key={value}
+                  type="button"
+                  aria-pressed={theme === value}
+                  title={`Thème ${themeLabel(value)}`}
+                  onClick={() => changeTheme(value)}
+                  className={cn(
+                    "size-5 rounded-full border transition-shadow",
+                    themeSwatchClass(value),
+                    theme === value ? "ring-2 ring-ring" : "hover:ring-1 hover:ring-ring",
+                  )}
+                >
+                  <span className="sr-only">{`Thème ${themeLabel(value)}`}</span>
+                </button>
+              ))}
+            </fieldset>
+          ) : null}
           <Button
             size="sm"
             variant="outline"
@@ -963,7 +1034,6 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
           </Button>
           <Button
             size="sm"
-            variant="outline"
             disabled={slides.length === 0}
             onClick={() => {
               setPresentIndex(selectedSlide);
@@ -986,240 +1056,348 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
         </div>
       </header>
 
-      {error ? <Alert tone="danger">{error}</Alert> : null}
+      {error ? (
+        <div className="px-3 pt-3 print-hide">
+          <Alert tone="danger">{error}</Alert>
+        </div>
+      ) : null}
 
       {loading ? (
-        <LoadingState label="Chargement de la présentation…" />
+        <LoadingState className="py-12" label="Chargement de la présentation…" />
       ) : current ? (
-        <section aria-label="Éditeur de diapositives" className="flex flex-col gap-3 lg:flex-row">
-          <SlideFilmstrip
-            slides={slides}
-            selectedIndex={selectedSlide}
-            canEdit={canEdit}
-            fileId={fileId}
-            onSelect={selectSlide}
-            onMove={moveSlideTo}
-            aspect={aspect}
-            theme={theme}
-          />
-
-          <div className="flex min-w-0 flex-1 flex-col gap-2">
-            <div className="flex flex-wrap items-center gap-2 print-hide">
-              {canEdit ? (
-                <>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    aria-label="Ajouter une zone de texte"
-                    onClick={addText}
-                  >
-                    Zone de texte
-                  </Button>
-                  {SLIDE_SHAPE_KINDS.map((kind) => (
-                    <Button
-                      key={kind}
-                      size="sm"
-                      variant="outline"
-                      aria-label={SHAPE_ADD_LABELS[kind]}
-                      onClick={() => addShape(kind)}
-                    >
-                      {shapeLabel(kind)}
-                    </Button>
-                  ))}
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => {
-                      setImageError(null);
-                      setImageOpen(true);
-                    }}
-                  >
-                    Ajouter une image
-                  </Button>
-                  <span className="mx-1 h-5 w-px bg-border" />
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    aria-label="Nouvelle diapositive"
-                    onClick={() => setLayoutOpen(true)}
-                  >
-                    ＋ Diapositive
-                  </Button>
-                  <Button size="sm" variant="outline" onClick={duplicateSlide}>
-                    Dupliquer
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    className="text-destructive"
-                    disabled={slides.length <= 1}
-                    onClick={deleteSlide}
-                  >
-                    Supprimer
-                  </Button>
-                  <span className="mx-1 h-5 w-px bg-border" />
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    aria-label="Monter la diapositive"
-                    disabled={!canMoveSlide(selectedSlide, -1, slides.length)}
-                    onClick={() => moveSlide(-1)}
-                  >
-                    ↑
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    aria-label="Descendre la diapositive"
-                    disabled={!canMoveSlide(selectedSlide, 1, slides.length)}
-                    onClick={() => moveSlide(1)}
-                  >
-                    ↓
-                  </Button>
-                </>
+        <>
+          <div
+            role="toolbar"
+            aria-label="Outils de la présentation"
+            className="flex flex-wrap items-center gap-1 border-b border-border bg-card px-3 py-1.5 print-hide"
+          >
+            {/* Zoom : ajuster à la fenêtre ou un niveau précis. */}
+            <select
+              aria-label="Zoom"
+              value={fitZoom ? "fit" : String(zoom)}
+              onChange={(event) => onZoomChange(event.target.value)}
+              className={TOOLBAR_SELECT_CLASS}
+            >
+              <option value="fit">{`Ajuster (${zoom} %)`}</option>
+              {!fitZoom && !(SLIDE_ZOOM_PRESETS as readonly number[]).includes(zoom) ? (
+                <option value={zoom}>{zoom} %</option>
               ) : null}
-            </div>
+              {SLIDE_ZOOM_PRESETS.map((preset) => (
+                <option key={preset} value={preset}>
+                  {preset} %
+                </option>
+              ))}
+            </select>
+            <Button
+              size="sm"
+              variant="ghost"
+              aria-label="Réduire le zoom"
+              onClick={() => stepZoom(-1)}
+            >
+              −
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              aria-label="Augmenter le zoom"
+              onClick={() => stepZoom(1)}
+            >
+              ＋
+            </Button>
+            <span aria-hidden className="mx-1 h-5 w-px bg-border" />
 
-            <p className="text-[11px] text-muted-foreground print-hide">
-              <Kbd>←</Kbd> <Kbd>→</Kbd> ou <Kbd>Page préc.</Kbd> / <Kbd>Page suiv.</Kbd> pour
-              changer de diapositive, <Kbd>Début</Kbd> et <Kbd>Fin</Kbd> pour la première ou la
-              dernière. Un élément sélectionné se déplace aux flèches (<Kbd>Maj</Kbd> : pas de 5 %),
-              s'ouvre avec <Kbd>Entrée</Kbd> et se supprime avec <Kbd>Suppr</Kbd>.
-            </p>
+            {/* Diapositives. */}
+            <Button
+              size="sm"
+              variant="outline"
+              aria-label="Nouvelle diapositive"
+              disabled={!canEdit}
+              onClick={() => setLayoutOpen(true)}
+            >
+              ＋ Diapositive
+            </Button>
+            <Button size="sm" variant="ghost" disabled={!canEdit} onClick={duplicateSlide}>
+              Dupliquer
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              className="text-destructive"
+              disabled={!canEdit || slides.length <= 1}
+              onClick={deleteSlide}
+            >
+              Supprimer
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              aria-label="Monter la diapositive"
+              disabled={!canEdit || !canMoveSlide(selectedSlide, -1, slides.length)}
+              onClick={() => moveSlide(-1)}
+            >
+              ↑
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              aria-label="Descendre la diapositive"
+              disabled={!canEdit || !canMoveSlide(selectedSlide, 1, slides.length)}
+              onClick={() => moveSlide(1)}
+            >
+              ↓
+            </Button>
+            <span aria-hidden className="mx-1 h-5 w-px bg-border" />
 
-            {canEdit ? (
-              <div className="flex flex-wrap items-center gap-4 print-hide">
-                <fieldset className="flex items-center gap-2">
-                  <legend className="sr-only">Format de la diapositive</legend>
-                  <span className="text-xs font-medium text-muted-foreground">Format</span>
-                  {SLIDE_ASPECT_IDS.map((value) => (
-                    <Button
-                      key={value}
-                      size="sm"
-                      variant={aspect === value ? "secondary" : "ghost"}
-                      aria-pressed={aspect === value}
-                      title={aspectLabel(value)}
-                      onClick={() => changeAspect(value)}
-                    >
-                      {value}
-                    </Button>
-                  ))}
-                </fieldset>
-                <fieldset className="flex items-center gap-2">
-                  <legend className="sr-only">Thème de la présentation</legend>
-                  <span className="text-xs font-medium text-muted-foreground">Thème</span>
-                  {SLIDE_THEME_IDS.map((value) => (
-                    <button
-                      key={value}
-                      type="button"
-                      aria-pressed={theme === value}
-                      title={themeLabel(value)}
-                      onClick={() => changeTheme(value)}
-                      className={cn(
-                        "size-6 rounded-md border transition-shadow",
-                        themeSwatchClass(value),
-                        theme === value ? "ring-2 ring-ring" : "hover:ring-1 hover:ring-ring",
-                      )}
-                    >
-                      <span className="sr-only">{themeLabel(value)}</span>
-                    </button>
-                  ))}
-                </fieldset>
-                <fieldset className="flex items-center gap-2">
-                  <legend className="sr-only">Transition des diapositives</legend>
-                  <span className="text-xs font-medium text-muted-foreground">Transition</span>
-                  <select
-                    aria-label="Transition"
-                    value={transition}
-                    onChange={(event) => changeTransition(event.target.value as SlideTransitionId)}
-                    className="h-8 rounded-md border border-input bg-background px-2 text-sm"
-                  >
-                    {SLIDE_TRANSITION_IDS.map((value) => (
-                      <option key={value} value={value}>
-                        {transitionLabel(value)}
-                      </option>
-                    ))}
-                  </select>
-                  <Input
-                    type="number"
-                    aria-label="Durée de la transition (ms)"
-                    min={200}
-                    max={2000}
-                    step={50}
-                    value={transitionMs}
-                    disabled={transition === "none"}
-                    onChange={(event) =>
-                      setTransitionMs(Number(event.target.value) || transitionMs)
-                    }
-                    onBlur={(event) => changeTransitionMs(Number(event.target.value))}
-                    className="h-8 w-20"
-                  />
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    disabled={transition === "none"}
-                    title={transitionHint(transition)}
-                    onClick={() => {
-                      setAnnouncement(`Aperçu : ${transitionSummary(transition, transitionMs)}`);
-                      animateTransition(previewRef.current, transition, transitionMs);
-                    }}
-                  >
-                    Aperçu
-                  </Button>
-                </fieldset>
-              </div>
-            ) : null}
+            {/* Insertion. */}
+            <Button
+              size="sm"
+              variant="outline"
+              aria-label="Ajouter une zone de texte"
+              disabled={!canEdit}
+              onClick={addText}
+            >
+              Zone de texte
+            </Button>
+            {SLIDE_SHAPE_KINDS.map((kind) => (
+              <Button
+                key={kind}
+                size="sm"
+                variant="outline"
+                aria-label={SHAPE_ADD_LABELS[kind]}
+                disabled={!canEdit}
+                onClick={() => addShape(kind)}
+              >
+                {shapeLabel(kind)}
+              </Button>
+            ))}
+            <Button
+              size="sm"
+              variant="outline"
+              aria-label="Ajouter une image"
+              disabled={!canEdit}
+              onClick={() => {
+                setImageError(null);
+                setImageOpen(true);
+              }}
+            >
+              Image
+            </Button>
+            <span aria-hidden className="mx-1 h-5 w-px bg-border" />
 
-            <div ref={previewRef}>
-              <SlideCanvas
-                slide={current}
-                fileId={fileId}
-                interactive={canEdit}
-                selectedElementKey={selectedElementKey}
-                onSelectElement={(key) => {
-                  setSelectedElementKey(key);
-                  if (key === null) setEditingKey(null);
-                }}
-                onGeometryChange={updateElement}
-                editingKey={editingKey}
-                onStartEdit={startEdit}
-                onTextChange={changeText}
-                onEndEdit={endEdit}
-                aspect={aspect}
-                theme={theme}
-              />
-            </div>
+            {/* Mise en forme contextuelle : active avec un élément porteur de texte. */}
+            <Button
+              size="sm"
+              variant={textElement?.bold ? "secondary" : "ghost"}
+              aria-label="Gras"
+              aria-pressed={textElement?.bold === true}
+              disabled={!canEdit || !textElement}
+              onClick={() =>
+                textElement && updateElement(textElement.key, { bold: !textElement.bold })
+              }
+            >
+              <strong>G</strong>
+            </Button>
+            <Button
+              size="sm"
+              variant={textElement?.italic ? "secondary" : "ghost"}
+              aria-label="Italique"
+              aria-pressed={textElement?.italic === true}
+              disabled={!canEdit || !textElement}
+              onClick={() =>
+                textElement && updateElement(textElement.key, { italic: !textElement.italic })
+              }
+            >
+              <em>I</em>
+            </Button>
+            <Button
+              size="sm"
+              variant={textElement?.underline ? "secondary" : "ghost"}
+              aria-label="Souligné"
+              aria-pressed={textElement?.underline === true}
+              disabled={!canEdit || !textElement}
+              onClick={() =>
+                textElement && updateElement(textElement.key, { underline: !textElement.underline })
+              }
+            >
+              <span className="underline">S</span>
+            </Button>
+            <select
+              aria-label="Couleur du texte"
+              value={textElement?.textColor ?? "default"}
+              disabled={!canEdit || !textElement}
+              onChange={(event) =>
+                textElement &&
+                updateElement(textElement.key, {
+                  textColor: event.target.value as SlideTextColor,
+                })
+              }
+              className={TOOLBAR_SELECT_CLASS}
+            >
+              {SLIDE_TEXT_COLOR_IDS.map((color) => (
+                <option key={color} value={color}>
+                  {textColorLabel(color)}
+                </option>
+              ))}
+            </select>
+            <Button
+              size="sm"
+              variant={textElement?.align === "left" ? "secondary" : "ghost"}
+              aria-label="Aligner à gauche"
+              aria-pressed={textElement?.align === "left"}
+              disabled={!canEdit || !textElement}
+              onClick={() => textElement && updateElement(textElement.key, { align: "left" })}
+            >
+              ⇤
+            </Button>
+            <Button
+              size="sm"
+              variant={textElement?.align === "center" ? "secondary" : "ghost"}
+              aria-label="Centrer"
+              aria-pressed={textElement?.align === "center"}
+              disabled={!canEdit || !textElement}
+              onClick={() => textElement && updateElement(textElement.key, { align: "center" })}
+            >
+              ⇔
+            </Button>
+            <Button
+              size="sm"
+              variant={textElement?.align === "right" ? "secondary" : "ghost"}
+              aria-label="Aligner à droite"
+              aria-pressed={textElement?.align === "right"}
+              disabled={!canEdit || !textElement}
+              onClick={() => textElement && updateElement(textElement.key, { align: "right" })}
+            >
+              ⇥
+            </Button>
+            <Button
+              size="sm"
+              variant={textElement && isBulletList(textElement.text) ? "secondary" : "ghost"}
+              aria-label="Puces"
+              aria-pressed={textElement ? isBulletList(textElement.text) : false}
+              disabled={!canEdit || !textElement}
+              onClick={() =>
+                textElement &&
+                updateElement(textElement.key, { text: toggleBulletList(textElement.text) })
+              }
+            >
+              • Puces
+            </Button>
+            <Button
+              size="sm"
+              variant={textElement && isNumberedList(textElement.text) ? "secondary" : "ghost"}
+              aria-label="Numérotation"
+              aria-pressed={textElement ? isNumberedList(textElement.text) : false}
+              disabled={!canEdit || !textElement}
+              onClick={() =>
+                textElement &&
+                updateElement(textElement.key, { text: toggleNumberedList(textElement.text) })
+              }
+            >
+              1. Numérotation
+            </Button>
+            <span aria-hidden className="mx-1 h-5 w-px bg-border" />
+
+            {/* Transition de la présentation, avec aperçu immédiat. */}
+            <select
+              aria-label="Transition"
+              value={transition}
+              disabled={!canEdit}
+              onChange={(event) => changeTransition(event.target.value as SlideTransitionId)}
+              className={TOOLBAR_SELECT_CLASS}
+            >
+              {SLIDE_TRANSITION_IDS.map((value) => (
+                <option key={value} value={value}>
+                  {transitionLabel(value)}
+                </option>
+              ))}
+            </select>
+            <Input
+              type="number"
+              aria-label="Durée de la transition (ms)"
+              min={200}
+              max={2000}
+              step={50}
+              value={transitionMs}
+              disabled={!canEdit || transition === "none"}
+              onChange={(event) => setTransitionMs(Number(event.target.value) || transitionMs)}
+              onBlur={(event) => changeTransitionMs(Number(event.target.value))}
+              className="h-8 w-20"
+            />
+            <Button
+              size="sm"
+              variant="ghost"
+              disabled={!canEdit || transition === "none"}
+              title={transitionHint(transition)}
+              onClick={() => {
+                setAnnouncement(`Aperçu : ${transitionSummary(transition, transitionMs)}`);
+                animateTransition(previewRef.current, transition, transitionMs);
+              }}
+            >
+              Aperçu
+            </Button>
           </div>
 
-          <aside className="flex w-full shrink-0 flex-col gap-3 rounded-xl border border-border bg-card p-3 lg:w-60 print-hide">
-            <div className="flex flex-col gap-1">
-              <Label htmlFor="slide-title">Titre de la diapositive</Label>
-              <Input
-                id="slide-title"
-                value={current.title}
-                disabled={!canEdit}
-                onChange={(event) =>
-                  mutateSlide(selectedSlide, (slide) => ({ ...slide, title: event.target.value }))
-                }
-                maxLength={255}
-              />
-            </div>
-
-            <SlideNotesField
-              slide={current}
-              index={selectedSlide}
+          <section aria-label="Éditeur de diapositives" className="flex min-h-0 flex-1 print-hide">
+            <SlideFilmstrip
+              slides={slides}
+              selectedIndex={selectedSlide}
               canEdit={canEdit}
-              onNotesChange={(notes) =>
-                mutateSlide(selectedSlide, (slide) => ({ ...slide, notes }))
-              }
+              fileId={fileId}
+              onSelect={selectSlide}
+              onMove={moveSlideTo}
+              onAdd={() => setLayoutOpen(true)}
+              aspect={aspect}
+              theme={theme}
             />
 
-            <div className="border-t border-border pt-3">
+            <div
+              ref={workspaceRef}
+              className="min-h-0 flex-1 overflow-auto bg-muted/40 p-6"
+              onPointerDown={(event) => {
+                // Un clic dans le vide du plan de travail désélectionne.
+                if (event.target === event.currentTarget) setSelectedElementKey(null);
+              }}
+            >
+              <div
+                className="mx-auto"
+                style={{ width: `${Math.round((SLIDE_BASE_WIDTH * zoom) / 100)}px` }}
+              >
+                <div ref={previewRef}>
+                  <SlideCanvas
+                    slide={current}
+                    fileId={fileId}
+                    interactive={canEdit}
+                    selectedElementKey={selectedElementKey}
+                    onSelectElement={(key) => {
+                      setSelectedElementKey(key);
+                      if (key === null) setEditingKey(null);
+                    }}
+                    onGeometryChange={updateElement}
+                    editingKey={editingKey}
+                    onStartEdit={startEdit}
+                    onTextChange={changeText}
+                    onEndEdit={endEdit}
+                    aspect={aspect}
+                    theme={theme}
+                  />
+                </div>
+              </div>
+            </div>
+
+            <aside
+              aria-label="Panneau de mise en forme"
+              className="flex w-72 shrink-0 flex-col gap-3 overflow-y-auto border-l border-border bg-card p-3 print-hide"
+            >
               {selectedElement && canEdit ? (
-                <div className="flex flex-col gap-2">
-                  <p className="text-xs font-medium uppercase tracking-widest text-muted-foreground">
-                    Élément sélectionné
-                  </p>
+                <div className="flex flex-col gap-3">
+                  <div className="flex items-baseline justify-between gap-2">
+                    <p className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">
+                      Élément sélectionné
+                    </p>
+                    <span className="text-[11px] text-muted-foreground">
+                      {selectedElementIndex + 1}/{elementCount}
+                    </span>
+                  </div>
                   {selectedElement.kind === "image" ? (
                     <p className="text-sm font-medium">Image</p>
                   ) : null}
@@ -1234,7 +1412,7 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
                         }
                         rows={3}
                         maxLength={2000}
-                        className="rounded-md border border-input bg-background px-3 py-2 text-sm"
+                        className="rounded-md border border-input bg-background px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
                       />
                       <p className="text-[11px] leading-snug text-muted-foreground">
                         ou double-cliquez sur la zone pour modifier en place.
@@ -1262,11 +1440,9 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
                       </div>
                     </fieldset>
                   ) : null}
-                  <div className="flex items-end gap-2">
-                    <div className="flex flex-1 items-center gap-2">
-                      <Label htmlFor="element-size" className="shrink-0">
-                        Taille
-                      </Label>
+                  <div className="flex flex-col gap-1">
+                    <Label htmlFor="element-size">Taille du texte</Label>
+                    <div className="flex items-center gap-2">
                       <Input
                         id="element-size"
                         type="number"
@@ -1280,145 +1456,31 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
                         }
                         className="h-8"
                       />
-                    </div>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      aria-label="Réduire la taille"
-                      onClick={() =>
-                        updateElement(selectedElement.key, {
-                          fontSize: bumpFontSize(selectedElement.fontSize, -1),
-                        })
-                      }
-                    >
-                      A−
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      aria-label="Augmenter la taille"
-                      onClick={() =>
-                        updateElement(selectedElement.key, {
-                          fontSize: bumpFontSize(selectedElement.fontSize, 1),
-                        })
-                      }
-                    >
-                      A+
-                    </Button>
-                  </div>
-                  <fieldset className="flex flex-col gap-1">
-                    <legend className="text-xs font-medium text-muted-foreground">Style</legend>
-                    <div className="flex flex-wrap gap-1">
                       <Button
                         size="sm"
-                        variant={selectedElement.bold ? "secondary" : "ghost"}
-                        aria-label="Gras"
-                        aria-pressed={selectedElement.bold}
-                        className="font-bold"
-                        onClick={() =>
-                          updateElement(selectedElement.key, { bold: !selectedElement.bold })
-                        }
-                      >
-                        G
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant={selectedElement.italic ? "secondary" : "ghost"}
-                        aria-label="Italique"
-                        aria-pressed={selectedElement.italic}
-                        className="italic"
-                        onClick={() =>
-                          updateElement(selectedElement.key, { italic: !selectedElement.italic })
-                        }
-                      >
-                        I
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant={selectedElement.underline ? "secondary" : "ghost"}
-                        aria-label="Souligné"
-                        aria-pressed={selectedElement.underline}
-                        className="underline"
+                        variant="ghost"
+                        aria-label="Réduire la taille"
                         onClick={() =>
                           updateElement(selectedElement.key, {
-                            underline: !selectedElement.underline,
+                            fontSize: bumpFontSize(selectedElement.fontSize, -1),
                           })
                         }
                       >
-                        S
-                      </Button>
-                    </div>
-                  </fieldset>
-                  <fieldset className="flex flex-col gap-1">
-                    <legend className="text-xs font-medium text-muted-foreground">Listes</legend>
-                    <div className="flex flex-wrap gap-1">
-                      <Button
-                        size="sm"
-                        variant={isBulletList(selectedElement.text) ? "secondary" : "ghost"}
-                        aria-label="Puces"
-                        aria-pressed={isBulletList(selectedElement.text)}
-                        onClick={() =>
-                          updateElement(selectedElement.key, {
-                            text: toggleBulletList(selectedElement.text),
-                          })
-                        }
-                      >
-                        • Puces
+                        A−
                       </Button>
                       <Button
                         size="sm"
-                        variant={isNumberedList(selectedElement.text) ? "secondary" : "ghost"}
-                        aria-label="Numérotation"
-                        aria-pressed={isNumberedList(selectedElement.text)}
+                        variant="ghost"
+                        aria-label="Augmenter la taille"
                         onClick={() =>
                           updateElement(selectedElement.key, {
-                            text: toggleNumberedList(selectedElement.text),
+                            fontSize: bumpFontSize(selectedElement.fontSize, 1),
                           })
                         }
                       >
-                        1. Numérotation
+                        A+
                       </Button>
                     </div>
-                  </fieldset>
-                  <fieldset className="flex flex-col gap-1">
-                    <legend className="text-xs font-medium text-muted-foreground">Couleur</legend>
-                    <div className="flex flex-wrap gap-1">
-                      {SLIDE_TEXT_COLOR_IDS.map((color: SlideTextColor) => (
-                        <button
-                          key={color}
-                          type="button"
-                          aria-label={`Couleur ${textColorLabel(color)}`}
-                          aria-pressed={selectedElement.textColor === color}
-                          onClick={() => updateElement(selectedElement.key, { textColor: color })}
-                          className={cn(
-                            "size-6 rounded-full border border-border transition-shadow",
-                            textColorSwatch(color),
-                            selectedElement.textColor === color
-                              ? "ring-2 ring-ring"
-                              : "hover:ring-1 hover:ring-ring",
-                          )}
-                        >
-                          <span className="sr-only">{textColorLabel(color)}</span>
-                        </button>
-                      ))}
-                    </div>
-                  </fieldset>
-                  <div className="flex flex-col gap-1">
-                    <Label htmlFor="element-align">Alignement</Label>
-                    <select
-                      id="element-align"
-                      value={selectedElement.align}
-                      onChange={(event) =>
-                        updateElement(selectedElement.key, {
-                          align: event.target.value as ElementView["align"],
-                        })
-                      }
-                      className="h-8 rounded-md border border-input bg-background px-2 text-sm"
-                    >
-                      <option value="left">Gauche</option>
-                      <option value="center">Centré</option>
-                      <option value="right">Droite</option>
-                    </select>
                   </div>
                   <fieldset className="flex flex-col gap-1">
                     <legend className="text-xs font-medium text-muted-foreground">
@@ -1452,16 +1514,65 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
                   </Button>
                 </div>
               ) : (
-                <p className="text-xs text-muted-foreground">
-                  Sélectionnez un élément pour modifier son texte, sa taille et son alignement.
-                  Entrée l'ouvre en édition, Suppr le supprime, les flèches le déplacent.
-                </p>
+                <div className="flex flex-col gap-3">
+                  <p className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">
+                    Diapositive
+                  </p>
+                  <div className="flex flex-col gap-1">
+                    <Label htmlFor="slide-title">Titre de la diapositive</Label>
+                    <Input
+                      id="slide-title"
+                      value={current.title}
+                      disabled={!canEdit}
+                      onChange={(event) =>
+                        mutateSlide(selectedSlide, (slide) => ({
+                          ...slide,
+                          title: event.target.value,
+                        }))
+                      }
+                      maxLength={255}
+                    />
+                  </div>
+                  <fieldset className="flex flex-col gap-1">
+                    <legend className="text-xs font-medium text-muted-foreground">
+                      Format de la diapositive
+                    </legend>
+                    <div className="flex flex-wrap gap-1">
+                      {SLIDE_ASPECT_IDS.map((value) => (
+                        <Button
+                          key={value}
+                          size="sm"
+                          variant={aspect === value ? "secondary" : "ghost"}
+                          aria-pressed={aspect === value}
+                          title={aspectLabel(value)}
+                          disabled={!canEdit}
+                          onClick={() => changeAspect(value)}
+                        >
+                          {value === "16:9" ? "Écran large (16:9)" : "Standard (4:3)"}
+                        </Button>
+                      ))}
+                    </div>
+                  </fieldset>
+                  <p className="text-xs leading-relaxed text-muted-foreground">
+                    Cliquez un élément pour le mettre en forme. <Kbd>Entrée</Kbd> l'ouvre en
+                    édition, <Kbd>Suppr</Kbd> le supprime, les flèches le déplacent (<Kbd>Maj</Kbd>{" "}
+                    : pas de 5 %). <Kbd>←</Kbd> <Kbd>→</Kbd> changent de diapositive.
+                  </p>
+                </div>
               )}
-            </div>
-          </aside>
-        </section>
+            </aside>
+          </section>
+
+          <SlideNotesField
+            slide={current}
+            index={selectedSlide}
+            canEdit={canEdit}
+            onNotesChange={(notes) => mutateSlide(selectedSlide, (slide) => ({ ...slide, notes }))}
+          />
+        </>
       ) : null}
 
+      {/* Dialogue de mise en page d'une nouvelle diapositive. */}
       <Dialog open={layoutOpen} onClose={() => setLayoutOpen(false)} title="Nouvelle diapositive">
         <div className="flex flex-col gap-3">
           <p className="text-sm text-muted-foreground">

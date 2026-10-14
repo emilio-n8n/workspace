@@ -1,5 +1,5 @@
 import { cn, Label } from "@workspace/ui";
-import { useId } from "react";
+import { useId, useState } from "react";
 import { type EditorSlide, slideTitle } from "../editor-model.ts";
 import {
   MAX_NOTES_CHARS,
@@ -16,20 +16,35 @@ export type SlideNotesFieldProps = {
 };
 
 /**
- * Champ « Notes du présentateur » d'une diapositive. Les notes ne sont jamais
- * montrées au spectateur : elles servent en mode présentation, et une pastille
- * les signale dans la bande de vignettes.
+ * Barre « Notes du présentateur » : repliée par défaut, dépliée au clic pour
+ * saisir ce qu'on dira pendant la diapositive. Les notes ne sont jamais
+ * montrées au spectateur ; une pastille les signale dans la colonne des
+ * diapositives et elles s'affichent en mode présentation.
  */
 export function SlideNotesField({ slide, index, canEdit, onNotesChange }: SlideNotesFieldProps) {
+  const [open, setOpen] = useState(false);
   const baseId = useId();
   const counterId = `${baseId}-counter`;
-  const hintId = `${baseId}-hint`;
   const remaining = notesRemaining(slide.notes);
+  const hasNotes = slide.notes.trim().length > 0;
 
   return (
-    <div className="flex flex-col gap-1">
-      <div className="flex items-baseline justify-between gap-2">
-        <Label htmlFor="slide-notes">Notes du présentateur</Label>
+    <div className="print-hide border-t border-border bg-card">
+      <div className="flex items-center gap-2 px-3 py-1">
+        <button
+          type="button"
+          aria-expanded={open}
+          onClick={() => setOpen((value) => !value)}
+          className="flex items-center gap-1.5 rounded-md px-1.5 py-1 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          <span
+            aria-hidden
+            className={cn("transition-transform duration-150", open && "rotate-90")}
+          >
+            ▸
+          </span>
+          Notes du présentateur
+        </button>
         <span
           id={counterId}
           className={cn(
@@ -39,24 +54,34 @@ export function SlideNotesField({ slide, index, canEdit, onNotesChange }: SlideN
         >
           {notesCounterLabel(slide.notes)}
         </span>
+        {!open ? (
+          <span className="truncate text-[11px] italic text-muted-foreground/80">
+            {hasNotes ? slide.notes : "Aucune note pour cette diapositive."}
+          </span>
+        ) : null}
+        <span className="ml-auto hidden text-[11px] text-muted-foreground sm:block">
+          {canEdit ? "Visibles par vous seul, en présentation." : "Lecture seule."}
+        </span>
       </div>
-      <textarea
-        id="slide-notes"
-        value={slide.notes}
-        disabled={!canEdit}
-        onChange={(event) => onNotesChange(event.target.value)}
-        rows={4}
-        maxLength={MAX_NOTES_CHARS}
-        placeholder="Ce que vous voulez dire pendant cette diapositive."
-        aria-label={`Notes du présentateur — ${slideTitle(slide, index)}`}
-        aria-describedby={`${counterId} ${hintId}`}
-        className="resize-y rounded-md border border-input bg-background px-3 py-2 text-sm disabled:cursor-not-allowed disabled:opacity-70"
-      />
-      <p id={hintId} className="text-[11px] text-muted-foreground">
-        {canEdit
-          ? "Visible par vous seul, en mode présentation."
-          : "Lecture seule : ces notes ne sont pas modifiables."}
-      </p>
+      {open ? (
+        <div className="px-3 pb-3">
+          <Label htmlFor="slide-notes" className="sr-only">
+            Notes du présentateur
+          </Label>
+          <textarea
+            id="slide-notes"
+            value={slide.notes}
+            disabled={!canEdit}
+            onChange={(event) => onNotesChange(event.target.value)}
+            rows={3}
+            maxLength={MAX_NOTES_CHARS}
+            placeholder="Ce que vous voulez dire pendant cette diapositive."
+            aria-label={`Notes du présentateur — ${slideTitle(slide, index)}`}
+            aria-describedby={counterId}
+            className="w-full resize-y rounded-md border border-input bg-background px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-70"
+          />
+        </div>
+      ) : null}
     </div>
   );
 }

@@ -51,7 +51,26 @@ export type SlideCanvasProps = {
 /** Seuil de déplacement (px) avant de considérer qu'un glisser commence. */
 const DRAG_THRESHOLD = 3;
 
-/** Libellé accessible d'un élément, pour la barre latérale et les tests. */
+/** Taille minimale d'un élément en pourcentage de la diapositive. */
+const MIN_ELEMENT_SIZE = 2;
+
+/** Les huit poignées de redimensionnement, comme un éditeur de présentation. */
+type ResizeHandle = "nw" | "n" | "ne" | "e" | "se" | "s" | "sw" | "w";
+
+const HANDLE_CLASSES: Record<ResizeHandle, string> = {
+  nw: "-left-1.5 -top-1.5 cursor-nwse-resize",
+  n: "-top-1.5 left-1/2 -translate-x-1/2 cursor-ns-resize",
+  ne: "-right-1.5 -top-1.5 cursor-nesw-resize",
+  e: "-right-1.5 top-1/2 -translate-y-1/2 cursor-ew-resize",
+  se: "-bottom-1.5 -right-1.5 cursor-nwse-resize",
+  s: "-bottom-1.5 left-1/2 -translate-x-1/2 cursor-ns-resize",
+  sw: "-bottom-1.5 -left-1.5 cursor-nesw-resize",
+  w: "-left-1.5 top-1/2 -translate-y-1/2 cursor-ew-resize",
+};
+
+const RESIZE_HANDLES = Object.keys(HANDLE_CLASSES) as ResizeHandle[];
+
+/** Libellé accessible d'un élément, pour les tests et les annonces. */
 export function elementAriaLabel(element: EditorElement): string {
   if (element.kind === "image") return "Élément image";
   if (element.placeholder) {
@@ -61,15 +80,43 @@ export function elementAriaLabel(element: EditorElement): string {
   return element.text.trim().length > 0 ? `Élément ${element.text}` : "Élément texte";
 }
 
+/** Applique un déplacement de poignée à la géométrie d'origine, en %. */
+export function resizeGeometry(
+  origin: ElementGeometry,
+  dx: number,
+  dy: number,
+  handle: ResizeHandle,
+): ElementGeometry {
+  let { x, y, w, h } = origin;
+  if (handle.includes("w")) {
+    const nextX = round1(clamp(x + dx, 0, x + w - MIN_ELEMENT_SIZE));
+    w = round1(w - (nextX - x));
+    x = nextX;
+  }
+  if (handle.includes("e")) {
+    w = round1(clamp(w + dx, MIN_ELEMENT_SIZE, 100 - x));
+  }
+  if (handle.includes("n")) {
+    const nextY = round1(clamp(y + dy, 0, y + h - MIN_ELEMENT_SIZE));
+    h = round1(h - (nextY - y));
+    y = nextY;
+  }
+  if (handle.includes("s")) {
+    h = round1(clamp(h + dy, MIN_ELEMENT_SIZE, 100 - y));
+  }
+  return { x, y, w, h };
+}
+
 /**
  * Rend une diapositive et ses éléments. Positions en pourcentage de la
  * diapositive, corps de texte mis à l'échelle par requête de conteneur : le
  * même composant sert au canevas d'édition, aux vignettes, au mode
  * présentation et à l'impression, sans duplication de règles de mise en page.
  *
- * En mode édition interactive, une zone de mise en page vide affiche son
- * invitation et s'ouvre au clic ; un double-clic (ou une zone vide) ouvre
- * l'édition du texte en place, directement sur la diapositive.
+ * En mode édition, la sélection reprend les codes d'un éditeur de
+ * présentation : contour net, huit poignées de redimensionnement, zone de
+ * mise en page vide en pointillés qui s'ouvre au clic, texte modifiable en
+ * place avec la typographie exacte du rendu final.
  */
 export function SlideCanvas({
   slide,
@@ -127,23 +174,27 @@ export function SlideCanvas({
     window.addEventListener("pointerup", up);
   }
 
-  function startElementResize(event: React.PointerEvent<HTMLSpanElement>, element: EditorElement) {
+  function startElementResize(
+    event: React.PointerEvent<HTMLSpanElement>,
+    element: EditorElement,
+    handle: ResizeHandle,
+  ) {
     if (!interactive) return;
     event.preventDefault();
     event.stopPropagation();
+    // Le clic qui suit le relâchement ne doit ni re-sélectionner ni ouvrir
+    // l'édition en place : la poignée vient d'agir.
+    dragMovedRef.current = true;
     const canvas = canvasRef.current;
     if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
     const startX = event.clientX;
     const startY = event.clientY;
-    const origin = { w: element.w, h: element.h };
+    const origin: ElementGeometry = { x: element.x, y: element.y, w: element.w, h: element.h };
     const move = (moveEvent: PointerEvent) => {
-      const dw = ((moveEvent.clientX - startX) / rect.width) * 100;
-      const dh = ((moveEvent.clientY - startY) / rect.height) * 100;
-      onGeometryChange?.(element.key, {
-        w: round1(clamp(origin.w + dw, 2, 100 - element.x)),
-        h: round1(clamp(origin.h + dh, 2, 100 - element.y)),
-      });
+      const dx = ((moveEvent.clientX - startX) / rect.width) * 100;
+      const dy = ((moveEvent.clientY - startY) / rect.height) * 100;
+      onGeometryChange?.(element.key, resizeGeometry(origin, dx, dy, handle));
     };
     const up = () => {
       window.removeEventListener("pointermove", move);
@@ -172,7 +223,7 @@ export function SlideCanvas({
       className={cn(
         // Le format et le thème viennent d'ici : un seul canevas pour l'édition,
         // les vignettes, la présentation et l'impression.
-        "relative w-full overflow-hidden rounded-xl border shadow-soft",
+        "relative w-full overflow-hidden rounded-sm border shadow-soft",
         themeCanvasClass(palette),
         className,
       )}
@@ -181,8 +232,9 @@ export function SlideCanvas({
         // Forme concrète (rectangle, ellipse ou ligne) ; « shape » hérité rend
         // un rectangle. Le reste (texte, image) n'est pas une forme.
         const shape = isShapeKind(element.kind) ? shapeVariant(element.kind) : null;
+        const selected = selectedElementKey === element.key;
         const className = cn(
-          "absolute select-none whitespace-pre-wrap rounded",
+          "absolute select-none whitespace-pre-wrap rounded-sm",
           // Les formes suivent le thème de la diapositive (jetons sémantiques),
           // sauf la ligne qui n'a pas de remplissage : elle dessine un trait.
           shape !== null && shape !== "line" && shapeFillClass(shape, themeShapeClass(palette)),
@@ -226,7 +278,7 @@ export function SlideCanvas({
               )}
             />
           ) : showsPlaceholder && element.placeholder ? (
-            <span aria-hidden className="italic opacity-40">
+            <span aria-hidden className="italic opacity-50">
               {placeholderHint(element.placeholder)}
             </span>
           ) : (
@@ -246,7 +298,7 @@ export function SlideCanvas({
           return (
             <div
               key={element.key}
-              className={cn(className, textClass, "z-10 outline outline-2 outline-ring")}
+              className={cn(className, textClass, "z-10 outline outline-2 outline-primary")}
               style={style}
               onPointerDown={(event) => event.stopPropagation()}
             >
@@ -282,6 +334,7 @@ export function SlideCanvas({
           <button
             key={element.key}
             type="button"
+            data-slide-element=""
             aria-label={elementAriaLabel(element)}
             onPointerDown={(event) => startElementDrag(event, element)}
             onClick={(event) => {
@@ -308,20 +361,29 @@ export function SlideCanvas({
             className={cn(
               className,
               textClass,
-              "cursor-move text-left focus-visible:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring",
-              selectedElementKey === element.key &&
-                "outline outline-2 outline-offset-2 outline-ring",
+              "text-left focus-visible:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring",
+              showsPlaceholder && "border border-dashed border-border",
+              selected
+                ? "cursor-move outline outline-2 outline-primary"
+                : "cursor-move outline-none hover:outline hover:outline-1 hover:outline-primary/40",
             )}
             style={style}
           >
             {content}
-            {selectedElementKey === element.key ? (
-              <span
-                aria-hidden
-                onPointerDown={(event) => startElementResize(event, element)}
-                className="absolute -bottom-1 -right-1 size-3 cursor-nwse-resize rounded-sm border border-border bg-background"
-              />
-            ) : null}
+            {selected
+              ? RESIZE_HANDLES.map((handle) => (
+                  <span
+                    key={handle}
+                    aria-hidden
+                    data-resize-handle={handle}
+                    onPointerDown={(event) => startElementResize(event, element, handle)}
+                    className={cn(
+                      "absolute z-20 size-2.5 rounded-[2px] border border-primary bg-background shadow-xs",
+                      HANDLE_CLASSES[handle],
+                    )}
+                  />
+                ))
+              : null}
           </button>
         );
       })}

@@ -3,6 +3,7 @@ import type { NotificationView } from "@workspace/notifications";
 import {
   AppShell,
   currentTheme,
+  LoadingState,
   resolveSuiteApps,
   type SuiteAppId,
   type Theme,
@@ -118,7 +119,7 @@ function AppLayout() {
   }
 
   if (!workspace || !urls) {
-    return <p className="p-8 text-sm text-muted-foreground">Chargement…</p>;
+    return <LoadingState className="min-h-screen" label="Chargement de votre espace…" />;
   }
 
   return (
