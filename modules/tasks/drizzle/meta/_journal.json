@@ -22,6 +22,13 @@
       "when": 1791923391000,
       "tag": "0002_serene_order",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1791938496000,
+      "tag": "0003_lucky_subtasks",
+      "breakpoints": true
     }
   ]
 }

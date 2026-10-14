@@ -15,6 +15,13 @@
       "when": 1791920439450,
       "tag": "0001_lobby",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1791928712075,
+      "tag": "0002_participants_chat",
+      "breakpoints": true
     }
   ]
 }
