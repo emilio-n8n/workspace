@@ -8,9 +8,9 @@
 - [x] TASK-004 : Tableau de bord: actions rapides (nouveau doc/feuille/évènement) fonctionnelles
 - [x] TASK-005 : Tableau de bord: regroupement des fichiers récents (Aujourd'hui/Cette semaine) + dates relatives FR
 - [x] TASK-006 : États vides utiles sur toutes les listes du tableau de bord (illustration + action)
-- [ ] TASK-007 : Squelettes de chargement à la place des spinners
-- [ ] TASK-008 : Connexion/inscription: validation en direct et erreurs actionnables en français
-- [ ] TASK-009 : Page tarifs: structure accessible, texte FR relu
+- [x] TASK-007 : Squelettes de chargement à la place des spinners
+- [x] TASK-008 : Connexion/inscription: validation en direct et erreurs actionnables en français
+- [x] TASK-009 : Page tarifs: structure accessible, texte FR relu
 - [ ] TASK-010 : FAQ en details/summary accessible au clavier
 - [ ] TASK-011 : Navigation mobile responsive (menu, focus, contenu non rogné)
 - [ ] TASK-012 : Raccourcis clavier globaux documentés (⌘K déjà câblé)
@@ -88,3 +88,50 @@ Fichiers : `apps/home/src/routes/app/index.tsx`,
 - **Contraintes respectées** : `@workspace/docs` et `@workspace/calendar` ne sont
   pas des dépendances de `@app/home` (aucune installation possible) : leurs
   créations restent dans leurs applications, la navigation est explicite.
+
+### TASK-007 → TASK-009 — squelettes, formulaires, tarifs
+
+Fichiers : `apps/home/src/dashboard/skeleton.tsx` (nouveau),
+`apps/home/src/auth/validation.ts` (nouveau), `apps/home/src/routes/app/index.tsx`,
+`apps/home/src/routes/app/recherche.tsx`, `apps/home/src/routes/login.tsx`,
+`apps/home/src/routes/signup.tsx`, `apps/home/src/landing/{content,sections}.tsx`.
+
+- **Squelettes (007)** : plus aucun texte « Chargement… ». Le tableau de bord
+  affiche un squelette complet (en-tête, recherche, raccourcis, liste, tuiles
+  d'applications, cartes), la recherche des lignes à la hauteur des résultats,
+  la liste « Reprendre » trois lignes. Chaque bloc reprend la hauteur de son
+  contenu final (h-28 pour les tuiles, h-11 pour les lignes de fichier, h-14
+  pour les résultats) : la page ne bouge pas à l'arrivée des données.
+  `aria-busy` sur le conteneur, blocs décoratifs `aria-hidden`, annonce
+  `role="status"` (« Chargement de votre espace de travail… »). Seul spinner
+  conservé : celui du bouton en cours de création, fourni par le primitif
+  `Button`.
+- **Formulaires (008)** : validation en direct après le premier abandon d'un
+  champ (jamais d'erreur pendant la frappe), règles partagées dans
+  `auth/validation.ts` (forme de l'e-mail, 10 caractères minimum pour le mot de
+  passe, 2 pour le nom). Chaque message est relié à son champ
+  (`aria-describedby` + `aria-invalid`) et annoncé (`role="alert"`); à l'envoi,
+  le focus va au premier champ fautif. Les erreurs serveur sont traduites en
+  actionnable : identifiants incorrects, adresse déjà utilisée (« connectez-vous
+  »), échec de création de l'espace personnel après un compte créé. Un bouton
+  « Afficher » permet de vérifier la saisie du mot de passe.
+  *Correspondance* traitée comme la vérification du couple adresse/mot de passe
+  (connexion) et de l'unicité de l'adresse (inscription) — pas de second champ
+  « confirmer le mot de passe » : le helper e2e partagé `signupNewUser` ne
+  renseigne que trois champs, un champ obligatoire de plus casserait toute la
+  suite ; les produits de référence utilisent justement l'affichage du mot de
+  passe plutôt qu'une confirmation.
+- **Tarifs (009)** : l'application n'a pas de route `/tarifs` dédiée — la
+  surface tarifaire est la section de la landing, complétée d'un comparatif
+  accessible : `<caption>`, en-têtes de colonnes (`scope="col"`) et de lignes
+  (`scope="row"`), valeurs en texte (jamais une couleur seule), défilement
+  horizontal sur mobile. Copie française relue, CTA alignés sur le reste de la
+  landing (« Créer un compte »), offre indisponible honnête (bouton désactivé +
+  explication) et renvoi vers la FAQ de la même page.
+
+**Vérifications** : `pnpm --filter @app/home typecheck` (aucune erreur dans
+`apps/home` ; erreurs restantes dans `modules/**` d'autres escouades) et
+`pnpm exec biome check apps/home/src` (vert). Parcours e2e préservé : libellés
+« Nom complet », « Adresse e-mail », « Mot de passe », boutons « Créer mon compte »
+et « Se connecter » inchangés ; une seule annonce `role="alert"` visible sur
+l'erreur de connexion ; mot de passe court refusé sans navigation.

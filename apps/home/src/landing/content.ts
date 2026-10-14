@@ -159,7 +159,7 @@ export const CAPTURES: Capture[] = [
 ];
 
 export const PRICING_INTRO =
-  "Un seul tarif : zéro euro, parce que la suite est libre et qu'elle vit chez vous.";
+  "Un seul tarif à connaître : zéro euro. La suite est libre, et elle vit chez vous — vrai pour les quatorze applications.";
 
 export type Plan = {
   id: string;
@@ -212,6 +212,29 @@ export const PLANS: Plan[] = [
     featured: false,
   },
 ];
+
+/**
+ * Comparatif des offres — même ordre de colonnes que `PLANS`.
+ *
+ * Chaque cellule porte son sens en texte (jamais une couleur ou une icône
+ * seule) : le tableau reste lisible au lecteur d'écran comme en impression.
+ */
+export const PRICING_COMPARISON = {
+  caption: "Comparaison des deux offres, ligne par ligne.",
+  rows: [
+    { label: "Applications", values: ["Les quatorze", "Les quatorze"] },
+    { label: "Licence", values: ["AGPL-3.0-only", "AGPL-3.0-only"] },
+    { label: "Où vivent vos données", values: ["Votre serveur", "Votre serveur"] },
+    { label: "Nombre d'utilisateurs", values: ["Illimité", "Illimité"] },
+    { label: "Mises à jour", values: ["Vous décidez du rythme", "Suivies pour vous"] },
+    { label: "Sauvegardes", values: ["À votre charge", "Incluses"] },
+    { label: "Support", values: ["Documentation et communauté", "Prioritaire et dédié"] },
+    { label: "Tarif", values: ["0 €", "Sur devis"] },
+  ],
+  /** Question de renvoi vers la FAQ de la même page. */
+  faqPrompt: "Une question sur les offres ?",
+  faqLinkLabel: "Lire les questions fréquentes",
+} as const;
 
 export const FAQ: { question: string; answer: string }[] = [
   {

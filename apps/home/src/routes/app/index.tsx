@@ -20,6 +20,7 @@ import { useCallback, useEffect, useState } from "react";
 import { formatBytes } from "../../dashboard/format.ts";
 import { ShortcutsSection } from "../../dashboard/quick-actions.tsx";
 import { RecentFilesSection } from "../../dashboard/recent-files.tsx";
+import { Skeleton, SkeletonCard, SkeletonRow } from "../../dashboard/skeleton.tsx";
 import { getAppUrlsFn, getWorkspaceFn, type WorkspaceInfo } from "../../server/context.ts";
 import { getStorageUsageFn } from "../../server/storage.ts";
 
@@ -249,7 +250,56 @@ function DashboardPage() {
   }
 
   if (!workspace || !urls) {
-    return <p className="p-8 text-sm text-muted-foreground">Chargement…</p>;
+    // Squelettes : chaque bloc reprend la hauteur de son contenu final, la page
+    // ne bouge pas quand les données arrivent.
+    return (
+      <div className="mx-auto flex max-w-5xl flex-col gap-6" aria-busy="true">
+        <div className="flex flex-col gap-2">
+          <Skeleton className="h-9 w-56" />
+          <Skeleton className="h-5 w-72" />
+        </div>
+        <Skeleton className="h-9 w-full rounded-lg" />
+
+        <div className="flex flex-col gap-3">
+          <Skeleton className="h-4 w-24" />
+          <Skeleton className="h-5 w-80" />
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+            {[0, 1, 2, 3, 4, 5].map((index) => (
+              <SkeletonCard key={index} />
+            ))}
+          </div>
+        </div>
+
+        <div className="flex flex-col gap-3">
+          <Skeleton className="h-4 w-24" />
+          <Skeleton className="h-5 w-80" />
+          <div className="flex flex-col gap-2">
+            {[0, 1, 2].map((index) => (
+              <SkeletonRow key={index} />
+            ))}
+          </div>
+        </div>
+
+        <div className="flex flex-col gap-3">
+          <Skeleton className="h-4 w-28" />
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
+            {[0, 1, 2, 3, 4, 5, 6, 7].map((index) => (
+              <SkeletonCard key={index} />
+            ))}
+          </div>
+        </div>
+
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          {[0, 1, 2].map((index) => (
+            <Skeleton key={index} className="h-32 rounded-xl" />
+          ))}
+        </div>
+
+        <p role="status" className="sr-only">
+          Chargement de votre espace de travail…
+        </p>
+      </div>
+    );
   }
 
   const apps = resolveSuiteApps(urls);

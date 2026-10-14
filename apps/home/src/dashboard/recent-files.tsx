@@ -16,6 +16,7 @@ import {
 } from "@workspace/ui";
 import { useState } from "react";
 import { formatRelativeDate, groupRecent } from "./dates.ts";
+import { SkeletonGroup, SkeletonRow } from "./skeleton.tsx";
 
 /**
  * Section « Reprendre » — les fichiers récents du tableau de bord.
@@ -122,11 +123,11 @@ export function RecentFilesSection({
         </Alert>
       ) : loading ? (
         // Squelettes : la place est réservée, la liste ne saute pas à l'arrivée.
-        <div className="flex flex-col gap-2" aria-hidden>
-          <div className="h-11 animate-pulse rounded-md bg-muted" />
-          <div className="h-11 animate-pulse rounded-md bg-muted" />
-          <div className="h-11 animate-pulse rounded-md bg-muted" />
-        </div>
+        <SkeletonGroup label="Chargement de vos fichiers récents…" className="flex flex-col gap-2">
+          {[0, 1, 2].map((index) => (
+            <SkeletonRow key={index} />
+          ))}
+        </SkeletonGroup>
       ) : groups.length === 0 ? (
         <EmptyState
           icon={<IconFolder />}

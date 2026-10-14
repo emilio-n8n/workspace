@@ -15,6 +15,7 @@ import {
 } from "@workspace/ui";
 import { useEffect, useRef, useState } from "react";
 import { z } from "zod";
+import { SkeletonGroup, SkeletonRow } from "../../dashboard/skeleton.tsx";
 import { getAppUrlsFn } from "../../server/context.ts";
 
 /** Recherche serveur : composition des services de modules (jamais leurs tables). */
@@ -164,11 +165,18 @@ function SearchPage() {
         <Alert tone="danger" title="Recherche impossible">
           La recherche n'a pas abouti. Réessayez dans un instant.
         </Alert>
+      ) : loading && results === null ? (
+        // Squelettes à la hauteur des résultats : aucun saut de mise en page.
+        <SkeletonGroup
+          label="Recherche en cours…"
+          className="flex flex-col gap-2 overflow-hidden rounded-xl border border-border bg-card p-2"
+        >
+          {[0, 1, 2].map((index) => (
+            <SkeletonRow key={index} className="h-14" />
+          ))}
+        </SkeletonGroup>
       ) : results === null ? (
-        // Chargement : la région est annoncée, la liste garde sa place.
-        <p role="status" className="text-sm text-muted-foreground">
-          {loading ? "Recherche…" : ""}
-        </p>
+        <p role="status" className="text-sm text-muted-foreground" />
       ) : results.length === 0 ? (
         <EmptyState
           icon={<IconSearch />}

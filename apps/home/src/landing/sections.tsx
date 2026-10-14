@@ -12,6 +12,13 @@ import {
   IconMoon,
   IconSun,
   SUITE_APPS,
+  Table,
+  TableBody,
+  TableCaption,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
   type Theme,
 } from "@workspace/ui";
 import { useEffect, useState } from "react";
@@ -29,6 +36,7 @@ import {
   HERO,
   NAV_LINKS,
   PLANS,
+  PRICING_COMPARISON,
   PRICING_INTRO,
 } from "./content.ts";
 import { CaptureMockup } from "./mockups.tsx";
@@ -57,6 +65,12 @@ const bodyMuted = "text-sm leading-relaxed text-muted-foreground";
 const navLinkClass = cn(
   "rounded-md px-3 py-2 text-sm text-muted-foreground transition-colors",
   "hover:bg-muted hover:text-foreground motion-reduce:transition-none",
+  focusRing,
+);
+
+/** Lien dans le corps de texte (renvoi vers une autre section de la page). */
+const quietLinkClass = cn(
+  "rounded-sm font-medium text-primary underline-offset-4 hover:underline",
   focusRing,
 );
 
@@ -402,6 +416,45 @@ export function PricingSection() {
             </li>
           ))}
         </ul>
+
+        {/* Comparatif — tableau sémantique : légende, en-têtes de colonnes et
+            en-têtes de ligne, donc lisible sans voir l'écran. */}
+        <div className="mt-10 overflow-hidden rounded-xl border border-border bg-card shadow-soft">
+          <Table>
+            <TableCaption className="px-5 py-3 text-left text-sm text-muted-foreground">
+              {PRICING_COMPARISON.caption}
+            </TableCaption>
+            <TableHeader>
+              <TableRow>
+                <TableHead className="w-[36%]">Ce qui est inclus</TableHead>
+                {PLANS.map((plan) => (
+                  <TableHead key={plan.id}>{plan.name}</TableHead>
+                ))}
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {PRICING_COMPARISON.rows.map((row) => (
+                <TableRow key={row.label}>
+                  <TableHead scope="row" className="font-medium text-foreground">
+                    {row.label}
+                  </TableHead>
+                  {row.values.map((value, index) => (
+                    <TableCell key={PLANS[index]?.id ?? index} className="text-muted-foreground">
+                      {value}
+                    </TableCell>
+                  ))}
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </div>
+
+        <p className="mt-6 text-sm text-muted-foreground">
+          {PRICING_COMPARISON.faqPrompt}{" "}
+          <a href="#faq" className={quietLinkClass}>
+            {PRICING_COMPARISON.faqLinkLabel}
+          </a>
+        </p>
       </div>
     </section>
   );
