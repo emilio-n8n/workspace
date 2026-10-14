@@ -108,6 +108,62 @@ body {
   margin: 1.5em 0;
 }
 
+.workspace-editor img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 0.4rem;
+}
+
+/* Tableaux : grille lisible, en-tête distinct, comme un traitement de texte. */
+.workspace-editor table {
+  border-collapse: collapse;
+  table-layout: fixed;
+  width: 100%;
+  margin: 0.75em 0;
+}
+
+.workspace-editor th,
+.workspace-editor td {
+  border: 1px solid var(--border);
+  padding: 0.35em 0.6em;
+  vertical-align: top;
+  position: relative;
+  min-width: 2.5em;
+}
+
+.workspace-editor th {
+  background: var(--muted);
+  font-weight: 600;
+  text-align: left;
+}
+
+/* Cellules en sélection multiple (Tiptap) : voile discret, jamais un bloc. */
+.workspace-editor .selectedCell::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: color-mix(in oklch, var(--primary) 12%, transparent);
+  pointer-events: none;
+}
+
+/* Saut de page : repère visible à l'écran — vrai saut sur le papier. */
+.workspace-page-break {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 2rem;
+  margin: 1.25rem -0.75rem;
+  border-top: 1px dashed var(--border);
+  border-bottom: 1px dashed var(--border);
+  background: color-mix(in oklch, var(--muted) 55%, transparent);
+  color: var(--muted-foreground);
+  font-size: 11px;
+}
+
+.workspace-page-break::after {
+  content: "Saut de page";
+}
+
 .workspace-editor p.is-editor-empty:first-child::before {
   content: "Commencez à écrire…";
   color: var(--muted-foreground);
@@ -283,5 +339,33 @@ body.workspace-docs-focus main#contenu {
   .workspace-editor .workspace-search-hit {
     background: none !important;
     color: inherit !important;
+  }
+
+  /* Tableaux : grille grise sur papier blanc. */
+  .workspace-editor th,
+  .workspace-editor td {
+    border-color: #d4d4d8;
+  }
+
+  .workspace-editor th {
+    background: #f4f4f5;
+  }
+
+  .workspace-editor .selectedCell::after {
+    content: none;
+  }
+
+  /* Saut de page : force la page suivante, sans repère. */
+  .workspace-page-break {
+    display: block;
+    height: 0;
+    margin: 0;
+    border: none;
+    background: none;
+    break-after: page;
+  }
+
+  .workspace-page-break::after {
+    content: none;
   }
 }

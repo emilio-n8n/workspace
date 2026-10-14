@@ -43,7 +43,18 @@ export function useFormatModifier(): string {
  * focus d'un outil à l'autre, `Tab` continue de parcourir toute la barre puis
  * de sortir vers la suite de la page — aucun piège au clavier.
  */
+/** Navigation horizontale dans la barre (`←` / `→`) : les flèches déplacent le
+ * focus d'un outil à l'autre, `Tab` continue de parcourir toute la barre puis
+ * de sortir vers la suite de la page — aucun piège au clavier. Les champs de
+ * saisie et sélecteurs gardent leurs propres flèches. */
 export function onToolbarArrowKeys(event: KeyboardEvent<HTMLDivElement>) {
+  if (
+    event.target instanceof HTMLSelectElement ||
+    event.target instanceof HTMLInputElement ||
+    event.target instanceof HTMLTextAreaElement
+  ) {
+    return;
+  }
   const step = event.key === "ArrowRight" ? 1 : event.key === "ArrowLeft" ? -1 : 0;
   if (step === 0) return;
 

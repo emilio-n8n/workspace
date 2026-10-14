@@ -2,6 +2,7 @@ import { expect, test } from "@playwright/test";
 import { gotoHydrated, openApp, signupNewUser, uniqueEmail } from "./helpers.ts";
 
 const CALENDAR = "http://localhost:3004";
+const DOCS = "http://localhost:3002";
 const FORMS = "http://localhost:3005";
 const SHEETS = "http://localhost:3006";
 const SLIDES = "http://localhost:3007";
@@ -199,6 +200,55 @@ test("slides : mise en page de titre, édition en place et nouvelle diapositive"
   await page.waitForSelector("html[data-hydrated='true']", { timeout: 40_000 });
   await expect(page.getByText("Lancement 2026").first()).toBeVisible({ timeout: 15_000 });
   await expect(page.getByLabel("Transition", { exact: true })).toHaveValue("fade");
+});
+
+test("docs : styles, saut de page, tableau et zoom", async ({ page }) => {
+  const email = uniqueEmail("docs-edit");
+  await signupNewUser(page, "Docs E2E", email);
+
+  await openApp(page, `${DOCS}/`);
+  await page.getByLabel("Titre").fill("Notes E2E");
+  await page.getByRole("button", { name: "Créer" }).click();
+
+  // L'éditeur arrive après hydratation : saisie tolérante à la course initiale.
+  const surface = page.locator(".workspace-editor[contenteditable='true']");
+  await expect(surface).toBeVisible({ timeout: 20_000 });
+  await expect(async () => {
+    await surface.click();
+    await page.keyboard.type("Bonjour le monde");
+    await expect(page.getByText("Bonjour le monde")).toBeVisible({ timeout: 2_000 });
+  }).toPass({ timeout: 20_000 });
+
+  // Style de paragraphe « Titre 1 » via le sélecteur (comme Word).
+  await page.getByLabel("Style de paragraphe").selectOption("heading1");
+  await expect(page.getByRole("heading", { name: "Bonjour le monde" })).toBeVisible();
+
+  // Saut de page : nouveau paragraphe puis repère visible dans l'éditeur.
+  await page.keyboard.press("Enter");
+  await page.getByRole("button", { name: "Saut de page" }).click();
+  await expect(page.locator(".workspace-page-break")).toBeVisible();
+
+  // Tableau 2×2 inséré par le dialogue.
+  await page.getByRole("button", { name: "Insérer un tableau" }).click();
+  const tableDialog = page.getByRole("dialog", { name: "Insérer un tableau" });
+  await tableDialog.getByLabel("Lignes").fill("2");
+  await tableDialog.getByLabel("Colonnes").fill("2");
+  await tableDialog.getByRole("button", { name: "Insérer" }).click();
+  await expect(page.locator(".workspace-editor table")).toBeVisible();
+
+  // Zoom (vue) : le sélecteur du pied de page.
+  await page.getByLabel("Zoom").selectOption("125");
+  await expect(page.getByLabel("Zoom")).toHaveValue("125");
+
+  // Persistance : rechargement → titre, saut de page et tableau.
+  await expect(page.getByText(/Enregistré/).first()).toBeVisible({ timeout: 15_000 });
+  await page.reload();
+  await page.waitForSelector("html[data-hydrated='true']", { timeout: 40_000 });
+  await expect(page.getByRole("heading", { name: "Bonjour le monde" })).toBeVisible({
+    timeout: 15_000,
+  });
+  await expect(page.locator(".workspace-page-break")).toBeVisible();
+  await expect(page.locator(".workspace-editor table")).toBeVisible();
 });
 
 test("accueil : le lanceur expose les quatorze applications", async ({ page }) => {

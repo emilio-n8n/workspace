@@ -47,6 +47,8 @@ Toutes testées, committées et poussées. Compteurs par escouade (tests du modu
 | **MCP** | 1 mission | 29 outils — `docs.list_versions`, `docs.restore_version` (21 tests) |
 | **Transversal** | 3/5 | README corrigés (29 outils, 14 ADR), `vercel.md` réaligné sur Nitro, glossaire français (27 termes) |
 
+**Docs 2.0 (14 oct.)** : styles de paragraphe, tailles, couleurs et surlignages sémantiques, alignement, tableaux avec outils contextuels, images https, liens, saut de page imprimable, zoom, export enrichi (tableaux/images/styles sûrs) — 105 tests + E2E.
+
 **Missions restantes (~100)** : vagues suivantes de chaque escouade (aperçus Drive, formats Sheets, récurrence Calendar, sous-tâches Tasks, conditions Forms, threads Mail, réactions Chat, participants Meet, export Sites, export notes Classroom, infra de test UI…), + TASK-197→200 (docs).
 
 ## 4. Fonctionnalités produit notables (au-delà de l'Armada)

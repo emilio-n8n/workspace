@@ -134,6 +134,113 @@ describe("export — HTML", () => {
   });
 });
 
+describe("export — images, tableaux et saut de page", () => {
+  const figureDocument: PmNode = {
+    type: "doc",
+    content: [
+      {
+        type: "image",
+        attrs: { src: "https://exemple.org/photo.png", alt: "Photo de l'équipe" },
+      },
+      { type: "pageBreak" },
+      {
+        type: "table",
+        content: [
+          {
+            type: "tableRow",
+            content: [
+              {
+                type: "tableHeader",
+                content: [{ type: "paragraph", content: [{ type: "text", text: "Nom" }] }],
+              },
+              {
+                type: "tableHeader",
+                content: [{ type: "paragraph", content: [{ type: "text", text: "Rôle" }] }],
+              },
+            ],
+          },
+          {
+            type: "tableRow",
+            content: [
+              {
+                type: "tableCell",
+                content: [{ type: "paragraph", content: [{ type: "text", text: "Ada" }] }],
+              },
+              {
+                type: "tableCell",
+                content: [
+                  { type: "paragraph", content: [{ type: "text", text: "Calcul | logique" }] },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  };
+
+  it("exporte une image valide et neutralise les schémas dangereux", () => {
+    const markdown = toMarkdown(figureDocument);
+    expect(markdown).toContain("![Photo de l'équipe](https://exemple.org/photo.png)");
+
+    const unsafe: PmNode = {
+      type: "doc",
+      content: [{ type: "image", attrs: { src: "javascript:alert(1)" } }],
+    };
+    expect(toMarkdown(unsafe)).not.toContain("javascript:");
+    expect(toHtml(unsafe)).not.toContain("javascript:");
+  });
+
+  it("exporte le tableau et le saut de page en Markdown", () => {
+    const markdown = toMarkdown(figureDocument);
+    expect(markdown).toContain("| Nom | Rôle |");
+    expect(markdown).toContain("| --- | --- |");
+    expect(markdown).toContain("| Ada | Calcul \\| logique |");
+    expect(markdown).toContain("---");
+  });
+
+  it("exporte le tableau et le saut de page en HTML", () => {
+    const html = toHtml(figureDocument);
+    expect(html).toContain("<table>");
+    expect(html).toContain("<th>Nom</th>");
+    expect(html).toContain("<td>Ada</td>");
+    expect(html).toContain('<img src="https://exemple.org/photo.png" alt="Photo de l\'équipe" />');
+    expect(html).toContain('<hr class="page-break" />');
+  });
+
+  it("exporte les styles sûrs et refuse les valeurs CSS libres", () => {
+    const doc: PmNode = {
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [
+            {
+              type: "text",
+              text: "accent",
+              marks: [{ type: "textStyle", attrs: { color: "var(--primary)", fontSize: "18px" } }],
+            },
+            {
+              type: "text",
+              text: " surligné",
+              marks: [{ type: "highlight", attrs: { color: "var(--attention)" } }],
+            },
+            {
+              type: "text",
+              text: " dangereux",
+              marks: [{ type: "textStyle", attrs: { color: "url(javascript:alert(1))" } }],
+            },
+          ],
+        },
+      ],
+    };
+    const html = toHtml(doc);
+    expect(html).toContain('<span style="color: var(--primary); font-size: 18px">accent</span>');
+    expect(html).toContain('<mark style="background-color: var(--attention)">');
+    expect(html).not.toContain("javascript:");
+  });
+});
+
 describe("export — texte brut", () => {
   it("extrait le texte avec les séparateurs de blocs", () => {
     const text = toPlainText(richDocument);

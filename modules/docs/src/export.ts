@@ -31,6 +31,26 @@ export function escapeHtml(text: string): string {
 const CONTROL_CHARS = /[\u0000-\u001F\u007F]/g;
 
 /**
+ * Liste blanche de couleur pour les marques de texte : un jeton sémantique
+ * (`var(--jeton)`) ou une couleur hexadécimale, jamais une valeur libre —
+ * l'export ne peut pas devenir un vecteur d'injection CSS.
+ */
+const SAFE_CSS_COLOR = /^(?:var\(--[a-z0-9-]+\)|#[0-9a-f]{3,8})$/i;
+
+/** Tailles de police acceptées à l'export (nombre + unité CSS courte). */
+const SAFE_FONT_SIZE = /^\d+(?:\.\d+)?(?:px|pt|em|rem|%)$/;
+
+/**
+ * Valeur de couleur sûre pour l'export HTML : jeton sémantique ou hexadécimal.
+ * `null` pour toute autre valeur (rien n'est jamais interpolé tel quel).
+ */
+function safeColor(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return SAFE_CSS_COLOR.test(trimmed) ? trimmed : null;
+}
+
+/**
  * Liste blanche d'URL : http(s) et mailto uniquement, caractères de contrôle
  * retirés (le contournement « java\tscript: » est ainsi fermé). Retourne
  * `null` pour tout autre schéma (javascript:, data:, vbscript:…).
@@ -123,9 +143,36 @@ function blockMarkdown(node: PmNode, depth = 0): string {
     case "horizontalRule":
       return "---\n\n";
 
+    case "image": {
+      const src = sanitizeUrl(typeof node.attrs?.src === "string" ? node.attrs.src : "");
+      if (!src) return "";
+      const alt = typeof node.attrs?.alt === "string" ? node.attrs.alt : "";
+      return `![${escapeMarkdown(alt)}](${src})\n\n`;
+    }
+
+    case "pageBreak":
+      return "---\n\n";
+
+    case "table":
+      return `${tableMarkdown(node)}\n\n`;
+
     default:
       return children.map((child) => blockMarkdown(child)).join("");
   }
+}
+
+/** Tableau ProseMirror → tableau Markdown (première ligne en en-tête). */
+function tableMarkdown(table: PmNode): string {
+  const cellsOf = (row: PmNode): string[] =>
+    (row.content ?? []).map((cell) =>
+      inlineMarkdown(cell).replace(/\|/g, "\\|").replace(/\n+/g, " ").trim(),
+    );
+  const rows = (table.content ?? []).filter((row) => row.type === "tableRow").map(cellsOf);
+  const [header = [], ...body] = rows;
+  if (header.length === 0) return "";
+  const lines = [`| ${header.join(" | ")} |`, `| ${header.map(() => "---").join(" | ")} |`];
+  for (const row of body) lines.push(`| ${row.join(" | ")} |`);
+  return lines.join("\n");
 }
 
 function listItemMarkdown(item: PmNode, depth: number): string {
@@ -161,6 +208,25 @@ function inlineHtml(node: PmNode): string {
         if (safe) {
           text = `<a href="${escapeHtml(safe)}" rel="noopener noreferrer">${text}</a>`;
         }
+      } else if (mark.type === "textStyle") {
+        const color = safeColor(mark.attrs?.color);
+        const rawSize = mark.attrs?.fontSize;
+        const fontSize =
+          typeof rawSize === "string" && SAFE_FONT_SIZE.test(rawSize.trim())
+            ? rawSize.trim()
+            : null;
+        const styles = [
+          color ? `color: ${color}` : null,
+          fontSize ? `font-size: ${fontSize}` : null,
+        ]
+          .filter((value): value is string => value !== null)
+          .join("; ");
+        if (styles.length > 0) text = `<span style="${escapeHtml(styles)}">${text}</span>`;
+      } else if (mark.type === "highlight") {
+        const color = safeColor(mark.attrs?.color);
+        text = color
+          ? `<mark style="background-color: ${escapeHtml(color)}">${text}</mark>`
+          : `<mark>${text}</mark>`;
       }
     }
     return text;
@@ -204,9 +270,35 @@ function blockHtml(node: PmNode): string {
     case "horizontalRule":
       return "<hr />";
 
+    case "image": {
+      const src = sanitizeUrl(typeof node.attrs?.src === "string" ? node.attrs.src : "");
+      if (!src) return "";
+      const alt = typeof node.attrs?.alt === "string" ? node.attrs.alt : "";
+      return `<img src="${escapeHtml(src)}" alt="${escapeHtml(alt)}" />`;
+    }
+
+    case "pageBreak":
+      return `<hr class="page-break" />`;
+
+    case "table":
+      return tableHtml(node);
+
     default:
       return children.map(blockHtml).join("\n");
   }
+}
+
+/** Tableau ProseMirror → tableau HTML (première ligne en en-tête). */
+function tableHtml(table: PmNode): string {
+  const rows = (table.content ?? []).filter((row) => row.type === "tableRow");
+  const rendered = rows.map((row, rowIndex) => {
+    const cells = (row.content ?? []).map((cell) => {
+      const tag = cell.type === "tableHeader" || rowIndex === 0 ? "th" : "td";
+      return `  <${tag}>${inlineHtml(cell)}</${tag}>`;
+    });
+    return `<tr>\n${cells.join("\n")}\n</tr>`;
+  });
+  return `<table>\n<tbody>\n${rendered.join("\n")}\n</tbody>\n</table>`;
 }
 
 function listItemHtml(item: PmNode): string {

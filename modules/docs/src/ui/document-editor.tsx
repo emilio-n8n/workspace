@@ -1,16 +1,42 @@
 import { Collaboration } from "@tiptap/extension-collaboration";
 import { CollaborationCaret } from "@tiptap/extension-collaboration-caret";
+import { Highlight } from "@tiptap/extension-highlight";
+import { Image } from "@tiptap/extension-image";
+import { TableKit } from "@tiptap/extension-table";
+import { TextAlign } from "@tiptap/extension-text-align";
+import { TextStyleKit } from "@tiptap/extension-text-style";
 import { type Editor, EditorContent, type JSONContent, useEditor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
-import { Alert, Button, cn } from "@workspace/ui";
+import { Alert, Button, cn, Dialog, Input, Label } from "@workspace/ui";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { type CollabSession, createCollabSession } from "../collab-client.ts";
+import {
+  DOC_FONT_SIZES,
+  DOC_HIGHLIGHTS,
+  DOC_TEXT_COLORS,
+  normalizeDocFontSize,
+  PARAGRAPH_STYLES,
+  type ParagraphStyleId,
+} from "../doc-format.ts";
 import { type DocumentStats, documentStats, formatStats } from "../document-stats.ts";
 import { toPlainText } from "../export.ts";
+import { PageBreak } from "../page-break.ts";
 import { saveDocumentFn } from "../server.ts";
 import { DocumentSearch } from "./document-search.tsx";
 import { FORMAT_ACTIONS, type FormatActionId, matchFormatAction } from "./format-actions.ts";
-import { FocusIcon, OutlineIcon, SearchIcon } from "./icons.tsx";
+import {
+  AlignCenterIcon,
+  AlignJustifyIcon,
+  AlignLeftIcon,
+  AlignRightIcon,
+  FocusIcon,
+  ImageIcon,
+  LinkIcon,
+  OutlineIcon,
+  PageBreakIcon,
+  SearchIcon,
+  TableIcon,
+} from "./icons.tsx";
 import { OutlinePanel } from "./outline-panel.tsx";
 import { SearchHighlight } from "./search-plugin.ts";
 import { onToolbarArrowKeys, ToolbarButton, ToolbarSeparator } from "./toolbar.tsx";
@@ -64,6 +90,87 @@ function isFormatActive(editor: WorkspaceEditor, id: FormatActionId): boolean {
   if (id === "bold") return editor.isActive("bold");
   if (id === "italic") return editor.isActive("italic");
   return editor.isActive("underline");
+}
+
+/** Classe commune des sélecteurs compacts de la barre d'outils. */
+const TOOLBAR_SELECT_CLASS =
+  "h-7 rounded-md border border-input bg-background px-1.5 text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
+
+/** Style de paragraphe actif sous le curseur (catalogue `doc-format.ts`). */
+function activeParagraphStyle(editor: WorkspaceEditor): ParagraphStyleId {
+  if (editor.isActive("heading", { level: 1 })) return "heading1";
+  if (editor.isActive("heading", { level: 2 })) return "heading2";
+  if (editor.isActive("heading", { level: 3 })) return "heading3";
+  if (editor.isActive("blockquote")) return "blockquote";
+  if (editor.isActive("codeBlock")) return "codeBlock";
+  return "paragraph";
+}
+
+/** Applique un style de paragraphe à la sélection. */
+function applyParagraphStyle(editor: WorkspaceEditor, id: ParagraphStyleId): void {
+  const chain = editor.chain().focus();
+  if (id === "heading1") chain.setHeading({ level: 1 }).run();
+  else if (id === "heading2") chain.setHeading({ level: 2 }).run();
+  else if (id === "heading3") chain.setHeading({ level: 3 }).run();
+  else if (id === "blockquote") chain.setBlockquote().run();
+  else if (id === "codeBlock") chain.setCodeBlock().run();
+  else chain.setParagraph().run();
+}
+
+/** Taille de police active (taille du catalogue, ou `null` pour défaut). */
+function activeFontSize(editor: WorkspaceEditor): string | null {
+  return normalizeDocFontSize(editor.getAttributes("textStyle").fontSize);
+}
+
+/** Couleur de texte active : identifiant du catalogue, « default » sinon. */
+function activeTextColor(editor: WorkspaceEditor): string {
+  const value = editor.getAttributes("textStyle").color;
+  const css = typeof value === "string" ? value : null;
+  return (
+    DOC_TEXT_COLORS.find((option) => option.css !== null && option.css === css)?.id ?? "default"
+  );
+}
+
+/** Surlignage actif : identifiant du catalogue, « none » sinon. */
+function activeHighlight(editor: WorkspaceEditor): string {
+  const value = editor.getAttributes("highlight").color;
+  const css = typeof value === "string" ? value : null;
+  if (editor.isActive("highlight") && css === null) return "attention";
+  return DOC_HIGHLIGHTS.find((option) => option.css !== null && option.css === css)?.id ?? "none";
+}
+
+/** Applique une couleur de texte du catalogue (ou la retire pour « default »). */
+function applyTextColor(editor: WorkspaceEditor, id: string): void {
+  const option = DOC_TEXT_COLORS.find((candidate) => candidate.id === id);
+  if (!option) return;
+  if (option.css === null) editor.chain().focus().unsetColor().run();
+  else editor.chain().focus().setColor(option.css).run();
+}
+
+/** Applique un surlignage du catalogue (ou le retire pour « none »). */
+function applyHighlight(editor: WorkspaceEditor, id: string): void {
+  const option = DOC_HIGHLIGHTS.find((candidate) => candidate.id === id);
+  if (!option) return;
+  if (option.css === null) editor.chain().focus().unsetHighlight().run();
+  else editor.chain().focus().setHighlight({ color: option.css }).run();
+}
+
+/** Applique une taille de police (chaîne vide = retour au défaut). */
+function applyFontSize(editor: WorkspaceEditor, size: string): void {
+  if (size === "") editor.chain().focus().unsetFontSize().run();
+  else editor.chain().focus().setFontSize(`${size}px`).run();
+}
+
+/** URL d'image acceptée : http(s) uniquement, sans espace. */
+function safeImageUrl(value: string): string | null {
+  const trimmed = value.trim();
+  return /^https?:\/\/\S+$/i.test(trimmed) ? trimmed : null;
+}
+
+/** URL de lien acceptée : http(s) ou mailto, sans espace. */
+function safeLinkHref(value: string): string | null {
+  const trimmed = value.trim();
+  return /^(https?:\/\/|mailto:)\S+$/i.test(trimmed) ? trimmed : null;
 }
 
 /**
@@ -179,6 +286,21 @@ function EditorSurface({
   const { active: focusActive, toggle: toggleFocus, exit: exitFocus } = useFocusMode();
   /** Statistiques du document (mots, caractères, temps de lecture). */
   const [stats, setStats] = useState<DocumentStats>(EMPTY_STATS);
+  /** Zoom d'affichage de la page (View > Zoom, comme un traitement de texte). */
+  const [zoom, setZoom] = useState(100);
+  /** Dialogue « Insérer un tableau » et ses dimensions. */
+  const [tableOpen, setTableOpen] = useState(false);
+  const [tableRows, setTableRows] = useState(3);
+  const [tableCols, setTableCols] = useState(3);
+  /** Dialogue « Insérer une image » (URL https + texte alternatif). */
+  const [imageOpen, setImageOpen] = useState(false);
+  const [imageUrl, setImageUrl] = useState("");
+  const [imageAlt, setImageAlt] = useState("");
+  const [imageError, setImageError] = useState<string | null>(null);
+  /** Dialogue « Insérer un lien ». */
+  const [linkOpen, setLinkOpen] = useState(false);
+  const [linkUrl, setLinkUrl] = useState("");
+  const [linkError, setLinkError] = useState<string | null>(null);
 
   /** Étiquette du curseur distant — purement cosmétique. */
   const collabUserName = collab?.userName ?? "Vous";
@@ -267,6 +389,15 @@ function EditorSurface({
             }),
           ]
         : [StarterKit]),
+      // Mise en forme avancée, commune aux deux modes : couleurs et tailles
+      // (marque TextStyle), surlignage multicolore, alignement des paragraphes
+      // et des titres, tableaux, images https et saut de page.
+      TextStyleKit.configure({ backgroundColor: false, fontFamily: false, lineHeight: false }),
+      Highlight.configure({ multicolor: true }),
+      TextAlign.configure({ types: ["heading", "paragraph"] }),
+      TableKit.configure({ table: { resizable: false } }),
+      Image.configure({ allowBase64: false }),
+      PageBreak,
       // Recherche : décorations de vue seulement, sans effet sur le document.
       SearchHighlight,
     ],
@@ -479,23 +610,37 @@ function EditorSurface({
 
           <ToolbarSeparator />
 
-          {[1, 2, 3].map((level) => (
-            <ToolbarButton
-              key={level}
-              label={`Titre ${level}`}
-              pressed={editor.isActive("heading", { level })}
-              disabled={!canEdit}
-              onClick={() =>
-                editor
-                  .chain()
-                  .focus()
-                  .toggleHeading({ level: level as 1 | 2 | 3 })
-                  .run()
-              }
-            >
-              H{level}
-            </ToolbarButton>
-          ))}
+          {/* Styles de paragraphe et taille de police — deux sélecteurs
+              compacts, comme dans un traitement de texte. */}
+          <select
+            aria-label="Style de paragraphe"
+            value={activeParagraphStyle(editor)}
+            disabled={!canEdit}
+            onChange={(event) =>
+              applyParagraphStyle(editor, event.target.value as ParagraphStyleId)
+            }
+            className={TOOLBAR_SELECT_CLASS}
+          >
+            {PARAGRAPH_STYLES.map((style) => (
+              <option key={style.id} value={style.id}>
+                {style.label}
+              </option>
+            ))}
+          </select>
+          <select
+            aria-label="Taille de police"
+            value={activeFontSize(editor) ?? ""}
+            disabled={!canEdit}
+            onChange={(event) => applyFontSize(editor, event.target.value)}
+            className={TOOLBAR_SELECT_CLASS}
+          >
+            <option value="">Taille</option>
+            {DOC_FONT_SIZES.map((size) => (
+              <option key={size} value={size}>
+                {size}
+              </option>
+            ))}
+          </select>
 
           <ToolbarSeparator />
 
@@ -535,6 +680,35 @@ function EditorSurface({
 
           <ToolbarSeparator />
 
+          <select
+            aria-label="Couleur du texte"
+            value={activeTextColor(editor)}
+            disabled={!canEdit}
+            onChange={(event) => applyTextColor(editor, event.target.value)}
+            className={TOOLBAR_SELECT_CLASS}
+          >
+            {DOC_TEXT_COLORS.map((color) => (
+              <option key={color.id} value={color.id}>
+                {color.label}
+              </option>
+            ))}
+          </select>
+          <select
+            aria-label="Surlignage"
+            value={activeHighlight(editor)}
+            disabled={!canEdit}
+            onChange={(event) => applyHighlight(editor, event.target.value)}
+            className={TOOLBAR_SELECT_CLASS}
+          >
+            {DOC_HIGHLIGHTS.map((highlight) => (
+              <option key={highlight.id} value={highlight.id}>
+                {highlight.label}
+              </option>
+            ))}
+          </select>
+
+          <ToolbarSeparator />
+
           <ToolbarButton
             label="Liste à puces"
             pressed={editor.isActive("bulletList")}
@@ -551,21 +725,75 @@ function EditorSurface({
           >
             1.
           </ToolbarButton>
+
+          <ToolbarSeparator />
+
           <ToolbarButton
-            label="Citation"
-            pressed={editor.isActive("blockquote")}
+            label="Aligner à gauche"
+            pressed={editor.isActive({ textAlign: "left" })}
             disabled={!canEdit}
-            onClick={() => editor.chain().focus().toggleBlockquote().run()}
+            onClick={() => editor.chain().focus().setTextAlign("left").run()}
           >
-            ❝
+            <AlignLeftIcon />
           </ToolbarButton>
           <ToolbarButton
-            label="Bloc de code"
-            pressed={editor.isActive("codeBlock")}
+            label="Centrer"
+            pressed={editor.isActive({ textAlign: "center" })}
             disabled={!canEdit}
-            onClick={() => editor.chain().focus().toggleCodeBlock().run()}
+            onClick={() => editor.chain().focus().setTextAlign("center").run()}
           >
-            {"{ }"}
+            <AlignCenterIcon />
+          </ToolbarButton>
+          <ToolbarButton
+            label="Aligner à droite"
+            pressed={editor.isActive({ textAlign: "right" })}
+            disabled={!canEdit}
+            onClick={() => editor.chain().focus().setTextAlign("right").run()}
+          >
+            <AlignRightIcon />
+          </ToolbarButton>
+          <ToolbarButton
+            label="Justifier"
+            pressed={editor.isActive({ textAlign: "justify" })}
+            disabled={!canEdit}
+            onClick={() => editor.chain().focus().setTextAlign("justify").run()}
+          >
+            <AlignJustifyIcon />
+          </ToolbarButton>
+
+          <ToolbarSeparator />
+
+          <ToolbarButton
+            label="Insérer un tableau"
+            disabled={!canEdit}
+            onClick={() => setTableOpen(true)}
+          >
+            <TableIcon />
+          </ToolbarButton>
+          <ToolbarButton
+            label="Insérer une image"
+            disabled={!canEdit}
+            onClick={() => {
+              setImageUrl("");
+              setImageAlt("");
+              setImageError(null);
+              setImageOpen(true);
+            }}
+          >
+            <ImageIcon />
+          </ToolbarButton>
+          <ToolbarButton
+            label="Insérer un lien"
+            shortcutKey="k"
+            disabled={!canEdit}
+            onClick={() => {
+              const current = editor.getAttributes("link").href;
+              setLinkUrl(typeof current === "string" ? current : "");
+              setLinkError(null);
+              setLinkOpen(true);
+            }}
+          >
+            <LinkIcon />
           </ToolbarButton>
           <ToolbarButton
             label="Séparateur"
@@ -573,6 +801,13 @@ function EditorSurface({
             onClick={() => editor.chain().focus().setHorizontalRule().run()}
           >
             ―
+          </ToolbarButton>
+          <ToolbarButton
+            label="Saut de page"
+            disabled={!canEdit}
+            onClick={() => editor.chain().focus().insertContent({ type: "pageBreak" }).run()}
+          >
+            <PageBreakIcon />
           </ToolbarButton>
 
           <div className="ml-auto flex items-center gap-2">
@@ -613,6 +848,61 @@ function EditorSurface({
           </div>
         </div>
 
+        {/* Outils du tableau : visibles seulement quand le curseur est dans
+            un tableau, comme la barre contextuelle d'un traitement de texte. */}
+        {editor.isActive("table") ? (
+          <div
+            role="toolbar"
+            aria-label="Outils du tableau"
+            onKeyDown={onToolbarArrowKeys}
+            className="flex flex-wrap items-center gap-1 border-b border-border px-3 py-1.5"
+          >
+            <span className="pr-1 text-xs font-medium text-muted-foreground">Tableau</span>
+            <ToolbarButton
+              label="Ajouter une ligne"
+              disabled={!canEdit}
+              onClick={() => editor.chain().focus().addRowAfter().run()}
+            >
+              + ligne
+            </ToolbarButton>
+            <ToolbarButton
+              label="Supprimer la ligne"
+              disabled={!canEdit}
+              onClick={() => editor.chain().focus().deleteRow().run()}
+            >
+              − ligne
+            </ToolbarButton>
+            <ToolbarButton
+              label="Ajouter une colonne"
+              disabled={!canEdit}
+              onClick={() => editor.chain().focus().addColumnAfter().run()}
+            >
+              + colonne
+            </ToolbarButton>
+            <ToolbarButton
+              label="Supprimer la colonne"
+              disabled={!canEdit}
+              onClick={() => editor.chain().focus().deleteColumn().run()}
+            >
+              − colonne
+            </ToolbarButton>
+            <ToolbarButton
+              label="Fusionner ou scinder les cellules"
+              disabled={!canEdit}
+              onClick={() => editor.chain().focus().mergeOrSplit().run()}
+            >
+              Fusionner
+            </ToolbarButton>
+            <ToolbarButton
+              label="Supprimer le tableau"
+              disabled={!canEdit}
+              onClick={() => editor.chain().focus().deleteTable().run()}
+            >
+              Supprimer
+            </ToolbarButton>
+          </div>
+        ) : null}
+
         <DocumentSearch editor={editor} open={searchOpen} onOpenChange={setSearchOpen} />
 
         {status === "conflict" ? (
@@ -639,7 +929,10 @@ function EditorSurface({
         ) : null}
 
         <div ref={scrollRef} className="workspace-editor-scroll min-h-0 flex-1 overflow-y-auto">
-          <div className="workspace-editor-page mx-auto w-full max-w-3xl px-6 py-8">
+          <div
+            className="workspace-editor-page mx-auto w-full max-w-3xl px-6 py-8"
+            style={{ zoom: zoom / 100 }}
+          >
             <EditorContent editor={editor} />
           </div>
         </div>
@@ -648,10 +941,193 @@ function EditorSurface({
             live — un `aria-live` ici annoncerait le compteur à chaque mot
             frappé. Le compteur qui demande une annonce est celui de la
             recherche, qui ne change que sur action explicite. */}
-        <p className="print-hide border-t border-border px-3 py-1.5 text-xs text-muted-foreground">
-          {formatStats(stats)}
-        </p>
+        <div className="print-hide flex items-center justify-between gap-3 border-t border-border px-3 py-1.5">
+          <p className="text-xs text-muted-foreground">{formatStats(stats)}</p>
+          <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
+            <span>Zoom</span>
+            <select
+              aria-label="Zoom"
+              value={zoom}
+              onChange={(event) => setZoom(Number(event.target.value))}
+              className="h-6 rounded-md border border-input bg-background px-1 text-xs"
+            >
+              {[75, 100, 125, 150].map((value) => (
+                <option key={value} value={value}>
+                  {value} %
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
       </div>
+
+      {/* Insertion : tableau, image et lien — trois dialogues simples, comme
+          les boîtes d'insertion d'un traitement de texte. */}
+      <Dialog open={tableOpen} onClose={() => setTableOpen(false)} title="Insérer un tableau">
+        <div className="flex flex-col gap-4">
+          <div className="flex gap-3">
+            <div className="flex flex-1 flex-col gap-1">
+              <Label htmlFor="table-rows">Lignes</Label>
+              <Input
+                id="table-rows"
+                type="number"
+                min={1}
+                max={20}
+                value={tableRows}
+                onChange={(event) =>
+                  setTableRows(Math.min(20, Math.max(1, Number(event.target.value) || 1)))
+                }
+                className="h-8"
+              />
+            </div>
+            <div className="flex flex-1 flex-col gap-1">
+              <Label htmlFor="table-cols">Colonnes</Label>
+              <Input
+                id="table-cols"
+                type="number"
+                min={1}
+                max={10}
+                value={tableCols}
+                onChange={(event) =>
+                  setTableCols(Math.min(10, Math.max(1, Number(event.target.value) || 1)))
+                }
+                className="h-8"
+              />
+            </div>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            La première ligne est une ligne d'en-tête.
+          </p>
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="ghost" onClick={() => setTableOpen(false)}>
+              Annuler
+            </Button>
+            <Button
+              type="button"
+              onClick={() => {
+                editor
+                  .chain()
+                  .focus()
+                  .insertTable({ rows: tableRows, cols: tableCols, withHeaderRow: true })
+                  .run();
+                setTableOpen(false);
+              }}
+            >
+              Insérer
+            </Button>
+          </div>
+        </div>
+      </Dialog>
+
+      <Dialog open={imageOpen} onClose={() => setImageOpen(false)} title="Insérer une image">
+        <div className="flex flex-col gap-3">
+          <div className="flex flex-col gap-1">
+            <Label htmlFor="image-url">Adresse de l'image</Label>
+            <Input
+              id="image-url"
+              value={imageUrl}
+              onChange={(event) => setImageUrl(event.target.value)}
+              placeholder="https://…"
+            />
+          </div>
+          <div className="flex flex-col gap-1">
+            <Label htmlFor="image-alt">Texte alternatif</Label>
+            <Input
+              id="image-alt"
+              value={imageAlt}
+              onChange={(event) => setImageAlt(event.target.value)}
+              placeholder="Décrit l'image pour les lecteurs d'écran"
+            />
+          </div>
+          {imageError ? (
+            <p role="alert" className="text-xs text-destructive">
+              {imageError}
+            </p>
+          ) : null}
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="ghost" onClick={() => setImageOpen(false)}>
+              Annuler
+            </Button>
+            <Button
+              type="button"
+              onClick={() => {
+                const src = safeImageUrl(imageUrl);
+                if (!src) {
+                  setImageError("Adresse invalide : une URL https est attendue.");
+                  return;
+                }
+                editor.chain().focus().setImage({ src, alt: imageAlt.trim() }).run();
+                setImageOpen(false);
+              }}
+            >
+              Insérer
+            </Button>
+          </div>
+        </div>
+      </Dialog>
+
+      <Dialog open={linkOpen} onClose={() => setLinkOpen(false)} title="Insérer un lien">
+        <div className="flex flex-col gap-3">
+          <div className="flex flex-col gap-1">
+            <Label htmlFor="link-url">Adresse du lien</Label>
+            <Input
+              id="link-url"
+              value={linkUrl}
+              onChange={(event) => setLinkUrl(event.target.value)}
+              placeholder="https://…"
+            />
+          </div>
+          {linkError ? (
+            <p role="alert" className="text-xs text-destructive">
+              {linkError}
+            </p>
+          ) : null}
+          <div className="flex justify-end gap-2">
+            {editor.isActive("link") ? (
+              <Button
+                type="button"
+                variant="ghost"
+                className="text-destructive"
+                onClick={() => {
+                  editor.chain().focus().unsetLink().run();
+                  setLinkOpen(false);
+                }}
+              >
+                Retirer le lien
+              </Button>
+            ) : null}
+            <Button type="button" variant="ghost" onClick={() => setLinkOpen(false)}>
+              Annuler
+            </Button>
+            <Button
+              type="button"
+              onClick={() => {
+                const href = safeLinkHref(linkUrl);
+                if (!href) {
+                  setLinkError("Adresse invalide : https ou mailto attendu.");
+                  return;
+                }
+                if (editor.state.selection.empty) {
+                  editor
+                    .chain()
+                    .focus()
+                    .insertContent({
+                      type: "text",
+                      text: href,
+                      marks: [{ type: "link", attrs: { href } }],
+                    })
+                    .run();
+                } else {
+                  editor.chain().focus().extendMarkRange("link").setLink({ href }).run();
+                }
+                setLinkOpen(false);
+              }}
+            >
+              Appliquer
+            </Button>
+          </div>
+        </div>
+      </Dialog>
     </div>
   );
 }

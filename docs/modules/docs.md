@@ -61,3 +61,13 @@
 - **Commentaires** : fils par document (auteur, citation ≤ 500, corps ≤ 4 000), résolution/rouverture, suppression par l'auteur ou le propriétaire ; les viewers lisent, les **commenters** commentent (matrice de permissions).
 - **Verrous optimistes** : `baseUpdatedAt` sur l'autosave — un conflit répond « modifié ailleurs », le contenu local est conservé et un rechargement est proposé.
 - **Impression** : Ctrl+P produit un document propre (chrome masqué, `@page`, pagination sans coupure de blocs).
+
+## Mise en forme avancée (niveau « traitement de texte », 14 oct. 2026)
+- **Styles de paragraphe** : sélecteur Normal / Titre 1-3 / Citation / Bloc de code (remplace les boutons H1-H3).
+- **Taille de police** : catalogue 10-48 px (extension FontSize sur la marque TextStyle), valeur relue normalisée — le sélecteur ne ment jamais.
+- **Couleurs de texte et surlignages** : jetons sémantiques uniquement (`var(--primary)`, `var(--attention)`…), donc thème clair/sombre.
+- **Alignement** : gauche / centré / droite / justifié (extension TextAlign sur paragraphes et titres).
+- **Insertion** : tableaux (dialogue lignes × colonnes, en-tête, outils contextuels +/− ligne/colonne, fusion, suppression), images https (URL + texte alternatif, jamais de `data:`), liens (https/mailto, insertion du texte si la sélection est vide), séparateur, **saut de page** (nœud dédié : repère à l'écran, `break-after: page` à l'impression).
+- **Vue** : zoom 75-150 % appliqué à la page (`style.zoom`), sélecteur au pied.
+- **Export** : images (Markdown + HTML, URL assainies), tableaux (Markdown GFM + HTML), saut de page, styles sûrs — liste blanche de couleurs (`var(--jeton)` ou hexadécimal) et de tailles, jamais de CSS libre.
+- **Clavier** : les sélecteurs de la barre gardent leurs flèches (la navigation croisée de la barre ne les capture plus).
