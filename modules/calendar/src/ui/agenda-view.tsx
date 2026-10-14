@@ -1,6 +1,8 @@
 import type { EventView } from "../server.ts";
 import { dateKey, groupEventsByDay } from "./date-grid.ts";
 import { EventChip } from "./event-chip.tsx";
+import { useDisplayTimeZone } from "./timezone-context.tsx";
+import type { EventMove } from "./use-event-move.ts";
 import { formatDayTitle, isSameDay } from "./view-state.ts";
 
 export type AgendaViewProps = {
@@ -9,6 +11,8 @@ export type AgendaViewProps = {
   today: Date;
   events: EventView[];
   onSelectEvent: (event: EventView) => void;
+  /** Déplacement d'événement (clavier ; la liste n'est pas une cible de dépôt). */
+  move: EventMove;
 };
 
 /** Nombre maximal de journées affichées par la vue agenda. */
@@ -20,10 +24,12 @@ const MAX_AGENDA_SECTIONS = 60;
  * reste courte même sur une période chargée.
  *
  * Chaque jour est une entrée de liste ; les événements sont des boutons
- * atteignables au clavier dans l'ordre de lecture.
+ * atteignables au clavier dans l'ordre de lecture. Le déplacement se fait au
+ * clavier (`Alt` + flèches).
  */
-export function AgendaView({ days, today, events, onSelectEvent }: AgendaViewProps) {
-  const byDay = groupEventsByDay(events);
+export function AgendaView({ days, today, events, onSelectEvent, move }: AgendaViewProps) {
+  const { zone } = useDisplayTimeZone();
+  const byDay = groupEventsByDay(events, zone);
   const busyDays = days
     .filter((day) => (byDay.get(dateKey(day)) ?? []).length > 0)
     .slice(0, MAX_AGENDA_SECTIONS);
@@ -61,6 +67,7 @@ export function AgendaView({ days, today, events, onSelectEvent }: AgendaViewPro
                       event={event}
                       variant="detailed"
                       onSelect={onSelectEvent}
+                      onMoveStep={move.onMoveStep}
                       className="py-1.5"
                       extraLabel={
                         event.myStatus

@@ -1,8 +1,9 @@
 import { Button, Dialog, Input, Label } from "@workspace/ui";
 import type { FormEvent } from "react";
 import type { CalendarOption, EventView, Recurrence } from "../server.ts";
-import { RECURRENCE_LABELS, RECURRENCE_OPTIONS } from "./event-labels.ts";
+import { RECURRENCE_LABELS, RECURRENCE_OPTIONS, recurrenceUnitLabel } from "./event-labels.ts";
 import { toDateInput, toTimeInput } from "./quick-create.ts";
+import { INTERVAL_MAX, INTERVAL_MIN } from "./recurrence.ts";
 import { parseDateInput } from "./view-state.ts";
 
 /** État du formulaire d'édition / création complète. */
@@ -21,6 +22,8 @@ export type EditorState = {
   recurrence: Recurrence;
   /** Date locale `aaaa-mm-jj`, vide quand la récurrence est « Aucune ». */
   recurrenceUntil: string;
+  /** Intervalle entre deux occurrences (« toutes les N semaines »), 1 à 52. */
+  recurrenceInterval: number;
   /** Case « visioconférence » (création uniquement, jamais pour une édition). */
   meetRoom: boolean;
 };
@@ -40,6 +43,7 @@ export function emptyEditor(date: Date, calendarId: string): EditorState {
     calendarId,
     recurrence: "none",
     recurrenceUntil: "",
+    recurrenceInterval: 1,
     meetRoom: false,
   };
 }
@@ -68,6 +72,7 @@ export function editorFromEvent(event: EventView): EditorState {
           parseDateInput(event.recurrenceUntil.slice(0, 10)) ?? new Date(event.recurrenceUntil),
         )
       : "",
+    recurrenceInterval: event.recurrenceInterval,
     meetRoom: false,
   };
 }
@@ -205,16 +210,42 @@ export function EventEditorDialog({
               </select>
             </div>
             {editor.recurrence !== "none" ? (
-              <div className="flex flex-col gap-1">
-                <Label htmlFor="event-recurrence-until">Répéter jusqu'au</Label>
-                <Input
-                  id="event-recurrence-until"
-                  type="date"
-                  value={editor.recurrenceUntil}
-                  onChange={(event) => onChange({ recurrenceUntil: event.target.value })}
-                  required
-                />
-              </div>
+              <>
+                <div className="flex flex-col gap-1">
+                  <Label htmlFor="event-recurrence-interval">Toutes les</Label>
+                  <div className="flex items-center gap-2">
+                    <Input
+                      id="event-recurrence-interval"
+                      type="number"
+                      min={INTERVAL_MIN}
+                      max={INTERVAL_MAX}
+                      value={editor.recurrenceInterval}
+                      onChange={(event) =>
+                        onChange({
+                          recurrenceInterval: Math.min(
+                            INTERVAL_MAX,
+                            Math.max(INTERVAL_MIN, Number(event.target.value) || INTERVAL_MIN),
+                          ),
+                        })
+                      }
+                      className="h-9 w-20"
+                    />
+                    <span className="text-sm text-muted-foreground">
+                      {recurrenceUnitLabel(editor.recurrence, editor.recurrenceInterval)}
+                    </span>
+                  </div>
+                </div>
+                <div className="flex flex-col gap-1">
+                  <Label htmlFor="event-recurrence-until">Répéter jusqu'au</Label>
+                  <Input
+                    id="event-recurrence-until"
+                    type="date"
+                    value={editor.recurrenceUntil}
+                    onChange={(event) => onChange({ recurrenceUntil: event.target.value })}
+                    required
+                  />
+                </div>
+              </>
             ) : null}
           </div>
           {editor.recurrence !== "none" ? (

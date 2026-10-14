@@ -1,6 +1,15 @@
 import { schema as core } from "@workspace/database";
 import { sql } from "drizzle-orm";
-import { boolean, index, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import {
+  boolean,
+  index,
+  integer,
+  pgTable,
+  text,
+  timestamp,
+  uniqueIndex,
+  uuid,
+} from "drizzle-orm/pg-core";
 
 /**
  * Schéma du module Calendar — voir docs/modules/calendar.md.
@@ -53,6 +62,12 @@ export const calendarEvents = pgTable(
      * La première occurrence est la ligne elle-même (startsAt/endsAt).
      */
     recurrence: text("recurrence").notNull().default("none"),
+    /**
+     * Intervalle entre deux occurrences, en unités de `recurrence` : `1` =
+     * toutes les semaines, `3` = toutes les trois semaines. Borné à 52 pour
+     * éviter une série qui ne produit aucune occurrence visible.
+     */
+    recurrenceInterval: integer("recurrence_interval").notNull().default(1),
     /** Dernière date (incluse) à laquelle une occurrence peut démarrer. */
     recurrenceUntil: timestamp("recurrence_until", { withTimezone: true }),
     createdBy: text("created_by")

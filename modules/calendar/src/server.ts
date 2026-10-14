@@ -27,6 +27,7 @@ const eventFields = z.object({
   allDay: z.boolean().optional(),
   attendees: z.array(z.string().trim().min(1).max(255)).max(50).optional(),
   recurrence: z.enum(RECURRENCE_VALUES).optional(),
+  recurrenceInterval: z.number().int().min(1).max(52).optional(),
   recurrenceUntil: z.string().min(1).nullish(),
 });
 
@@ -64,6 +65,7 @@ export const updateEventFn = createServerFn({ method: "POST" })
           endsAt: z.string().min(1).optional(),
           allDay: z.boolean().optional(),
           recurrence: z.enum(RECURRENCE_VALUES).optional(),
+          recurrenceInterval: z.number().int().min(1).max(52).optional(),
           recurrenceUntil: z.string().min(1).nullish(),
         }),
       })

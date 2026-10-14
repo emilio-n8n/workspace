@@ -35,3 +35,8 @@ CalDAV, récurrences avancées (RRULE), fuseaux par événement, disponibilité.
 ## Ajouts des vagues S/T
 - **Récurrences simples** : quotidienne / hebdomadaire / mensuelle (+ « jusqu'au », ≤ 24 mois), expansion dans la plage interrogée (même identifiant de série, cap 100 occurrences/événement), mensuel **clampé au dernier jour** des mois courts (31 janv. → 28 févr. → 31 mars) ; l'édition porte sur toute la série (pas de dérogation par occurrence — documenté).
 - **Visioconférence en un clic** : à la création d'un événement, une salle Meet peut être créée et son lien ajouté au lieu (réglage org-scoped, échec non bloquant).
+
+## Vague « gestes et fuseaux » (14 oct. 2026)
+- **Glisser-déposer des événements** : mois et colonnes de jour, fantôme pendant le trajet, dépôt sur une autre date/heure, annulation au clavier (`Échap`), annonces vocales — logique pure testée (`event-drag.ts`, `use-event-move.ts`).
+- **Fuseaux d'affichage** : un fuseau choisi pour la grille et les heures, indépendant de celui du navigateur (`timezone.ts`, contexte React) ; les événements « journée entière » restent des dates.
+- **Intervalle de répétition** : « toutes les N semaines/jours/mois » (1-52), borné et validé côté service, exposé dans l'éditeur d'événement avec l'unité accordée.

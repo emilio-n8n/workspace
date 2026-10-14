@@ -16,6 +16,13 @@ test("calendar : création d'un événement et affichage dans le mois", async ({
 
   await page.getByRole("button", { name: "Nouvel événement" }).first().click();
   await page.getByLabel("Titre").fill("Point E2E");
+
+  // Récurrence complète : « toutes les 2 semaines » jusqu'à une date de fin.
+  await page.getByLabel("Répétition").selectOption("weekly");
+  await page.getByLabel("Toutes les").fill("2");
+  await page.getByLabel("Répéter jusqu'au").fill("2027-06-30");
+  await expect(page.getByText("semaines", { exact: true })).toBeVisible();
+
   await page.getByRole("button", { name: "Créer l'événement" }).click();
 
   await expect(page.getByRole("button", { name: /Point E2E/ }).first()).toBeVisible({

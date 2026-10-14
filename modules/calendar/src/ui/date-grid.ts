@@ -6,6 +6,7 @@
  * le résultat.
  */
 
+import { browserTimeZone, zonedDayKey } from "./timezone.ts";
 import { addDays, startOfWeek } from "./view-state.ts";
 
 /** Nombre de semaines affichées par le mini calendrier. */
@@ -45,11 +46,13 @@ export function dateKey(date: Date): string {
 
 /**
  * Jour auquel un événement est rattaché. Un événement « journée entière » est
- * stocké en minuit UTC : sa clé est le préfixe de l'instant. Un événement
- * horaire est rattaché au jour local de son début.
+ * stocké en minuit UTC : sa clé est le préfixe de l'instant, quel que soit le
+ * fuseau d'affichage (c'est une date, pas un instant). Un événement horaire est
+ * rattaché au jour de son début **dans le fuseau d'affichage** : un événement
+ * à 23:30 UTC appartient au lendemain à Paris.
  */
-export function eventDayKey(event: DayEventLike): string {
-  return event.allDay ? event.startsAt.slice(0, 10) : dateKey(new Date(event.startsAt));
+export function eventDayKey(event: DayEventLike, zone: string = browserTimeZone()): string {
+  return event.allDay ? event.startsAt.slice(0, 10) : zonedDayKey(event.startsAt, zone);
 }
 
 /**
@@ -58,10 +61,13 @@ export function eventDayKey(event: DayEventLike): string {
  * à la même heure). Les événements « journée entière » restent en tête de leur
  * journée.
  */
-export function groupEventsByDay<T extends DayEventLike>(events: T[]): Map<string, T[]> {
+export function groupEventsByDay<T extends DayEventLike>(
+  events: T[],
+  zone?: string,
+): Map<string, T[]> {
   const map = new Map<string, T[]>();
   for (const event of events) {
-    const key = eventDayKey(event);
+    const key = eventDayKey(event, zone);
     const list = map.get(key) ?? [];
     list.push(event);
     map.set(key, list);
@@ -82,19 +88,20 @@ export function groupEventsByDay<T extends DayEventLike>(events: T[]): Map<strin
 export function eventsOfDay<T extends DayEventLike>(
   events: T[],
   day: Date,
+  zone?: string,
 ): { key: string; list: T[] } {
   const key = dateKey(day);
-  return { key, list: groupEventsByDay(events).get(key) ?? [] };
+  return { key, list: groupEventsByDay(events, zone).get(key) ?? [] };
 }
 
 /** Ensemble des jours portant au moins un événement (pastilles du mini calendrier). */
-export function daysWithEvents(events: DayEventLike[]): Set<string> {
-  return new Set(events.map((event) => eventDayKey(event)));
+export function daysWithEvents(events: DayEventLike[], zone?: string): Set<string> {
+  return new Set(events.map((event) => eventDayKey(event, zone)));
 }
 
 /** `true` si le jour porte au moins un événement. */
-export function dayHasEvents(events: DayEventLike[], day: Date): boolean {
-  return daysWithEvents(events).has(dateKey(day));
+export function dayHasEvents(events: DayEventLike[], day: Date, zone?: string): boolean {
+  return daysWithEvents(events, zone).has(dateKey(day));
 }
 
 /**

@@ -6,6 +6,7 @@ import {
   formatTime,
   RECURRENCE_LABELS,
   RECURRENCE_OPTIONS,
+  recurrenceUnitLabel,
 } from "../src/ui/event-labels.ts";
 
 /** Dates locales : les tests ne dépendent pas du fuseau de la machine. */
@@ -84,5 +85,14 @@ describe("libellés — récurrences et invitations", () => {
     expect(ATTENDANCE_LABELS.invited).toBe("Invité");
     expect(ATTENDANCE_LABELS.accepted).toBe("A accepté");
     expect(ATTENDANCE_LABELS.declined).toBe("A refusé");
+  });
+
+  it("accorde l'unité de répétition avec l'intervalle", () => {
+    expect(recurrenceUnitLabel("weekly", 1)).toBe("semaine");
+    expect(recurrenceUnitLabel("weekly", 2)).toBe("semaines");
+    expect(recurrenceUnitLabel("daily", 1)).toBe("jour");
+    expect(recurrenceUnitLabel("daily", 3)).toBe("jours");
+    expect(recurrenceUnitLabel("monthly", 2)).toBe("mois");
+    expect(recurrenceUnitLabel("none", 1)).toBe("");
   });
 });

@@ -508,6 +508,81 @@ describe("calendar — récurrences", () => {
     expect(list.at(-1)?.startsAt).toBe("2026-04-10T09:00:00.000Z");
   });
 
+  it("applique un intervalle de deux semaines et le compte", async () => {
+    const created = await createEvent(f.actorAlice, {
+      title: "Toutes les deux semaines",
+      startsAt: "2026-03-10T09:00:00.000Z",
+      endsAt: "2026-03-10T10:00:00.000Z",
+      recurrence: "weekly",
+      recurrenceInterval: 2,
+      recurrenceUntil: "2026-04-14T23:59:59.000Z",
+    });
+    expect(created.recurrenceInterval).toBe(2);
+
+    const list = await listEvents(f.actorAlice, { from: FROM, to: "2026-05-01T00:00:00.000Z" });
+    expect(list.map((event) => event.startsAt)).toEqual([
+      "2026-03-10T09:00:00.000Z",
+      "2026-03-24T09:00:00.000Z",
+      "2026-04-07T09:00:00.000Z",
+    ]);
+  });
+
+  it("applique un intervalle mensuel, avec bornage au dernier jour du mois", async () => {
+    await createEvent(f.actorAlice, {
+      title: "Tous les deux mois",
+      startsAt: "2026-01-31T10:00:00.000Z",
+      endsAt: "2026-01-31T11:00:00.000Z",
+      recurrence: "monthly",
+      recurrenceInterval: 2,
+      recurrenceUntil: "2026-05-31T23:59:59.000Z",
+    });
+
+    const list = await listEvents(f.actorAlice, {
+      from: "2026-01-01T00:00:00.000Z",
+      to: "2026-06-30T00:00:00.000Z",
+    });
+    expect(list.map((event) => event.startsAt)).toEqual([
+      "2026-01-31T10:00:00.000Z",
+      "2026-03-31T10:00:00.000Z", // février est sauté
+      "2026-05-31T10:00:00.000Z",
+    ]);
+  });
+
+  it("ramène l'intervalle à 1 sans répétition et refuse un intervalle invalide", async () => {
+    const simple = await createEvent(f.actorAlice, {
+      ...eventInput("Sans répétition"),
+      recurrence: "none",
+      recurrenceInterval: 4,
+    });
+    expect(simple.recurrence).toBe("none");
+    expect(simple.recurrenceInterval).toBe(1);
+
+    await expect(
+      createEvent(f.actorAlice, {
+        ...eventInput("Intervalle invalide"),
+        recurrence: "daily",
+        recurrenceUntil: "2026-03-14T23:59:59.000Z",
+        recurrenceInterval: 0,
+      }),
+    ).rejects.toThrow("L'intervalle de répétition doit être un nombre entier entre 1 et 52.");
+
+    // Modifier l'intervalle modifie toute la série.
+    const serie = await createEvent(f.actorAlice, {
+      ...eventInput("Série"),
+      recurrence: "daily",
+      recurrenceInterval: 1,
+      recurrenceUntil: "2026-03-20T23:59:59.000Z",
+    });
+    await updateEvent(f.actorAlice, serie.id, { recurrenceInterval: 3 });
+    const list = await listEvents(f.actorAlice, { from: FROM, to: TO });
+    expect(list.filter((event) => event.id === serie.id).map((event) => event.startsAt)).toEqual([
+      "2026-03-10T09:00:00.000Z",
+      "2026-03-13T09:00:00.000Z",
+      "2026-03-16T09:00:00.000Z",
+      "2026-03-19T09:00:00.000Z",
+    ]);
+  });
+
   it("laisse un événement simple intact et modifie toute la série", async () => {
     const simple = await createEvent(f.actorAlice, eventInput("Simple"));
     expect(simple.recurring).toBe(false);

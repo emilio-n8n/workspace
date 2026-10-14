@@ -2,6 +2,8 @@ import { Button, cn } from "@workspace/ui";
 import type { CalendarOption } from "../server.ts";
 import type { DayEventLike } from "./date-grid.ts";
 import { MiniCalendar } from "./mini-calendar.tsx";
+import { formatZoneDelta } from "./timezone.ts";
+import { useDisplayTimeZone } from "./timezone-context.tsx";
 import { VIEW_LABELS, VIEW_MODES, type ViewMode } from "./view-state.ts";
 
 export type CalendarSidebarProps = {
@@ -32,7 +34,7 @@ const CALENDAR_DOT_CLASSES = [
 
 /**
  * Barre latérale du calendrier : mini calendrier de navigation, sélecteur de
- * vue et liste des agendas visibles.
+ * vue, fuseau d'affichage et liste des agendas visibles.
  */
 export function CalendarSidebar({
   month,
@@ -47,6 +49,8 @@ export function CalendarSidebar({
   onCreateAgenda,
   calendars,
 }: CalendarSidebarProps) {
+  const { zone, options, changeZone } = useDisplayTimeZone();
+
   return (
     <aside
       aria-label="Navigation du calendrier"
@@ -87,6 +91,28 @@ export function CalendarSidebar({
             </button>
           ))}
         </div>
+      </div>
+
+      <div className="flex flex-col gap-1">
+        <label
+          htmlFor="calendar-time-zone"
+          className="px-1 text-[11px] font-semibold uppercase tracking-widest text-muted-foreground"
+        >
+          Fuseau horaire
+        </label>
+        <select
+          id="calendar-time-zone"
+          value={zone}
+          onChange={(event) => changeZone(event.target.value)}
+          className="h-8 rounded-md border border-input bg-background px-2 text-xs"
+        >
+          {options.map((option) => (
+            <option key={option.id} value={option.id}>
+              {option.label}
+            </option>
+          ))}
+        </select>
+        <p className="px-1 text-[11px] text-muted-foreground">{formatZoneDelta(zone)}</p>
       </div>
 
       <div className="flex flex-col gap-1">

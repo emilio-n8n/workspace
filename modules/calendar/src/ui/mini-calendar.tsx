@@ -7,6 +7,7 @@ import {
   miniCalendarDays,
   WEEKDAY_LABELS,
 } from "./date-grid.ts";
+import { useDisplayTimeZone } from "./timezone-context.tsx";
 import { useDayGrid } from "./use-day-grid.ts";
 import { addMonths, dayCellLabel, formatMonthYear, isSameDay, isSameMonth } from "./view-state.ts";
 
@@ -39,7 +40,8 @@ export function MiniCalendar({
   onSelectDay,
 }: MiniCalendarProps) {
   const days = miniCalendarDays(month);
-  const byDay = groupEventsByDay(events);
+  const { zone } = useDisplayTimeZone();
+  const byDay = groupEventsByDay(events, zone);
   const { cellProps } = useDayGrid({
     count: days.length,
     columns: GRID_COLUMNS,

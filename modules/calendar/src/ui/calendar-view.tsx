@@ -34,6 +34,8 @@ import {
 import { MonthGrid } from "./month-grid.tsx";
 import { type QuickDraft, quickDraftRange, splitEmails } from "./quick-create.ts";
 import { QuickAddBar } from "./quick-create-form.tsx";
+import { CalendarTimeZoneProvider } from "./timezone-context.tsx";
+import { useEventMove } from "./use-event-move.ts";
 import { usePersistentViewMode } from "./use-persistent-view.ts";
 import {
   rangeFor,
@@ -108,6 +110,8 @@ export function CalendarView() {
       setLoading(false);
     }
   }, [range]);
+
+  const move = useEventMove({ onMoved: refresh });
 
   useEffect(() => {
     void refresh();
@@ -227,6 +231,7 @@ export function CalendarView() {
               endsAt,
               allDay: editor.allDay,
               recurrence: editor.recurrence,
+              recurrenceInterval: editor.recurrenceInterval,
               recurrenceUntil,
             },
           },
@@ -267,6 +272,7 @@ export function CalendarView() {
             allDay: editor.allDay,
             attendees,
             recurrence: editor.recurrence,
+            recurrenceInterval: editor.recurrenceInterval,
             recurrenceUntil,
           },
         });
@@ -344,222 +350,229 @@ export function CalendarView() {
   const gridLabel = `Calendrier — ${heading}`;
 
   return (
-    <div className="mx-auto flex max-w-7xl flex-col gap-4">
-      <header className="flex flex-wrap items-center gap-2">
-        <h1 className="font-display text-xl font-semibold tracking-tight">{heading}</h1>
-        <div className="flex items-center gap-1">
-          <Button
-            variant="outline"
-            size="sm"
-            aria-label="Période précédente"
-            onClick={() => shift(-1)}
-          >
-            ‹
-          </Button>
-          <Button variant="outline" size="sm" onClick={() => goToDay(new Date())}>
-            Aujourd'hui
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            aria-label="Période suivante"
-            onClick={() => shift(1)}
-          >
-            ›
-          </Button>
-        </div>
-        <div className="ml-auto flex items-center gap-2">
-          <SegmentedTabs
-            items={MODE_TABS}
-            value={mode}
-            onChange={changeMode}
-            ariaLabel="Affichage du calendrier"
-          />
-        </div>
-      </header>
+    <CalendarTimeZoneProvider>
+      <div className="mx-auto flex max-w-7xl flex-col gap-4">
+        <header className="flex flex-wrap items-center gap-2">
+          <h1 className="font-display text-xl font-semibold tracking-tight">{heading}</h1>
+          <div className="flex items-center gap-1">
+            <Button
+              variant="outline"
+              size="sm"
+              aria-label="Période précédente"
+              onClick={() => shift(-1)}
+            >
+              ‹
+            </Button>
+            <Button variant="outline" size="sm" onClick={() => goToDay(new Date())}>
+              Aujourd'hui
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              aria-label="Période suivante"
+              onClick={() => shift(1)}
+            >
+              ›
+            </Button>
+          </div>
+          <div className="ml-auto flex items-center gap-2">
+            <SegmentedTabs
+              items={MODE_TABS}
+              value={mode}
+              onChange={changeMode}
+              ariaLabel="Affichage du calendrier"
+            />
+          </div>
+        </header>
 
-      <div className="flex flex-col gap-4 lg:flex-row lg:items-start">
-        <CalendarSidebar
-          month={miniMonth}
-          cursor={cursor}
-          today={today}
-          events={events}
-          mode={mode}
-          onModeChange={changeMode}
-          onMonthChange={setMiniMonth}
-          onSelectDay={goToDay}
-          onNewEvent={() => openFullEditor(cursor)}
-          onCreateAgenda={() => setAgendaOpen(true)}
-          calendars={calendars}
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-start">
+          <CalendarSidebar
+            month={miniMonth}
+            cursor={cursor}
+            today={today}
+            events={events}
+            mode={mode}
+            onModeChange={changeMode}
+            onMonthChange={setMiniMonth}
+            onSelectDay={goToDay}
+            onNewEvent={() => openFullEditor(cursor)}
+            onCreateAgenda={() => setAgendaOpen(true)}
+            calendars={calendars}
+          />
+
+          <div className="flex min-w-0 flex-1 flex-col gap-3">
+            {error ? (
+              <Alert tone="danger">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span>{error}</span>
+                  <Button size="sm" variant="outline" onClick={() => void refresh()}>
+                    Réessayer
+                  </Button>
+                </div>
+              </Alert>
+            ) : null}
+
+            {mode !== "month" ? (
+              <QuickAddBar
+                day={cursor}
+                calendars={calendars}
+                busy={busy}
+                submitError={null}
+                onCreate={(draft) => void createQuick(draft)}
+                onOpenDetails={openDetailsFromQuick}
+              />
+            ) : null}
+
+            {loading ? (
+              <div role="status" className="flex flex-col gap-2" aria-live="polite">
+                <p className="text-sm text-muted-foreground">Chargement…</p>
+                <div className="h-64 animate-pulse rounded-xl border border-border bg-muted/40" />
+              </div>
+            ) : mode === "month" ? (
+              <MonthGrid
+                days={range.days}
+                month={cursor}
+                today={today}
+                events={events}
+                submitError={error}
+                busy={busy}
+                inlineDay={inlineDay}
+                onInlineOpen={(day) => {
+                  setInlineDay(day);
+                  setCursor(day);
+                }}
+                onInlineCancel={() => setInlineDay(null)}
+                onCreate={(draft) => void createQuick(draft)}
+                onSelectEvent={setSelected}
+                onPage={shift}
+                ariaLabel={gridLabel}
+                move={move}
+              />
+            ) : mode === "agenda" ? (
+              <AgendaView
+                days={range.days}
+                today={today}
+                events={events}
+                onSelectEvent={setSelected}
+                move={move}
+              />
+            ) : (
+              <DayColumns
+                days={range.days}
+                today={today}
+                events={events}
+                submitError={error}
+                busy={busy}
+                inlineDay={inlineDay}
+                onInlineOpen={(day) => {
+                  setInlineDay(day);
+                  setCursor(day);
+                }}
+                onInlineCancel={() => setInlineDay(null)}
+                onCreate={(draft) => void createQuick(draft)}
+                onSelectEvent={setSelected}
+                onPage={shift}
+                ariaLabel={gridLabel}
+                move={move}
+              />
+            )}
+
+            {mode === "month" && events.length === 0 ? (
+              <p className="text-sm text-muted-foreground">Aucun événement sur cette période.</p>
+            ) : null}
+          </div>
+        </div>
+
+        {/* --- Détails d'un événement ------------------------------------------- */}
+        <EventDetailDialog
+          event={selected}
+          busy={busy}
+          onClose={() => setSelected(null)}
+          onEdit={(event) => {
+            setEditorError(null);
+            setEditor(editorFromEvent(event));
+            setSelected(null);
+          }}
+          onDelete={(event) => {
+            setSelected(event);
+            setDeleteOpen(true);
+          }}
+          onRespond={(status) => void respond(status)}
         />
 
-        <div className="flex min-w-0 flex-1 flex-col gap-3">
-          {error ? (
-            <Alert tone="danger">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <span>{error}</span>
-                <Button size="sm" variant="outline" onClick={() => void refresh()}>
-                  Réessayer
-                </Button>
-              </div>
-            </Alert>
-          ) : null}
+        {/* --- Confirmation de suppression --------------------------------------- */}
+        <ConfirmDialog
+          open={deleteOpen}
+          onClose={() => setDeleteOpen(false)}
+          onConfirm={() => void onConfirmDelete()}
+          title="Supprimer l'événement ?"
+          message={
+            selected
+              ? `« ${selected.title} » sera définitivement supprimé.`
+              : "Cette action est définitive."
+          }
+          confirmLabel="Supprimer"
+          busy={busy}
+          destructive
+        />
 
-          {mode !== "month" ? (
-            <QuickAddBar
-              day={cursor}
-              calendars={calendars}
-              busy={busy}
-              submitError={null}
-              onCreate={(draft) => void createQuick(draft)}
-              onOpenDetails={openDetailsFromQuick}
-            />
-          ) : null}
+        {/* --- Création / édition complète -------------------------------------- */}
+        <EventEditorDialog
+          editor={editor}
+          calendars={calendars}
+          busy={busy}
+          error={editorError}
+          onChange={(patch) =>
+            setEditor((current) => (current ? { ...current, ...patch } : current))
+          }
+          onClose={() => setEditor(null)}
+          onSubmit={() => void onSaveEditor()}
+        />
 
-          {loading ? (
-            <div role="status" className="flex flex-col gap-2" aria-live="polite">
-              <p className="text-sm text-muted-foreground">Chargement…</p>
-              <div className="h-64 animate-pulse rounded-xl border border-border bg-muted/40" />
+        {/* --- Nouvel agenda partagé -------------------------------------------- */}
+        <Dialog open={agendaOpen} onClose={() => setAgendaOpen(false)} title="Nouvel agenda">
+          <form onSubmit={onCreateAgenda} method="post" className="flex flex-col gap-3">
+            <div className="flex flex-col gap-1">
+              <label htmlFor="agenda-name" className="text-sm font-medium leading-none">
+                Nom de l'agenda
+              </label>
+              <Input
+                id="agenda-name"
+                value={agendaName}
+                onChange={(event) => setAgendaName(event.target.value)}
+                placeholder="Agenda d'équipe"
+                maxLength={120}
+                autoFocus
+              />
             </div>
-          ) : mode === "month" ? (
-            <MonthGrid
-              days={range.days}
-              month={cursor}
-              today={today}
-              events={events}
-              submitError={error}
-              busy={busy}
-              inlineDay={inlineDay}
-              onInlineOpen={(day) => {
-                setInlineDay(day);
-                setCursor(day);
-              }}
-              onInlineCancel={() => setInlineDay(null)}
-              onCreate={(draft) => void createQuick(draft)}
-              onSelectEvent={setSelected}
-              onPage={shift}
-              ariaLabel={gridLabel}
-            />
-          ) : mode === "agenda" ? (
-            <AgendaView
-              days={range.days}
-              today={today}
-              events={events}
-              onSelectEvent={setSelected}
-            />
-          ) : (
-            <DayColumns
-              days={range.days}
-              today={today}
-              events={events}
-              submitError={error}
-              busy={busy}
-              inlineDay={inlineDay}
-              onInlineOpen={(day) => {
-                setInlineDay(day);
-                setCursor(day);
-              }}
-              onInlineCancel={() => setInlineDay(null)}
-              onCreate={(draft) => void createQuick(draft)}
-              onSelectEvent={setSelected}
-              onPage={shift}
-              ariaLabel={gridLabel}
-            />
-          )}
-
-          {mode === "month" && events.length === 0 ? (
-            <p className="text-sm text-muted-foreground">Aucun événement sur cette période.</p>
-          ) : null}
-        </div>
-      </div>
-
-      {/* --- Détails d'un événement ------------------------------------------- */}
-      <EventDetailDialog
-        event={selected}
-        busy={busy}
-        onClose={() => setSelected(null)}
-        onEdit={(event) => {
-          setEditorError(null);
-          setEditor(editorFromEvent(event));
-          setSelected(null);
-        }}
-        onDelete={(event) => {
-          setSelected(event);
-          setDeleteOpen(true);
-        }}
-        onRespond={(status) => void respond(status)}
-      />
-
-      {/* --- Confirmation de suppression --------------------------------------- */}
-      <ConfirmDialog
-        open={deleteOpen}
-        onClose={() => setDeleteOpen(false)}
-        onConfirm={() => void onConfirmDelete()}
-        title="Supprimer l'événement ?"
-        message={
-          selected
-            ? `« ${selected.title} » sera définitivement supprimé.`
-            : "Cette action est définitive."
-        }
-        confirmLabel="Supprimer"
-        busy={busy}
-        destructive
-      />
-
-      {/* --- Création / édition complète -------------------------------------- */}
-      <EventEditorDialog
-        editor={editor}
-        calendars={calendars}
-        busy={busy}
-        error={editorError}
-        onChange={(patch) => setEditor((current) => (current ? { ...current, ...patch } : current))}
-        onClose={() => setEditor(null)}
-        onSubmit={() => void onSaveEditor()}
-      />
-
-      {/* --- Nouvel agenda partagé -------------------------------------------- */}
-      <Dialog open={agendaOpen} onClose={() => setAgendaOpen(false)} title="Nouvel agenda">
-        <form onSubmit={onCreateAgenda} method="post" className="flex flex-col gap-3">
-          <div className="flex flex-col gap-1">
-            <label htmlFor="agenda-name" className="text-sm font-medium leading-none">
-              Nom de l'agenda
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                className="accent-primary"
+                checked={agendaShared}
+                onChange={(event) => setAgendaShared(event.target.checked)}
+              />
+              Visible par tous les membres de l'organisation
             </label>
-            <Input
-              id="agenda-name"
-              value={agendaName}
-              onChange={(event) => setAgendaName(event.target.value)}
-              placeholder="Agenda d'équipe"
-              maxLength={120}
-              autoFocus
-            />
-          </div>
-          <label className="flex items-center gap-2 text-sm">
-            <input
-              type="checkbox"
-              className="accent-primary"
-              checked={agendaShared}
-              onChange={(event) => setAgendaShared(event.target.checked)}
-            />
-            Visible par tous les membres de l'organisation
-          </label>
-          <div className="flex justify-end gap-2">
-            <button
-              type="button"
-              onClick={() => setAgendaOpen(false)}
-              className="rounded-md px-3 py-1.5 text-sm hover:bg-muted"
-            >
-              Annuler
-            </button>
-            <button
-              type="submit"
-              disabled={busy || agendaName.trim().length === 0}
-              className="rounded-md bg-primary px-3 py-1.5 text-sm text-primary-foreground disabled:opacity-50"
-            >
-              Créer l'agenda
-            </button>
-          </div>
-        </form>
-      </Dialog>
-    </div>
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setAgendaOpen(false)}
+                className="rounded-md px-3 py-1.5 text-sm hover:bg-muted"
+              >
+                Annuler
+              </button>
+              <button
+                type="submit"
+                disabled={busy || agendaName.trim().length === 0}
+                className="rounded-md bg-primary px-3 py-1.5 text-sm text-primary-foreground disabled:opacity-50"
+              >
+                Créer l'agenda
+              </button>
+            </div>
+          </form>
+        </Dialog>
+      </div>
+    </CalendarTimeZoneProvider>
   );
 }

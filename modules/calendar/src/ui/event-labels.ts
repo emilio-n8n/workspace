@@ -4,6 +4,7 @@
  */
 
 import type { Recurrence } from "../server.ts";
+import { browserTimeZone, formatDayInZone, formatTimeInZone, zonedDate } from "./timezone.ts";
 import { formatDayMonth, formatDayTitle, parseDateInput } from "./view-state.ts";
 
 /** Récurrences proposées, dans l'ordre du menu. */
@@ -17,6 +18,24 @@ export const RECURRENCE_LABELS: Record<Recurrence, string> = {
   monthly: "Mensuelle",
 };
 
+/**
+ * Unité affichée après l'intervalle de répétition (« Toutes les 2 semaines »).
+ * Singulier quand l'intervalle vaut 1, mois invariable.
+ */
+export function recurrenceUnitLabel(recurrence: Recurrence, interval: number): string {
+  const singular = interval <= 1;
+  switch (recurrence) {
+    case "daily":
+      return singular ? "jour" : "jours";
+    case "weekly":
+      return singular ? "semaine" : "semaines";
+    case "monthly":
+      return "mois";
+    default:
+      return "";
+  }
+}
+
 /** Statuts d'invitation affichés dans le détail et la liste des invités. */
 export const ATTENDANCE_LABELS: Record<string, string> = {
   invited: "Invité",
@@ -25,8 +44,8 @@ export const ATTENDANCE_LABELS: Record<string, string> = {
 };
 
 /** Heure locale d'un instant ISO, au format français « 09:05 ». */
-export function formatTime(iso: string): string {
-  return new Date(iso).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
+export function formatTime(iso: string, zone: string = browserTimeZone()): string {
+  return formatTimeInZone(iso, zone);
 }
 
 /** Événement réduit à ce que la plage affichée doit connaître. */
@@ -37,17 +56,16 @@ type RangeLike = { startsAt: string; endsAt: string; allDay: boolean };
  * « Mardi 13 octobre 2026 · 09:00 – 10:00 » ou
  * « Mardi 13 octobre 2026 · journée entière ».
  *
- * Une journée entière est lue sur son préfixe UTC puis reformatée en date
- * locale : le jour affiché est celui stocké, quel que soit le fuseau du
- * lecteur.
+ * Un événement horaire est affiché dans le fuseau choisi ; un événement
+ * « journée entière » est une date (minuit UTC), affichée telle quelle quel que
+ * soit le fuseau du lecteur.
  */
-export function formatEventRange(event: RangeLike): string {
-  const startsAt = new Date(event.startsAt);
-  const day = event.allDay ? (parseDateInput(event.startsAt.slice(0, 10)) ?? startsAt) : startsAt;
-  const dayLabel = formatDayTitle(day);
-  return event.allDay
-    ? `${dayLabel} · journée entière`
-    : `${dayLabel} · ${formatTime(event.startsAt)} – ${formatTime(event.endsAt)}`;
+export function formatEventRange(event: RangeLike, zone: string = browserTimeZone()): string {
+  if (event.allDay) {
+    const stored = parseDateInput(event.startsAt.slice(0, 10)) ?? new Date(event.startsAt);
+    return `${formatDayTitle(stored)} · journée entière`;
+  }
+  return `${formatDayInZone(event.startsAt, zone)} · ${formatTime(event.startsAt, zone)} – ${formatTime(event.endsAt, zone)}`;
 }
 
 /**
@@ -67,4 +85,17 @@ export function formatAgendaDay(day: Date, now: Date = new Date()): string {
   if (isToday) return "Aujourd'hui";
   if (isTomorrow) return "Demain";
   return formatDayMonth(day);
+}
+
+/**
+ * Date d'un instant ramenée au fuseau d'affichage, sous forme de date locale :
+ * les grilles travaillent ensuite comme si l'utilisateur y était.
+ */
+export function displayDate(instant: Date | string | number, zone: string): Date {
+  return zonedDate(instant, zone);
+}
+
+/** Horaires d'un événement : « 09:00 – 10:00 » dans le fuseau d'affichage. */
+export function formatEventTimes(event: RangeLike, zone: string = browserTimeZone()): string {
+  return `${formatTime(event.startsAt, zone)} – ${formatTime(event.endsAt, zone)}`;
 }

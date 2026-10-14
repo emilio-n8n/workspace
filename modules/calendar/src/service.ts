@@ -40,6 +40,10 @@ const MAX_OCCURRENCES_PER_EVENT = 100;
 /** Durée maximale d'une série récurrente : 2 ans calendaires après le début. */
 const MAX_RECURRENCE_MONTHS = 24;
 
+/** Intervalle de répétition : au moins une unité, au plus 52 (une année). */
+export const RECURRENCE_INTERVAL_MIN = 1;
+export const RECURRENCE_INTERVAL_MAX = 52;
+
 /** Valeurs acceptées pour `calendar_events.recurrence`. */
 export type Recurrence = "none" | "daily" | "weekly" | "monthly";
 
@@ -54,6 +58,13 @@ function isRecurrence(value: unknown): value is Recurrence {
 /** Valeur stockée → type public (une valeur inconnue retombe sur « aucune »). */
 function asRecurrence(value: string): Recurrence {
   return isRecurrence(value) ? value : "none";
+}
+
+/** Intervalle stocké → nombre de périodes entre deux occurrences. */
+function asInterval(value: number): number {
+  return Number.isFinite(value) && value >= RECURRENCE_INTERVAL_MIN
+    ? Math.min(Math.trunc(value), RECURRENCE_INTERVAL_MAX)
+    : RECURRENCE_INTERVAL_MIN;
 }
 
 const PRIMARY_CALENDAR_NAME = "Mon agenda";
@@ -87,6 +98,12 @@ export type EventView = {
   allDay: boolean;
   /** Récurrence de la série (`none` pour un événement simple). */
   recurrence: Recurrence;
+  /**
+   * Intervalle entre deux occurrences, en unités de `recurrence` : `1` pour
+   * toutes les semaines, `3` pour toutes les trois semaines. `1` pour un
+   * événement simple.
+   */
+  recurrenceInterval: number;
   /** Fin de la série (incluse), `null` pour un événement simple. */
   recurrenceUntil: string | null;
   /**
@@ -112,6 +129,11 @@ export type EventInput = {
   attendees?: string[];
   /** Récurrence simple : `none` (défaut), `daily`, `weekly` ou `monthly`. */
   recurrence?: Recurrence;
+  /**
+   * Intervalle entre deux occurrences (1 par défaut) : `2` avec `weekly`
+   * signifie « toutes les deux semaines ». Ignoré si `recurrence` vaut `none`.
+   */
+  recurrenceInterval?: number;
   /**
    * Dernière date (incluse) de la série. Obligatoire dès que `recurrence`
    * n'est pas `none`, comprise entre `startsAt` et `startsAt` + 2 ans.
@@ -196,11 +218,18 @@ function addUtcMonths(date: Date, count: number): Date {
 }
 
 /** Début de la n-ième occurrence (`index` = 0 : l'événement stocké lui-même). */
-function occurrenceStart(base: Date, recurrence: ActiveRecurrence, index: number): Date {
+function occurrenceStart(
+  base: Date,
+  recurrence: ActiveRecurrence,
+  interval: number,
+  index: number,
+): Date {
   // Quotidien / hebdomadaire : décalage en millisecondes (UTC, sans heure d'été).
-  if (recurrence === "daily") return new Date(base.getTime() + index * ONE_DAY_MS);
-  if (recurrence === "weekly") return new Date(base.getTime() + index * 7 * ONE_DAY_MS);
-  return addUtcMonths(base, index);
+  if (recurrence === "daily") return new Date(base.getTime() + index * interval * ONE_DAY_MS);
+  if (recurrence === "weekly") {
+    return new Date(base.getTime() + index * interval * 7 * ONE_DAY_MS);
+  }
+  return addUtcMonths(base, index * interval);
 }
 
 /**
@@ -212,15 +241,16 @@ function occurrenceStart(base: Date, recurrence: ActiveRecurrence, index: number
 function firstOccurrenceIndex(
   base: Date,
   recurrence: ActiveRecurrence,
+  interval: number,
   thresholdMs: number,
 ): number {
   const baseMs = base.getTime();
   if (baseMs > thresholdMs) return 0;
   if (recurrence === "daily") {
-    return Math.floor((thresholdMs - baseMs) / ONE_DAY_MS) + 1;
+    return Math.floor((thresholdMs - baseMs) / (interval * ONE_DAY_MS)) + 1;
   }
   if (recurrence === "weekly") {
-    return Math.floor((thresholdMs - baseMs) / (7 * ONE_DAY_MS)) + 1;
+    return Math.floor((thresholdMs - baseMs) / (interval * 7 * ONE_DAY_MS)) + 1;
   }
   // Mensuel : estimation par différence de mois, puis ajustement borné
   // (le clamp de fin de mois rend le pas non linéaire).
@@ -228,11 +258,14 @@ function firstOccurrenceIndex(
   const months =
     (threshold.getUTCFullYear() - base.getUTCFullYear()) * 12 +
     (threshold.getUTCMonth() - base.getUTCMonth());
-  let index = Math.max(0, months);
-  while (index > 0 && occurrenceStart(base, recurrence, index - 1).getTime() > thresholdMs) {
+  let index = Math.max(0, Math.floor(months / interval));
+  while (
+    index > 0 &&
+    occurrenceStart(base, recurrence, interval, index - 1).getTime() > thresholdMs
+  ) {
     index -= 1;
   }
-  while (occurrenceStart(base, recurrence, index).getTime() <= thresholdMs) {
+  while (occurrenceStart(base, recurrence, interval, index).getTime() <= thresholdMs) {
     index += 1;
   }
   return index;
@@ -244,6 +277,7 @@ function expandOccurrences(
     startsAt: Date;
     endsAt: Date;
     recurrence: Recurrence;
+    recurrenceInterval: number;
     recurrenceUntil: Date | null;
   },
   fromMs: number,
@@ -256,14 +290,15 @@ function expandOccurrences(
       : [];
   }
 
+  const interval = asInterval(row.recurrenceInterval);
   const untilMs = row.recurrenceUntil?.getTime() ?? Number.POSITIVE_INFINITY;
   const occurrences: { startsAt: Date; endsAt: Date }[] = [];
   for (
-    let index = firstOccurrenceIndex(row.startsAt, row.recurrence, fromMs - durationMs);
+    let index = firstOccurrenceIndex(row.startsAt, row.recurrence, interval, fromMs - durationMs);
     occurrences.length < MAX_OCCURRENCES_PER_EVENT;
     index += 1
   ) {
-    const startsAt = occurrenceStart(row.startsAt, row.recurrence, index);
+    const startsAt = occurrenceStart(row.startsAt, row.recurrence, interval, index);
     // Fin de série (début d'occurrence borné par `recurrenceUntil`) ou fin de
     // plage : les débuts croissent, on peut s'arrêter.
     if (startsAt.getTime() > untilMs || startsAt.getTime() >= toMs) break;
@@ -273,16 +308,21 @@ function expandOccurrences(
   return occurrences;
 }
 
-/** Valide la récurrence et sa fin, et normalise les valeurs persistées. */
+/** Valide la récurrence, son intervalle et sa fin, et normalise les valeurs persistées. */
 function assertRecurrence(
   recurrence: Recurrence,
+  interval: number | undefined,
   until: string | null | undefined,
   startsAt: Date,
-): { recurrence: Recurrence; recurrenceUntil: Date | null } {
+): { recurrence: Recurrence; recurrenceInterval: number; recurrenceUntil: Date | null } {
   if (!isRecurrence(recurrence)) {
     throw new CalendarError("validation", "Récurrence invalide.");
   }
-  if (recurrence === "none") return { recurrence, recurrenceUntil: null };
+  const recurrenceInterval = assertInterval(interval);
+  // Sans répétition, l'intervalle n'a pas de sens : il est ramené à 1.
+  if (recurrence === "none") {
+    return { recurrence, recurrenceInterval: RECURRENCE_INTERVAL_MIN, recurrenceUntil: null };
+  }
 
   const raw = until?.trim() ?? "";
   if (raw.length === 0) {
@@ -298,7 +338,23 @@ function assertRecurrence(
   if (end.getTime() > addUtcMonths(startsAt, MAX_RECURRENCE_MONTHS).getTime()) {
     throw new CalendarError("validation", "La répétition ne peut pas dépasser 2 ans.");
   }
-  return { recurrence, recurrenceUntil: end };
+  return { recurrence, recurrenceInterval, recurrenceUntil: end };
+}
+
+/** Valide l'intervalle de répétition (1 à 52 unités de la fréquence). */
+function assertInterval(interval: number | undefined): number {
+  if (interval === undefined) return RECURRENCE_INTERVAL_MIN;
+  if (
+    !Number.isInteger(interval) ||
+    interval < RECURRENCE_INTERVAL_MIN ||
+    interval > RECURRENCE_INTERVAL_MAX
+  ) {
+    throw new CalendarError(
+      "validation",
+      `L'intervalle de répétition doit être un nombre entier entre ${RECURRENCE_INTERVAL_MIN} et ${RECURRENCE_INTERVAL_MAX}.`,
+    );
+  }
+  return interval;
 }
 
 function clean(value: string | null | undefined): string | null {
@@ -520,6 +576,7 @@ async function hydrate(
       endsAt: row.endsAt.toISOString(),
       allDay: row.allDay,
       recurrence: asRecurrence(row.recurrence),
+      recurrenceInterval: asInterval(row.recurrenceInterval),
       recurrenceUntil: row.recurrenceUntil ? row.recurrenceUntil.toISOString() : null,
       recurring: row.recurrence !== "none",
       createdBy: row.createdBy,
@@ -622,6 +679,7 @@ export async function listEvents(
         startsAt: new Date(view.startsAt),
         endsAt: new Date(view.endsAt),
         recurrence: view.recurrence,
+        recurrenceInterval: view.recurrenceInterval,
         recurrenceUntil: view.recurrenceUntil ? new Date(view.recurrenceUntil) : null,
       },
       from.getTime(),
@@ -689,6 +747,7 @@ export async function createEvent(actor: Actor, input: EventInput): Promise<Even
 
   const recurrence = assertRecurrence(
     input.recurrence ?? "none",
+    input.recurrenceInterval,
     input.recurrenceUntil,
     range.startsAt,
   );
@@ -709,6 +768,7 @@ export async function createEvent(actor: Actor, input: EventInput): Promise<Even
         endsAt: range.endsAt,
         allDay,
         recurrence: recurrence.recurrence,
+        recurrenceInterval: recurrence.recurrenceInterval,
         recurrenceUntil: recurrence.recurrenceUntil,
         createdBy: actor.userId,
       })
@@ -786,6 +846,7 @@ export async function updateEvent(
   // série ne peut pas la faire sortir de sa fenêtre de fin).
   const recurrence = assertRecurrence(
     patch.recurrence ?? existing.recurrence,
+    patch.recurrenceInterval ?? existing.recurrenceInterval,
     patch.recurrenceUntil !== undefined ? patch.recurrenceUntil : existing.recurrenceUntil,
     range ? range.startsAt : new Date(existing.startsAt),
   );
@@ -799,6 +860,7 @@ export async function updateEvent(
       ...(range ? { startsAt: range.startsAt, endsAt: range.endsAt } : {}),
       ...(patch.allDay !== undefined ? { allDay: patch.allDay } : {}),
       recurrence: recurrence.recurrence,
+      recurrenceInterval: recurrence.recurrenceInterval,
       recurrenceUntil: recurrence.recurrenceUntil,
     })
     .where(eq(calendarEvents.id, eventId))
