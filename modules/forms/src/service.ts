@@ -12,6 +12,12 @@ import {
 } from "@workspace/drive";
 import { type Actor, roleSatisfies } from "@workspace/permissions";
 import { and, asc, desc, eq, inArray, lt, sql } from "drizzle-orm";
+import {
+  conditionValueOptions,
+  normalizeCondition,
+  type QuestionCondition,
+  visibleQuestions,
+} from "./conditions.ts";
 import { FORM_KINDS, type FormKind, kindHasOptions, validateAnswers } from "./questions.ts";
 import {
   type FormQuestionRow,
@@ -20,6 +26,7 @@ import {
   formResponses,
   forms,
 } from "./schema.ts";
+import { type FormAccentId, normalizeAccentId } from "./theme.ts";
 
 /** Type MIME du pointeur Drive d'un formulaire Workspace. */
 export const FORMS_MIME = "application/vnd.workspace.forms+json";
@@ -49,6 +56,8 @@ export type QuestionView = {
   label: string;
   required: boolean;
   options: string[];
+  /** Affichage conditionnel : afficher si la réponse au contrôle vaut `equals`. */
+  condition: QuestionCondition | null;
 };
 
 export type QuestionInput = {
@@ -58,6 +67,8 @@ export type QuestionInput = {
   label: string;
   required?: boolean;
   options?: string[];
+  /** Condition d'affichage ; ignorée si le contrôleur n'existe pas/plus. */
+  condition?: QuestionCondition | null;
 };
 
 export type FormSummary = {
@@ -77,6 +88,8 @@ export type FormDetail = {
   description: string | null;
   slug: string;
   status: FormStatus;
+  /** Accent normalisé (jamais `null`) choisi dans la palette des tokens. */
+  accent: FormAccentId;
   canEdit: boolean;
   questions: QuestionView[];
 };
@@ -133,7 +146,32 @@ function assertQuestions(input: QuestionInput[]): QuestionInput[] {
       label,
       required: question.required ?? false,
       options,
+      // Forme validée ici ; l'existence du contrôleur est vérifiée à
+      // l'enregistrement, seul endroit où l'on connaît les questions gardées.
+      condition: normalizeCondition(question.condition),
     };
+  });
+}
+
+/**
+ * Résout les conditions d'affichage contre les questions réellement gardées :
+ * une condition ne survit que si son contrôleur est conservé et que la valeur
+ * attendue est plausible pour son type (options, échelle, oui/non). Une
+ * condition orpheline ou incohérente est retirée plutôt que d'empêcher
+ * l'enregistrement ; l'affichage redevient alors inconditionnel.
+ */
+function resolveConditions(
+  questions: readonly QuestionInput[],
+  keptIds: ReadonlySet<string>,
+): (QuestionCondition | null)[] {
+  return questions.map((question) => {
+    const condition = question.condition;
+    if (!condition || !keptIds.has(condition.questionId)) return null;
+    const controller = questions.find((other) => other.id === condition.questionId);
+    if (!controller) return null;
+    const allowed = conditionValueOptions(controller.kind, controller.options ?? []);
+    if (allowed && !allowed.includes(condition.equals)) return null;
+    return condition;
   });
 }
 
@@ -181,6 +219,7 @@ function toQuestions(rows: FormQuestionRow[]): QuestionView[] {
     label: row.label,
     required: row.required,
     options: row.options,
+    condition: row.condition ?? null,
   }));
 }
 
@@ -261,6 +300,7 @@ export async function getFormByFileId(actor: Actor, fileId: string): Promise<For
     description: form.description,
     slug: form.slug,
     status: form.status as FormStatus,
+    accent: normalizeAccentId(form.accent),
     canEdit: roleSatisfies(role, "write"),
     questions,
   };
@@ -274,6 +314,7 @@ export async function saveForm(
     title?: string;
     description?: string | null;
     status?: string;
+    accent?: string;
     questions?: QuestionInput[];
   },
 ): Promise<FormDetail> {
@@ -281,6 +322,7 @@ export async function saveForm(
 
   const title = input.title !== undefined ? assertTitle(input.title) : undefined;
   const status = input.status !== undefined ? assertStatus(input.status) : undefined;
+  const accent = input.accent !== undefined ? normalizeAccentId(input.accent) : undefined;
   const description =
     input.description !== undefined ? input.description?.trim() || null : undefined;
   const questions = input.questions !== undefined ? assertQuestions(input.questions) : undefined;
@@ -290,6 +332,7 @@ export async function saveForm(
       ...(title !== undefined ? { title } : {}),
       ...(description !== undefined ? { description } : {}),
       ...(status !== undefined ? { status } : {}),
+      ...(accent !== undefined ? { accent } : {}),
     };
     if (Object.keys(formChanges).length > 0) {
       await tx.update(forms).set(formChanges).where(eq(forms.id, form.id));
@@ -306,7 +349,15 @@ export async function saveForm(
         .from(formQuestions)
         .where(eq(formQuestions.formId, form.id));
       const existingIds = new Set(existing.map((row) => row.id));
-      const keptIds = new Set<string>();
+      // Identifiants conservés : questions existantes présentes dans la
+      // sauvegarde. Sert à la fois à résoudre les conditions et à calculer les
+      // suppressions, sans dépendre de l'ordre d'écriture.
+      const keptIds = new Set(
+        questions
+          .map((question) => question.id)
+          .filter((id): id is string => id !== undefined && existingIds.has(id)),
+      );
+      const conditions = resolveConditions(questions, keptIds);
 
       for (const [index, question] of questions.entries()) {
         const values = {
@@ -315,9 +366,9 @@ export async function saveForm(
           label: question.label,
           required: question.required ?? false,
           options: question.options ?? [],
+          condition: conditions[index] ?? null,
         };
         if (question.id !== undefined && existingIds.has(question.id)) {
-          keptIds.add(question.id);
           await tx
             .update(formQuestions)
             .set(values)
@@ -392,6 +443,8 @@ export type PublicForm = {
   title: string;
   description: string | null;
   status: FormStatus;
+  /** Accent normalisé (jamais `null`) appliqué à la page publique. */
+  accent: FormAccentId;
   questions: QuestionView[];
 };
 
@@ -404,6 +457,7 @@ export async function getPublicForm(slug: string): Promise<PublicForm> {
     title: form.title,
     description: form.description,
     status: form.status as FormStatus,
+    accent: normalizeAccentId(form.accent),
     questions: await loadQuestions(form.id),
   };
 }
@@ -447,7 +501,11 @@ export async function submitResponse(
     throw new FormsError("validation", "Ce formulaire n'a pas encore de question.");
   }
 
-  const clean = checkAnswers(questions, answers);
+  // L'affichage conditionnel réduit la validation aux questions réellement
+  // visibles compte tenu des réponses reçues : une question masquée n'est ni
+  // obligatoire ni enregistrée (pas de réponse fantôme à une question cachée).
+  const visible = visibleQuestions(questions, answers);
+  const clean = checkAnswers(visible, answers);
 
   // Insertion conditionnelle en une seule requête : statut ouvert et limite de
   // réponses sont vérifiés atomiquement, sans fenêtre entre le comptage et

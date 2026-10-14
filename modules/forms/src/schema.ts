@@ -12,6 +12,7 @@ import {
   uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
+import type { QuestionCondition } from "./conditions.ts";
 
 /**
  * Schéma du module Forms — voir docs/modules/forms.md.
@@ -38,6 +39,8 @@ export const forms = pgTable(
     description: text("description"),
     slug: text("slug").notNull(),
     status: text("status").notNull().default("open"),
+    /** Accent de la palette des tokens (`--color-app-*`) appliqué au formulaire. */
+    accent: text("accent").notNull().default("forms"),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true })
       .defaultNow()
@@ -64,6 +67,8 @@ export const formQuestions = pgTable(
     label: text("label").notNull(),
     required: boolean("required").notNull().default(false),
     options: jsonb("options").$type<string[]>().notNull().default([]),
+    /** Condition d'affichage : question de contrôle + valeur attendue, ou `null`. */
+    condition: jsonb("condition").$type<QuestionCondition | null>(),
   },
   (table) => [index("form_questions_form_idx").on(table.formId)],
 );

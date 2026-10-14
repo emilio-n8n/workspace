@@ -5,16 +5,23 @@ import { createRateLimiter } from "@workspace/ratelimit";
 import { z } from "zod";
 import {
   createForm,
+  FORM_ACCENT_IDS,
   FORM_KINDS,
   getFormByFileId,
   getPublicForm,
   listForms,
   listResponses,
+  MAX_CONDITION_VALUE_CHARS,
   saveForm,
   submitResponse,
 } from "./index.ts";
 
 export type { FormDetail, FormSummary, PublicForm, QuestionView, ResponseView } from "./index.ts";
+
+const conditionSchema = z.object({
+  questionId: z.string().min(1).max(64),
+  equals: z.string().trim().min(1).max(MAX_CONDITION_VALUE_CHARS),
+});
 
 const questionSchema = z.object({
   id: z.string().uuid().optional(),
@@ -22,6 +29,7 @@ const questionSchema = z.object({
   label: z.string().trim().min(1).max(500),
   required: z.boolean().optional(),
   options: z.array(z.string().max(200)).max(50).optional(),
+  condition: conditionSchema.nullish(),
 });
 
 export const listFormsFn = createServerFn({ method: "GET" }).handler(async () => {
@@ -62,6 +70,7 @@ export const saveFormFn = createServerFn({ method: "POST" })
         title: z.string().trim().min(1).max(255).optional(),
         description: z.string().max(5000).nullish(),
         status: z.enum(["draft", "open", "closed"]).optional(),
+        accent: z.enum(FORM_ACCENT_IDS).optional(),
         questions: z.array(questionSchema).max(100).optional(),
       })
       .parse(input),
@@ -72,6 +81,7 @@ export const saveFormFn = createServerFn({ method: "POST" })
       ...(data.title !== undefined ? { title: data.title } : {}),
       ...(data.description !== undefined ? { description: data.description } : {}),
       ...(data.status !== undefined ? { status: data.status } : {}),
+      ...(data.accent !== undefined ? { accent: data.accent } : {}),
       ...(data.questions !== undefined ? { questions: data.questions } : {}),
     });
   });

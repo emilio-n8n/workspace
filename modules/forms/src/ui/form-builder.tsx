@@ -11,6 +11,7 @@ import {
   SegmentedTabs,
 } from "@workspace/ui";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { conditionTargets, conditionValueOptions, type QuestionCondition } from "../conditions.ts";
 import {
   duplicateQuestion,
   FORM_KINDS,
@@ -30,6 +31,9 @@ import {
   type ResponseView,
   saveFormFn,
 } from "../server.ts";
+import type { FormAccentId } from "../theme.ts";
+import { AccentPicker } from "./accent-picker.tsx";
+import { FormPreview } from "./form-preview.tsx";
 import { FormsToasts, useFormsToasts } from "./toasts.tsx";
 
 const STATUS_OPTIONS = [
@@ -46,6 +50,8 @@ type QuestionDraft = {
   label: string;
   required: boolean;
   options: string[];
+  /** Affichage conditionnel simple, ou `null`/absent (toujours visible). */
+  condition?: QuestionCondition | null;
 };
 
 function toDraft(question: QuestionView): QuestionDraft {
@@ -56,6 +62,7 @@ function toDraft(question: QuestionView): QuestionDraft {
     label: question.label,
     required: question.required,
     options: question.options,
+    condition: question.condition,
   };
 }
 
@@ -66,7 +73,116 @@ function newDraft(kind: FormKind): QuestionDraft {
     label: "",
     required: false,
     options: kindHasOptions(kind) ? ["", ""] : [],
+    condition: null,
   };
+}
+
+/** Libellé d'une question de contrôle, indexé sur sa position dans la liste. */
+function questionLabel(questions: readonly QuestionDraft[], id: string): string {
+  const index = questions.findIndex((question) => question.id === id);
+  if (index === -1) return "Question supprimée";
+  return questions[index]?.label.trim() || `Question ${index + 1}`;
+}
+
+/**
+ * Réglage « afficher si réponse = … » d'une question. Les questions de
+ * contrôle sont forcément antérieures et déjà enregistrées (elles seules ont
+ * un identifiant stable) ; la valeur attendue suit le type du contrôleur
+ * (liste pour un choix, l'échelle, oui/non ; saisie libre pour le texte).
+ */
+function ConditionEditor({
+  index,
+  question,
+  questions,
+  onChange,
+}: {
+  index: number;
+  question: QuestionDraft;
+  questions: QuestionDraft[];
+  onChange: (condition: QuestionCondition | null) => void;
+}) {
+  const targets = conditionTargets(questions, index);
+  const condition = question.condition ?? null;
+  const controller = condition
+    ? targets.find((target) => target.id === condition.questionId)
+    : undefined;
+
+  function changeController(id: string) {
+    if (id.length === 0) {
+      onChange(null);
+      return;
+    }
+    const target = targets.find((candidate) => candidate.id === id);
+    if (!target) {
+      onChange(null);
+      return;
+    }
+    const allowed = conditionValueOptions(target.kind, target.options);
+    onChange({ questionId: id, equals: allowed?.[0] ?? "" });
+  }
+
+  function changeValue(equals: string) {
+    if (!controller) return;
+    onChange({ questionId: controller.id, equals });
+  }
+
+  const allowed = controller ? conditionValueOptions(controller.kind, controller.options) : null;
+
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-xs font-medium text-muted-foreground">Afficher si</span>
+        <select
+          aria-label={`Condition d'affichage de la question ${index + 1}`}
+          value={controller?.id ?? ""}
+          onChange={(event) => changeController(event.target.value)}
+          className="h-9 rounded-md border border-input bg-background px-2 text-sm"
+        >
+          <option value="">Toujours afficher</option>
+          {targets.map((target) => (
+            <option key={target.id} value={target.id}>
+              {questionLabel(questions, target.id)}
+            </option>
+          ))}
+        </select>
+        {controller ? (
+          <>
+            <span className="text-xs text-muted-foreground">réponse =</span>
+            {allowed ? (
+              <select
+                aria-label={`Valeur attendue pour la question ${index + 1}`}
+                value={condition?.equals ?? ""}
+                onChange={(event) => changeValue(event.target.value)}
+                className="h-9 rounded-md border border-input bg-background px-2 text-sm"
+              >
+                {allowed.map((entry) => (
+                  <option key={entry} value={entry}>
+                    {entry}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <Input
+                aria-label={`Valeur attendue pour la question ${index + 1}`}
+                value={condition?.equals ?? ""}
+                onChange={(event) => changeValue(event.target.value)}
+                placeholder="Valeur attendue"
+                maxLength={200}
+                className="h-9 w-44"
+              />
+            )}
+          </>
+        ) : null}
+      </div>
+      {targets.length === 0 ? (
+        <p className="text-xs text-muted-foreground">
+          {typeof question.id === "string" && question.id.length > 0
+            ? "Enregistrez d'abord une question précédente pour y rattacher une condition."
+            : "Enregistrez cette question pour pouvoir régler sa condition d'affichage."}
+        </p>
+      ) : null}
+    </div>
+  );
 }
 
 /** Constructeur de formulaire : questions, statut, lien public et réponses. */
@@ -76,6 +192,7 @@ export function FormBuilder({ fileId }: { fileId: string }) {
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [status, setStatus] = useState<FormDetail["status"]>("open");
+  const [accent, setAccent] = useState<FormAccentId>("forms");
   const [dirty, setDirty] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -99,6 +216,7 @@ export function FormBuilder({ fileId }: { fileId: string }) {
       setTitle(loaded.title);
       setDescription(loaded.description ?? "");
       setStatus(loaded.status);
+      setAccent(loaded.accent);
       setQuestions(loaded.questions.map(toDraft));
       setDirty(false);
       setError(null);
@@ -205,12 +323,17 @@ export function FormBuilder({ fileId }: { fileId: string }) {
           title: title.trim(),
           description,
           status,
+          accent,
           questions: questions.map((question) => ({
             ...(question.id !== undefined ? { id: question.id } : {}),
             kind: question.kind,
             label: question.label,
             required: question.required,
             options: question.options,
+            condition:
+              question.condition && question.condition.equals.trim().length > 0
+                ? question.condition
+                : null,
           })),
         },
       });
@@ -311,6 +434,7 @@ export function FormBuilder({ fileId }: { fileId: string }) {
                 {STATUS_OPTIONS.find((option) => option.value === status)?.label ?? status}
               </Badge>
             </div>
+            <AccentPicker value={accent} onChange={(id) => update(() => setAccent(id))} />
             <div className="flex flex-wrap items-center gap-2">
               <Input
                 readOnly
@@ -348,177 +472,195 @@ export function FormBuilder({ fileId }: { fileId: string }) {
           />
 
           {tab === "questions" ? (
-            <>
-              {questions.length === 0 ? (
-                <EmptyState
-                  icon={<IconClipboard />}
-                  title="Aucune question"
-                  hint="Ajoutez une question ci-dessous : texte, choix, échelle, date ou oui / non."
-                />
-              ) : (
-                <ul ref={listRef} className="flex flex-col gap-3">
-                  {questions.map((question, index) => (
-                    <li
-                      key={question.key}
-                      onKeyDown={(event) => onQuestionKeyDown(event, index)}
-                      className="flex flex-col gap-3 rounded-xl border border-border bg-card p-4"
-                    >
-                      <div className="flex items-center gap-2">
-                        <span className="text-xs font-medium text-muted-foreground">
-                          Question {index + 1} sur {questions.length}
-                        </span>
-                        <div className="ml-auto flex items-center gap-1">
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            aria-label={`Monter la question ${index + 1}`}
-                            disabled={index === 0}
-                            onClick={() => move(index, -1)}
-                          >
-                            ↑
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            aria-label={`Descendre la question ${index + 1}`}
-                            disabled={index === questions.length - 1}
-                            onClick={() => move(index, 1)}
-                          >
-                            ↓
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            aria-label={`Dupliquer la question ${index + 1}`}
-                            onClick={() => duplicate(index)}
-                          >
-                            Dupliquer
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            className="text-destructive"
-                            aria-label={`Supprimer la question ${index + 1}`}
-                            onClick={() => remove(index)}
-                          >
-                            Supprimer
-                          </Button>
-                        </div>
-                      </div>
-                      <Input
-                        data-question-key={question.key}
-                        aria-label="Intitulé de la question"
-                        value={question.label}
-                        onChange={(event) => patch(index, { label: event.target.value })}
-                        placeholder="Votre question…"
-                        maxLength={500}
-                      />
-                      <div className="flex flex-wrap items-center gap-3">
-                        <select
-                          aria-label="Type de question"
-                          value={question.kind}
-                          onChange={(event) => {
-                            const kind = event.target.value as FormKind;
-                            patch(index, {
-                              kind,
-                              options: kindHasOptions(kind)
-                                ? question.options.length >= 2
-                                  ? question.options
-                                  : ["", ""]
-                                : [],
-                            });
-                          }}
-                          className="h-9 rounded-md border border-input bg-background px-2 text-sm"
-                        >
-                          {FORM_KINDS.map((kind) => (
-                            <option key={kind} value={kind}>
-                              {KIND_LABELS[kind]}
-                            </option>
-                          ))}
-                        </select>
-                        <label className="flex items-center gap-2 text-sm">
-                          <input
-                            type="checkbox"
-                            checked={question.required}
-                            onChange={(event) => patch(index, { required: event.target.checked })}
-                          />
-                          Obligatoire
-                        </label>
-                      </div>
-                      <p className="text-xs text-muted-foreground">{KIND_HINTS[question.kind]}</p>
-                      {kindHasOptions(question.kind) && (
-                        <div className="flex flex-col gap-2">
-                          <Label>Options</Label>
-                          {question.options.map((option, optionIndex) => (
-                            <div
-                              // biome-ignore lint/suspicious/noArrayIndexKey: liste éditable par position, l'index est l'identité de travail (valeurs vides ou dupliquées en cours de saisie).
-                              key={`${question.key}-${optionIndex}`}
-                              className="flex items-center gap-2"
+            <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,22rem)] lg:items-start">
+              <div className="flex flex-col gap-3">
+                {questions.length === 0 ? (
+                  <EmptyState
+                    icon={<IconClipboard />}
+                    title="Aucune question"
+                    hint="Ajoutez une question ci-dessous : texte, choix, échelle, date ou oui / non."
+                  />
+                ) : (
+                  <ul ref={listRef} className="flex flex-col gap-3">
+                    {questions.map((question, index) => (
+                      <li
+                        key={question.key}
+                        onKeyDown={(event) => onQuestionKeyDown(event, index)}
+                        className="flex flex-col gap-3 rounded-xl border border-border bg-card p-4"
+                      >
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-medium text-muted-foreground">
+                            Question {index + 1} sur {questions.length}
+                          </span>
+                          <div className="ml-auto flex items-center gap-1">
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              aria-label={`Monter la question ${index + 1}`}
+                              disabled={index === 0}
+                              onClick={() => move(index, -1)}
                             >
-                              <Input
-                                aria-label={`Option ${optionIndex + 1}`}
-                                value={option}
-                                onChange={(event) =>
-                                  patch(index, {
-                                    options: question.options.map((value, position) =>
-                                      position === optionIndex ? event.target.value : value,
-                                    ),
-                                  })
-                                }
-                                maxLength={200}
-                              />
-                              <Button
-                                size="sm"
-                                variant="ghost"
-                                aria-label={`Supprimer l'option ${optionIndex + 1}`}
-                                onClick={() =>
-                                  patch(index, {
-                                    options: question.options.filter(
-                                      (_, position) => position !== optionIndex,
-                                    ),
-                                  })
-                                }
-                              >
-                                ✕
-                              </Button>
-                            </div>
-                          ))}
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            className="self-start"
-                            onClick={() => patch(index, { options: [...question.options, ""] })}
-                          >
-                            Ajouter une option
-                          </Button>
+                              ↑
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              aria-label={`Descendre la question ${index + 1}`}
+                              disabled={index === questions.length - 1}
+                              onClick={() => move(index, 1)}
+                            >
+                              ↓
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              aria-label={`Dupliquer la question ${index + 1}`}
+                              onClick={() => duplicate(index)}
+                            >
+                              Dupliquer
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="text-destructive"
+                              aria-label={`Supprimer la question ${index + 1}`}
+                              onClick={() => remove(index)}
+                            >
+                              Supprimer
+                            </Button>
+                          </div>
                         </div>
-                      )}
-                    </li>
+                        <Input
+                          data-question-key={question.key}
+                          aria-label="Intitulé de la question"
+                          value={question.label}
+                          onChange={(event) => patch(index, { label: event.target.value })}
+                          placeholder="Votre question…"
+                          maxLength={500}
+                        />
+                        <div className="flex flex-wrap items-center gap-3">
+                          <select
+                            aria-label="Type de question"
+                            value={question.kind}
+                            onChange={(event) => {
+                              const kind = event.target.value as FormKind;
+                              patch(index, {
+                                kind,
+                                options: kindHasOptions(kind)
+                                  ? question.options.length >= 2
+                                    ? question.options
+                                    : ["", ""]
+                                  : [],
+                              });
+                            }}
+                            className="h-9 rounded-md border border-input bg-background px-2 text-sm"
+                          >
+                            {FORM_KINDS.map((kind) => (
+                              <option key={kind} value={kind}>
+                                {KIND_LABELS[kind]}
+                              </option>
+                            ))}
+                          </select>
+                          <label className="flex items-center gap-2 text-sm">
+                            <input
+                              type="checkbox"
+                              checked={question.required}
+                              onChange={(event) => patch(index, { required: event.target.checked })}
+                            />
+                            Obligatoire
+                          </label>
+                        </div>
+                        <p className="text-xs text-muted-foreground">{KIND_HINTS[question.kind]}</p>
+                        {kindHasOptions(question.kind) && (
+                          <div className="flex flex-col gap-2">
+                            <Label>Options</Label>
+                            {question.options.map((option, optionIndex) => (
+                              <div
+                                // biome-ignore lint/suspicious/noArrayIndexKey: liste éditable par position, l'index est l'identité de travail (valeurs vides ou dupliquées en cours de saisie).
+                                key={`${question.key}-${optionIndex}`}
+                                className="flex items-center gap-2"
+                              >
+                                <Input
+                                  aria-label={`Option ${optionIndex + 1}`}
+                                  value={option}
+                                  onChange={(event) =>
+                                    patch(index, {
+                                      options: question.options.map((value, position) =>
+                                        position === optionIndex ? event.target.value : value,
+                                      ),
+                                    })
+                                  }
+                                  maxLength={200}
+                                />
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  aria-label={`Supprimer l'option ${optionIndex + 1}`}
+                                  onClick={() =>
+                                    patch(index, {
+                                      options: question.options.filter(
+                                        (_, position) => position !== optionIndex,
+                                      ),
+                                    })
+                                  }
+                                >
+                                  ✕
+                                </Button>
+                              </div>
+                            ))}
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="self-start"
+                              onClick={() => patch(index, { options: [...question.options, ""] })}
+                            >
+                              Ajouter une option
+                            </Button>
+                          </div>
+                        )}
+                        <div className="rounded-lg border border-dashed border-border p-3">
+                          <ConditionEditor
+                            index={index}
+                            question={question}
+                            questions={questions}
+                            onChange={(condition) => patch(index, { condition })}
+                          />
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-xs font-medium uppercase tracking-widest text-muted-foreground">
+                    Ajouter :
+                  </span>
+                  {FORM_KINDS.map((kind) => (
+                    <Button
+                      key={kind}
+                      size="sm"
+                      variant="outline"
+                      onClick={() => update(() => setQuestions([...questions, newDraft(kind)]))}
+                    >
+                      {KIND_LABELS[kind]}
+                    </Button>
                   ))}
-                </ul>
-              )}
+                </div>
 
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="text-xs font-medium uppercase tracking-widest text-muted-foreground">
-                  Ajouter :
-                </span>
-                {FORM_KINDS.map((kind) => (
-                  <Button
-                    key={kind}
-                    size="sm"
-                    variant="outline"
-                    onClick={() => update(() => setQuestions([...questions, newDraft(kind)]))}
-                  >
-                    {KIND_LABELS[kind]}
-                  </Button>
-                ))}
+                <p className="text-xs text-muted-foreground">
+                  Au clavier, dans une question : <Kbd>Alt</Kbd> + <Kbd>↑</Kbd> ou <Kbd>↓</Kbd> pour
+                  la déplacer.
+                </p>
               </div>
-
-              <p className="text-xs text-muted-foreground">
-                Au clavier, dans une question : <Kbd>Alt</Kbd> + <Kbd>↑</Kbd> ou <Kbd>↓</Kbd> pour
-                la déplacer.
-              </p>
-            </>
+              <aside className="lg:sticky lg:top-4">
+                <FormPreview
+                  title={title}
+                  description={description}
+                  questions={questions}
+                  accent={accent}
+                />
+              </aside>
+            </div>
           ) : (
             <div className="flex flex-col gap-3">
               <div className="flex items-center gap-2">

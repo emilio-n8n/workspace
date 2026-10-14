@@ -32,3 +32,8 @@ invalides et les formulaires fermés, lire et exporter les réponses
 ## Hors périmètre
 Limitation de débit anti-abus (documentée comme prochain chantier),
 pièces jointes, sections conditionnelles.
+
+## Vague « conditions, thème et aperçu » (14 oct. 2026)
+- **Questions conditionnelles** : « afficher si [question] = [valeur] » (`conditions.ts`) — cibles limitées aux questions antérieures enregistrées, valeurs proposées selon le type (liste fermée pour choix/échelle/oui-non, saisie libre sinon) ; le formulaire public ne rend que les questions visibles.
+- **Accent par formulaire** : palette de jetons `--color-app-*` (`theme.ts` + `accent-picker.tsx`), appliquée au formulaire public.
+- **Aperçu intégré** : rendu fidèle du formulaire dans l'éditeur (`form-preview.tsx`).
