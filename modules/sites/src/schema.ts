@@ -12,6 +12,7 @@ import {
   uuid,
 } from "drizzle-orm/pg-core";
 import type { SiteBlock } from "./blocks.ts";
+import type { NavigationItem } from "./navigation.ts";
 
 /**
  * Schéma du module Sites — voir docs/modules/sites.md.
@@ -34,6 +35,19 @@ export const sitesSites = pgTable(
       .notNull()
       .references(() => core.user.id, { onDelete: "cascade" }),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    /**
+     * Date de publication (TASK-005). `null` = brouillon ; renseignée = site
+     * en ligne. Republier remet la date à jour.
+     */
+    publishedAt: timestamp("published_at", { withTimezone: true }),
+    /** Auteur de la dernière publication ; `null` après une dépublication. */
+    publishedBy: text("published_by").references(() => core.user.id, { onDelete: "set null" }),
+    /**
+     * Personnalisation du menu de navigation (TASK-006) : libellés et
+     * visibilité par page. `null` = menu dérivé des pages (toutes visibles,
+     * libellé = titre). L'ordre, lui, suit toujours celui des pages.
+     */
+    navigation: jsonb("navigation").$type<NavigationItem[]>(),
   },
   (table) => [
     uniqueIndex("sites_sites_file_uidx").on(table.fileId),

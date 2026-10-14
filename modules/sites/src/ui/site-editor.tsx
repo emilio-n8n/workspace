@@ -26,18 +26,33 @@ import {
 } from "../blocks.ts";
 import { renderMarkdown } from "../markdown.ts";
 import {
+  type NavigationItem,
+  renderNavigation,
+  setNavigationLabel,
+  toggleNavigationVisibility,
+} from "../navigation.ts";
+import { DEFAULT_PREVIEW_VIEWPORT, type PreviewViewportId } from "../preview.ts";
+import {
   addPageFn,
   deletePageFn,
   getPageFn,
   getSiteFn,
+  movePageFn,
   type PageView,
+  publishSiteFn,
   renameSiteFn,
   type SiteDetail,
+  saveNavigationFn,
   savePageFn,
+  unpublishSiteFn,
 } from "../server.ts";
 import { BlockLibrary } from "./block-library.tsx";
 import { BlockProperties } from "./block-properties.tsx";
 import { BlocksCanvas, BlocksEmptyState } from "./blocks-canvas.tsx";
+import { SiteNavigationPanel } from "./site-navigation.tsx";
+import { SitePagesPanel } from "./site-pages.tsx";
+import { SitePreview } from "./site-preview.tsx";
+import { SitePublishFeedback, SitePublishPanel } from "./site-publish.tsx";
 
 /**
  * Éditeur de site : pages à gauche, contenu Markdown ou blocs à droite avec
@@ -69,6 +84,18 @@ export function SiteEditor({ fileId }: { fileId: string }) {
   const [pageToDelete, setPageToDelete] = useState<PageView | null>(null);
   /** Retour à l'édition Markdown en attente de confirmation. */
   const [pendingMode, setPendingMode] = useState<"markdown" | "blocks" | null>(null);
+  /** Gabarit de l'aperçu (TASK-004). */
+  const [viewport, setViewport] = useState<PreviewViewportId>(DEFAULT_PREVIEW_VIEWPORT);
+  /** Opération de publication en vol (TASK-005). */
+  const [publishBusy, setPublishBusy] = useState(false);
+  const [publishError, setPublishError] = useState<string | null>(null);
+  const [publishFeedback, setPublishFeedback] = useState<string | null>(null);
+  /** Dépublication en attente de confirmation. */
+  const [unpublishConfirm, setUnpublishConfirm] = useState(false);
+  /** Opération de menu en vol (TASK-006). */
+  const [navBusy, setNavBusy] = useState(false);
+  const [navError, setNavError] = useState<string | null>(null);
+  const [navFeedback, setNavFeedback] = useState<string | null>(null);
 
   const canEdit = site?.canEdit === true;
 
@@ -213,6 +240,110 @@ export function SiteEditor({ fileId }: { fileId: string }) {
     }
   }
 
+  /** Recharge l'état du site sans toucher à la page affichée. */
+  const refreshSite = useCallback(async () => {
+    try {
+      setSite(await getSiteFn({ data: { fileId } }));
+    } catch {
+      // La page complète reste affichée : seule l'erreur est visible.
+    }
+  }, [fileId]);
+
+  /** Entrées du menu, alignées sur les pages courantes. */
+  const items: NavigationItem[] = site?.navigation ?? [];
+
+  /** Corps de page rendu (blocs ou Markdown) et menu, pour l'aperçu. */
+  const bodyHtml = mode === "blocks" ? renderBlocks(blocks) : renderMarkdown(content);
+  const navigationHtml = renderNavigation(site?.pages ?? [], items, activePageId);
+
+  // -------------------------------------------------------------------------
+  // Publication (TASK-005)
+  // -------------------------------------------------------------------------
+
+  /** Message français d'une erreur serveur, quel que soit son enrobage. */
+  function messageOf(caught: unknown, fallback: string): string {
+    if (caught instanceof Error && caught.message.length > 0) return caught.message;
+    if (typeof caught === "string") return caught;
+    const record = caught as { data?: { message?: unknown }; message?: unknown };
+    if (typeof record?.data?.message === "string") return record.data.message;
+    if (typeof record?.message === "string") return record.message;
+    return fallback;
+  }
+
+  /**
+   * Publie ou dépublie. En cas d'échec, on **revient** à l'état connu du
+   * serveur (`refreshSite`) et on affiche le message : aucun état optimiste
+   * ne survit à une erreur.
+   */
+  async function runPublish(action: "publish" | "unpublish") {
+    setPublishBusy(true);
+    setPublishError(null);
+    try {
+      const updated =
+        action === "publish"
+          ? await publishSiteFn({ data: { fileId } })
+          : await unpublishSiteFn({ data: { fileId } });
+      setSite(updated);
+      setPublishFeedback(
+        action === "publish" ? "Site publié." : "Site dépublié : il est de nouveau en brouillon.",
+      );
+    } catch (caught) {
+      setPublishError(
+        messageOf(
+          caught,
+          action === "publish" ? "Publication impossible." : "Dépublication impossible.",
+        ),
+      );
+      await refreshSite();
+    } finally {
+      setPublishBusy(false);
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Menu de navigation (TASK-006)
+  // -------------------------------------------------------------------------
+
+  /** Applique une modification du menu, puis l'enregistre immédiatement. */
+  async function saveNavigation(items: NavigationItem[]) {
+    setNavBusy(true);
+    setNavError(null);
+    try {
+      const updated = await saveNavigationFn({ data: { fileId, items } });
+      setSite(updated);
+      setNavFeedback("Menu enregistré.");
+    } catch (caught) {
+      setNavError(messageOf(caught, "Enregistrement du menu impossible."));
+      await refreshSite();
+    } finally {
+      setNavBusy(false);
+    }
+  }
+
+  function onNavLabel(pageId: string, label: string) {
+    void saveNavigation(setNavigationLabel(items, pageId, label));
+  }
+
+  function onNavVisibility(pageId: string) {
+    void saveNavigation(toggleNavigationVisibility(items, pageId));
+  }
+
+  async function onMovePage(pageId: string, direction: "up" | "down") {
+    setNavBusy(true);
+    setNavError(null);
+    try {
+      const { pages } = await movePageFn({ data: { fileId, pageId, direction } });
+      if (site) setSite({ ...site, pages });
+      setNavFeedback("Ordre des pages enregistré.");
+      // La page déplacée peut être celle affichée : son contenu, lui, ne bouge pas.
+      await refreshSite();
+    } catch (caught) {
+      setNavError(messageOf(caught, "Déplacement impossible."));
+    } finally {
+      setNavBusy(false);
+    }
+  }
+
   // -------------------------------------------------------------------------
   // Blocs
   // -------------------------------------------------------------------------
@@ -332,46 +463,37 @@ export function SiteEditor({ fileId }: { fileId: string }) {
       {error ? <Alert tone="danger">{error}</Alert> : null}
 
       <div className="flex flex-col gap-3 lg:flex-row">
-        <aside className="flex shrink-0 flex-col gap-2 lg:w-56">
-          <p className="text-xs font-medium uppercase tracking-widest text-muted-foreground">
-            Pages
-          </p>
-          <ul className="flex flex-col gap-1">
-            {site?.pages.map((page) => (
-              <li key={page.id} className="flex items-center gap-1">
-                <button
-                  type="button"
-                  onClick={() => requestPageSwitch(page.id)}
-                  className={cn(
-                    "min-w-0 flex-1 truncate rounded-lg px-2 py-1.5 text-left text-sm transition-colors",
-                    page.id === activePageId
-                      ? "bg-accent text-accent-foreground"
-                      : "hover:bg-muted",
-                  )}
-                >
-                  {page.title}
-                  <span className="block truncate text-[10px] text-muted-foreground">
-                    /{page.slug}
-                  </span>
-                </button>
-                {site.canEdit && site.pages.length > 1 ? (
-                  <button
-                    type="button"
-                    aria-label={`Supprimer la page ${page.title}`}
-                    className="grid size-7 shrink-0 place-items-center rounded-md text-xs text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
-                    onClick={() => setPageToDelete(page)}
-                  >
-                    ✕
-                  </button>
-                ) : null}
-              </li>
-            ))}
-          </ul>
-          {site?.canEdit ? (
-            <Button size="sm" variant="outline" onClick={() => setPageDialogOpen(true)}>
-              ＋ Page
-            </Button>
-          ) : null}
+        <aside className="flex shrink-0 flex-col gap-4 lg:w-60">
+          <SitePagesPanel
+            pages={site?.pages ?? []}
+            activePageId={activePageId}
+            canEdit={canEdit}
+            busy={busy || navBusy}
+            onSelect={requestPageSwitch}
+            onMove={(pageId, direction) => void onMovePage(pageId, direction)}
+            onDelete={setPageToDelete}
+            onAdd={() => setPageDialogOpen(true)}
+          />
+          <SiteNavigationPanel
+            pages={site?.pages ?? []}
+            items={items}
+            canEdit={canEdit}
+            busy={navBusy}
+            error={navError}
+            feedback={navFeedback}
+            onLabelChange={onNavLabel}
+            onToggleVisibility={onNavVisibility}
+            onMove={(pageId, direction) => void onMovePage(pageId, direction)}
+          />
+          <SitePublishPanel
+            publishedAt={site?.publishedAt ?? null}
+            canEdit={canEdit}
+            busy={publishBusy}
+            error={publishError}
+            onPublish={() => void runPublish("publish")}
+            onUnpublish={() => setUnpublishConfirm(true)}
+          />
+          <SitePublishFeedback busy={publishBusy} message={publishFeedback} />
         </aside>
 
         <section className="flex min-w-0 flex-1 flex-col gap-3">
@@ -387,12 +509,13 @@ export function SiteEditor({ fileId }: { fileId: string }) {
           />
 
           {preview ? (
-            <div
-              className="workspace-site-preview min-h-96 rounded-xl border border-border bg-card p-6 text-sm"
-              // biome-ignore lint/security/noDangerouslySetInnerHtml: HTML produit par `renderMarkdown` / `renderBlocks` (échappement puis transformations contrôlées, URL assainies).
-              dangerouslySetInnerHTML={{
-                __html: mode === "blocks" ? renderBlocks(blocks) : renderMarkdown(content),
-              }}
+            <SitePreview
+              viewport={viewport}
+              onViewportChange={setViewport}
+              title={site?.title ?? title}
+              navigationHtml={navigationHtml}
+              bodyHtml={bodyHtml}
+              dirty={dirty}
             />
           ) : mode === "blocks" ? (
             <>
@@ -512,6 +635,20 @@ export function SiteEditor({ fileId }: { fileId: string }) {
         title="Revenir au Markdown ?"
         message="Les blocs sont convertis en texte Markdown ; la mise en page est simplifiée."
         confirmLabel="Convertir"
+        destructive
+      />
+
+      <ConfirmDialog
+        open={unpublishConfirm}
+        onClose={() => setUnpublishConfirm(false)}
+        onConfirm={() => {
+          setUnpublishConfirm(false);
+          void runPublish("unpublish");
+        }}
+        title="Dépublier ce site ?"
+        message="Le site repasse en brouillon : son adresse ne sera plus accessible aux autres membres."
+        confirmLabel="Dépublier"
+        busy={publishBusy}
         destructive
       />
     </div>

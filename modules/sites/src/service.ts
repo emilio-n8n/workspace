@@ -13,7 +13,8 @@ import { type Actor, roleSatisfies } from "@workspace/permissions";
 import { and, asc, eq, sql } from "drizzle-orm";
 import { checkBlocks, normalizeBlocks, type SiteBlock } from "./blocks.ts";
 import { slugify } from "./markdown.ts";
-import { type SitePageRow, sitesPages, sitesSites } from "./schema.ts";
+import { checkNavigation, type NavigationItem, normalizeNavigation } from "./navigation.ts";
+import { type SitePageRow, type SiteRow, sitesPages, sitesSites } from "./schema.ts";
 
 /** Type MIME du pointeur Drive d'un site Workspace. */
 export const SITES_MIME = "application/vnd.workspace.sites+json";
@@ -39,6 +40,15 @@ export type SiteDetail = {
   title: string;
   canEdit: boolean;
   pages: PageView[];
+  /** Date de publication (ISO), `null` si le site est un brouillon. */
+  publishedAt: string | null;
+  /** Auteur de la dernière publication, `null` si le site est un brouillon. */
+  publishedBy: string | null;
+  /**
+   * Menu de navigation résolu : dans l'ordre des pages, avec les libellés et
+   * la visibilité enregistrés (ou dérivés des pages si jamais personnalisé).
+   */
+  navigation: NavigationItem[];
 };
 
 export type PageDetail = {
@@ -56,6 +66,9 @@ export type SavePageInput = {
   /** Mise en page en blocs ; `null` efface les blocs (retour au Markdown). */
   blocks?: SiteBlock[] | null;
 };
+
+/** Entrée de sauvegarde du menu de navigation. */
+export type SaveNavigationInput = { items: NavigationItem[] };
 
 const db = () => getDb();
 
@@ -135,6 +148,17 @@ async function listPages(siteId: string): Promise<PageView[]> {
   );
 }
 
+/** Ligne du site, avec ses pages dans l'ordre du menu. */
+async function loadSiteDetail(
+  actor: Actor,
+  fileId: string,
+): Promise<{ entry: DriveEntry; site: SiteRow; pages: PageView[] }> {
+  const { entry, siteId } = await requireSite(actor, fileId);
+  const [site] = await db().select().from(sitesSites).where(eq(sitesSites.id, siteId)).limit(1);
+  if (!site) throw new SitesError("not_found", "Site introuvable.");
+  return { entry, site, pages: await listPages(siteId) };
+}
+
 /**
  * Premier slug libre pour `title` : `base`, puis `base-2`, `base-3`, …
  * `tried` mémorise les candidats déjà refusés par une insertion concurrente.
@@ -202,15 +226,71 @@ export async function createSite(
   return { entry, site };
 }
 
+/**
+ * Détail d'un site tel que l'éditeur l'attend : pages dans l'ordre du menu,
+ * état de publication et personnalisation du menu de navigation.
+ */
 export async function getSite(actor: Actor, fileId: string): Promise<SiteDetail> {
-  const { entry, siteId } = await requireSite(actor, fileId);
+  const { entry, site, pages } = await loadSiteDetail(actor, fileId);
   const role = await effectiveRole(actor, fileId);
   return {
     fileId: entry.id,
     title: entry.name,
     canEdit: roleSatisfies(role, "write"),
-    pages: await listPages(siteId),
+    pages,
+    publishedAt: site.publishedAt === null ? null : site.publishedAt.toISOString(),
+    publishedBy: site.publishedBy,
+    // `navigation` null → menu dérivé des pages (toutes visibles).
+    navigation: normalizeNavigation(site.navigation, pages),
   };
+}
+
+// ---------------------------------------------------------------------------
+// Publication (TASK-005)
+// ---------------------------------------------------------------------------
+
+/** Met le site en ligne (ou remet sa date à jour s'il l'est déjà). */
+export async function publishSite(actor: Actor, fileId: string): Promise<SiteDetail> {
+  const { siteId } = await requireSite(actor, fileId);
+  await requireEditor(actor, fileId);
+
+  await db()
+    .update(sitesSites)
+    .set({ publishedAt: sql`now()`, publishedBy: actor.userId })
+    .where(eq(sitesSites.id, siteId));
+
+  await recordAudit({
+    orgId: actor.orgId,
+    actorUserId: actor.userId,
+    action: "sites.site.publish",
+    resourceType: "site",
+    resourceId: fileId,
+    result: "success",
+  });
+
+  return getSite(actor, fileId);
+}
+
+/** Remet le site en brouillon : plus de date ni d'auteur de publication. */
+export async function unpublishSite(actor: Actor, fileId: string): Promise<SiteDetail> {
+  const { siteId } = await requireSite(actor, fileId);
+  await requireEditor(actor, fileId);
+
+  await db()
+    .update(sitesSites)
+    .set({ publishedAt: null, publishedBy: null })
+    .where(eq(sitesSites.id, siteId));
+
+  await recordAudit({
+    orgId: actor.orgId,
+    actorUserId: actor.userId,
+    action: "sites.site.unpublish",
+    resourceType: "site",
+    resourceId: fileId,
+    result: "success",
+  });
+
+  return getSite(actor, fileId);
 }
 
 export async function getPage(actor: Actor, fileId: string, pageId: string): Promise<PageDetail> {
@@ -362,23 +442,110 @@ export async function deletePage(
   return listPages(siteId);
 }
 
+/**
+ * Déplace une page d'un cran vers le haut ou le bas : l'ordre du menu de
+ * navigation suit celui des pages (une seule source de vérité). Un déplacement
+ * impossible — extrémité de la liste — ne change rien et renvoie l'ordre
+ * courant.
+ */
+export async function movePage(
+  actor: Actor,
+  fileId: string,
+  pageId: string,
+  direction: "up" | "down",
+): Promise<PageView[]> {
+  const { siteId } = await requirePage(actor, fileId, pageId);
+  await requireEditor(actor, fileId);
+
+  const pages = await listPages(siteId);
+  const index = pages.findIndex((page) => page.id === pageId);
+  const current = pages[index];
+  const target = pages[index + (direction === "up" ? -1 : 1)];
+  if (!current || !target) return pages;
+
+  // Échange des deux positions en une transaction : sans elle, deux requêtes
+  // successives laisseraient momentanément deux pages sur la même position.
+  await withTransaction(async (tx) => {
+    await tx
+      .update(sitesPages)
+      .set({ position: target.position })
+      .where(eq(sitesPages.id, current.id));
+    await tx
+      .update(sitesPages)
+      .set({ position: current.position })
+      .where(eq(sitesPages.id, target.id));
+  });
+
+  await recordAudit({
+    orgId: actor.orgId,
+    actorUserId: actor.userId,
+    action: "sites.page.move",
+    resourceType: "site",
+    resourceId: fileId,
+    result: "success",
+    metadata: { pageId, direction },
+  });
+
+  return listPages(siteId);
+}
+
+/**
+ * Enregistre la personnalisation du menu de navigation : libellés et visibilité
+ * par page. L'ordre, lui, reste celui des pages.
+ */
+export async function saveNavigation(
+  actor: Actor,
+  fileId: string,
+  input: SaveNavigationInput,
+): Promise<SiteDetail> {
+  const { siteId } = await requireSite(actor, fileId);
+  await requireEditor(actor, fileId);
+
+  const checked = checkNavigation(input.items, await listPages(siteId));
+  if (checked.error) throw new SitesError("validation", checked.error);
+
+  await db()
+    .update(sitesSites)
+    .set({ navigation: checked.navigation })
+    .where(eq(sitesSites.id, siteId));
+  await touchEntry(actor, fileId).catch(() => undefined);
+
+  await recordAudit({
+    orgId: actor.orgId,
+    actorUserId: actor.userId,
+    action: "sites.site.navigation.save",
+    resourceType: "site",
+    resourceId: fileId,
+    result: "success",
+  });
+
+  return getSite(actor, fileId);
+}
+
 export async function renameSite(actor: Actor, fileId: string, title: string): Promise<DriveEntry> {
   const clean = assertTitle(title);
   await requireSite(actor, fileId);
   return driveRename(actor, fileId, clean);
 }
 
-/** Sites visibles (fichiers Drive liés). */
-export async function listSites(
-  actor: Actor,
-): Promise<{ fileId: string; title: string; updatedAt: string; canEdit: boolean }[]> {
+/** Sites visibles (fichiers Drive liés), avec leur état de publication. */
+export type SiteSummary = {
+  fileId: string;
+  title: string;
+  updatedAt: string;
+  canEdit: boolean;
+  /** Date de publication (ISO), `null` si le site est un brouillon. */
+  publishedAt: string | null;
+};
+
+export async function listSites(actor: Actor): Promise<SiteSummary[]> {
   const rows = await db()
-    .select({ fileId: sitesSites.fileId })
+    .select({ fileId: sitesSites.fileId, publishedAt: sitesSites.publishedAt })
     .from(sitesSites)
     .where(eq(sitesSites.orgId, actor.orgId))
     .limit(200);
 
-  const visible: { fileId: string; title: string; updatedAt: string; canEdit: boolean }[] = [];
+  const visible: SiteSummary[] = [];
   for (const row of rows) {
     try {
       const entry = await getEntry(actor, row.fileId);
@@ -388,6 +555,7 @@ export async function listSites(
         title: entry.name,
         updatedAt: entry.updatedAt.toISOString(),
         canEdit: roleSatisfies(role, "write"),
+        publishedAt: row.publishedAt === null ? null : row.publishedAt.toISOString(),
       });
     } catch {
       // Fichier supprimé ou non visible : ignoré.

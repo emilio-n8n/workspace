@@ -1,6 +1,7 @@
 import { useNavigate } from "@tanstack/react-router";
 import {
   Alert,
+  Badge,
   Button,
   Dialog,
   EmptyState,
@@ -10,14 +11,8 @@ import {
   PageHeader,
 } from "@workspace/ui";
 import { type FormEvent, useCallback, useEffect, useState } from "react";
-import { createSiteFn, listSitesFn } from "../server.ts";
-
-type SiteSummary = {
-  fileId: string;
-  title: string;
-  updatedAt: string;
-  canEdit: boolean;
-};
+import { formatPublishedDate, publishStatus } from "../publish.ts";
+import { createSiteFn, listSitesFn, type SiteSummary } from "../server.ts";
 
 function formatDate(iso: string): string {
   return new Date(iso).toLocaleDateString("fr-FR", {
@@ -109,9 +104,17 @@ export function SitesList() {
                 }
                 className="flex h-full w-full flex-col gap-2 rounded-xl border border-border bg-card p-4 text-left shadow-soft transition-colors hover:bg-muted"
               >
-                <span className="truncate font-display text-sm font-semibold">{site.title}</span>
+                <span className="flex items-center gap-2">
+                  <span className="truncate font-display text-sm font-semibold">{site.title}</span>
+                  <Badge variant={publishStatus(site.publishedAt).tone}>
+                    {publishStatus(site.publishedAt).label}
+                  </Badge>
+                </span>
                 <span className="text-xs text-muted-foreground">
                   Modifié le {formatDate(site.updatedAt)}
+                  {site.publishedAt
+                    ? ` · en ligne depuis le ${formatPublishedDate(site.publishedAt)}`
+                    : " · brouillon"}
                   {site.canEdit ? "" : " · lecture seule"}
                 </span>
               </button>

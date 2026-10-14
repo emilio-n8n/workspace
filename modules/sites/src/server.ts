@@ -10,11 +10,21 @@ import {
   getPage,
   getSite,
   listSites,
+  movePage,
+  publishSite,
   renameSite,
+  saveNavigation,
   savePage,
+  unpublishSite,
 } from "./index.ts";
+import type { NavigationItem } from "./navigation.ts";
 
-export type { PageDetail, PageView, SiteDetail } from "./index.ts";
+export type {
+  PageDetail,
+  PageView,
+  SiteDetail,
+  SiteSummary,
+} from "./index.ts";
 
 export const listSitesFn = createServerFn({ method: "GET" }).handler(async () => {
   const { actor } = await requireActor(getRequest().headers);
@@ -118,4 +128,50 @@ export const renameSiteFn = createServerFn({ method: "POST" })
     const { actor } = await requireActor(getRequest().headers);
     const entry = await renameSite(actor, data.fileId, data.title);
     return { title: entry.name };
+  });
+
+export const publishSiteFn = createServerFn({ method: "POST" })
+  .validator((input: unknown) => z.object({ fileId: z.string().uuid() }).parse(input))
+  .handler(async ({ data }) => {
+    const { actor } = await requireActor(getRequest().headers);
+    return publishSite(actor, data.fileId);
+  });
+
+export const unpublishSiteFn = createServerFn({ method: "POST" })
+  .validator((input: unknown) => z.object({ fileId: z.string().uuid() }).parse(input))
+  .handler(async ({ data }) => {
+    const { actor } = await requireActor(getRequest().headers);
+    return unpublishSite(actor, data.fileId);
+  });
+
+export const movePageFn = createServerFn({ method: "POST" })
+  .validator((input: unknown) =>
+    z
+      .object({
+        fileId: z.string().uuid(),
+        pageId: z.string().uuid(),
+        direction: z.enum(["up", "down"]),
+      })
+      .parse(input),
+  )
+  .handler(async ({ data }) => {
+    const { actor } = await requireActor(getRequest().headers);
+    const pages = await movePage(actor, data.fileId, data.pageId, data.direction);
+    return { pages };
+  });
+
+export const saveNavigationFn = createServerFn({ method: "POST" })
+  .validator((input: unknown) =>
+    z
+      .object({
+        fileId: z.string().uuid(),
+        items: z.array(z.record(z.string(), z.unknown())),
+      })
+      .parse(input),
+  )
+  .handler(async ({ data }) => {
+    const { actor } = await requireActor(getRequest().headers);
+    return saveNavigation(actor, data.fileId, {
+      items: data.items as NavigationItem[],
+    });
   });
