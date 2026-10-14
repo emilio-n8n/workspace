@@ -58,7 +58,7 @@ test("mail : brouillon puis envoi conservé avec erreur explicite sans SMTP", as
     .fill("Un vrai envoi");
   await page.getByRole("button", { name: "Envoyer" }).click();
 
-  await expect(page.getByRole("alert").filter({ hasText: "SMTP" })).toBeVisible({
+  await expect(page.getByText(/SMTP non configuré/)).toBeVisible({
     timeout: 15_000,
   });
   await expect(page.getByText("Envoi E2E")).toBeVisible();

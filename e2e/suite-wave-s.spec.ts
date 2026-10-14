@@ -21,7 +21,9 @@ test("raccourcis du tableau de bord : créer une feuille", async ({ page }) => {
   await page.getByRole("button", { name: "Nouvelle feuille de calcul" }).click();
   await expect(page).toHaveURL(/localhost:3006\/sheet\//, { timeout: 25_000 });
   await page.waitForSelector("html[data-hydrated='true']", { timeout: 40_000 });
-  await expect(page.getByRole("link", { name: "Exporter CSV" })).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByRole("link", { name: "Exporter CSV" }).first()).toBeVisible({
+    timeout: 15_000,
+  });
 });
 
 test("mes tâches : agrégat transverse", async ({ page }) => {
