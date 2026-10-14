@@ -102,3 +102,71 @@ export function bumpFontSize(current: number, direction: -1 | 1): number {
   const previous = [...FONT_SIZE_RAMP].reverse().find((value) => value < size);
   return previous ?? Math.max(FONT_SIZE_MIN, size - 4);
 }
+
+/** Puce canonique d'une liste à puces (« • » suivi d'une espace). */
+export const BULLET_PREFIX = "• ";
+
+/** Détecte une puce existante : « • » ou un tiret suivi d'une espace. */
+const BULLET_PATTERN = /^(?:•|-)\s/;
+
+/** Détecte un numéro existant : « 1. » suivi d'une espace. */
+const NUMBER_PATTERN = /^\d+\.\s/;
+
+/** Lignes non vides d'un texte, telles quelles. */
+function nonEmptyLines(text: string): string[] {
+  return text.split("\n").filter((line) => line.trim().length > 0);
+}
+
+/** Vrai si toutes les lignes non vides portent une puce. */
+export function isBulletList(text: string): boolean {
+  const lines = nonEmptyLines(text);
+  return lines.length > 0 && lines.every((line) => BULLET_PATTERN.test(line));
+}
+
+/** Vrai si toutes les lignes non vides portent un numéro. */
+export function isNumberedList(text: string): boolean {
+  const lines = nonEmptyLines(text);
+  return lines.length > 0 && lines.every((line) => NUMBER_PATTERN.test(line));
+}
+
+/** Retire puces et numéros de chaque ligne (les lignes vides restent vides). */
+function stripMarkers(text: string): string {
+  return text
+    .split("\n")
+    .map((line) => line.replace(BULLET_PATTERN, "").replace(NUMBER_PATTERN, ""))
+    .join("\n");
+}
+
+/**
+ * Bascule une liste à puces : si toutes les lignes non vides sont déjà
+ * puçées, les puces sont retirées ; sinon elles sont ajoutées (les numéros
+ * éventuels sont remplacés). Les lignes vides ne comptent jamais.
+ */
+export function toggleBulletList(text: string): string {
+  if (nonEmptyLines(text).length === 0) return text;
+  if (isBulletList(text)) return stripMarkers(text);
+  return stripMarkers(text)
+    .split("\n")
+    .map((line) => (line.trim().length > 0 ? `${BULLET_PREFIX}${line}` : line))
+    .join("\n");
+}
+
+/**
+ * Bascule une liste numérotée : si toutes les lignes non vides sont déjà
+ * numérotées, les numéros sont retirés ; sinon chaque ligne non vide reçoit
+ * son rang (les puces éventuelles sont remplacées). Les lignes vides ne
+ * comptent ni ne consomment de numéro.
+ */
+export function toggleNumberedList(text: string): string {
+  if (nonEmptyLines(text).length === 0) return text;
+  if (isNumberedList(text)) return stripMarkers(text);
+  let rank = 0;
+  return stripMarkers(text)
+    .split("\n")
+    .map((line) => {
+      if (line.trim().length === 0) return line;
+      rank += 1;
+      return `${rank}. ${line}`;
+    })
+    .join("\n");
+}

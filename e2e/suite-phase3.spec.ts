@@ -174,8 +174,13 @@ test("slides : mise en page de titre, édition en place et nouvelle diapositive"
     "true",
   );
 
+  // Puces : la zone devient une liste, visible dans le rendu comme en présentation.
+  await page.getByRole("button", { name: "Puces" }).click();
+  await expect(page.getByRole("button", { name: "Puces" })).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByText("• Lancement 2026").first()).toBeVisible();
+
   // Transition choisie dans la barre de réglages (persistée avec la présentation).
-  await page.getByLabel("Transition").selectOption("fade");
+  await page.getByLabel("Transition", { exact: true }).selectOption("fade");
 
   // Nouvelle diapositive avec la mise en page « Titre et contenu ».
   await expect(async () => {
@@ -193,7 +198,7 @@ test("slides : mise en page de titre, édition en place et nouvelle diapositive"
   await page.reload();
   await page.waitForSelector("html[data-hydrated='true']", { timeout: 40_000 });
   await expect(page.getByText("Lancement 2026").first()).toBeVisible({ timeout: 15_000 });
-  await expect(page.getByLabel("Transition")).toHaveValue("fade");
+  await expect(page.getByLabel("Transition", { exact: true })).toHaveValue("fade");
 });
 
 test("accueil : le lanceur expose les quatorze applications", async ({ page }) => {

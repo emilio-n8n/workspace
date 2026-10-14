@@ -61,10 +61,14 @@ import {
 } from "../slide-shapes.ts";
 import {
   bumpFontSize,
+  isBulletList,
+  isNumberedList,
   SLIDE_TEXT_COLOR_IDS,
   type SlideTextColor,
   textColorLabel,
   textColorSwatch,
+  toggleBulletList,
+  toggleNumberedList,
 } from "../slide-text.ts";
 import {
   DEFAULT_SLIDE_THEME,
@@ -1342,6 +1346,37 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
                         }
                       >
                         S
+                      </Button>
+                    </div>
+                  </fieldset>
+                  <fieldset className="flex flex-col gap-1">
+                    <legend className="text-xs font-medium text-muted-foreground">Listes</legend>
+                    <div className="flex flex-wrap gap-1">
+                      <Button
+                        size="sm"
+                        variant={isBulletList(selectedElement.text) ? "secondary" : "ghost"}
+                        aria-label="Puces"
+                        aria-pressed={isBulletList(selectedElement.text)}
+                        onClick={() =>
+                          updateElement(selectedElement.key, {
+                            text: toggleBulletList(selectedElement.text),
+                          })
+                        }
+                      >
+                        • Puces
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant={isNumberedList(selectedElement.text) ? "secondary" : "ghost"}
+                        aria-label="Numérotation"
+                        aria-pressed={isNumberedList(selectedElement.text)}
+                        onClick={() =>
+                          updateElement(selectedElement.key, {
+                            text: toggleNumberedList(selectedElement.text),
+                          })
+                        }
+                      >
+                        1. Numérotation
                       </Button>
                     </div>
                   </fieldset>
