@@ -76,8 +76,13 @@ test("sheets : saisie, formule évaluée et persistance après rechargement", as
   // édition (champ), sinon c'est un bouton au repos — on accepte les deux.
   async function typeCell(ref: string, value: string) {
     const button = page.getByRole("button", { name: `Cellule ${ref}` });
-    if ((await button.count()) > 0) await button.first().click();
     const input = page.getByRole("textbox", { name: `Cellule ${ref}` });
+    // Course d'hydratation (canEdit arrive avec le détail serveur) : on retente
+    // le clic jusqu'à ce que l'éditeur de cellule s'ouvre réellement.
+    await expect(async () => {
+      if ((await button.count()) > 0) await button.first().click();
+      await expect(input).toBeVisible({ timeout: 1_500 });
+    }).toPass({ timeout: 20_000 });
     await input.fill(value);
     await input.press("Enter");
   }
@@ -109,7 +114,13 @@ test("slides : zone de texte, sauvegarde et persistance", async ({ page }) => {
   await page.getByLabel("Titre de la présentation").fill("Pitch E2E");
   await page.getByRole("button", { name: "Créer et ouvrir" }).click();
 
-  await page.getByRole("button", { name: "Zone de texte", exact: true }).click();
+  // Course d'hydratation possible : on retente l'ajout jusqu'à l'apparition de l'élément.
+  await expect(async () => {
+    await page.getByRole("button", { name: "Ajouter une zone de texte" }).click();
+    await expect(page.getByRole("button", { name: /Élément/ }).first()).toBeVisible({
+      timeout: 2_000,
+    });
+  }).toPass({ timeout: 20_000 });
   // Le nom accessible de l'élément dérive de son texte (« Élément texte » à la création).
   await page
     .getByRole("button", { name: /Élément/ })
