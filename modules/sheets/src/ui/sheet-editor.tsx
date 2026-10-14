@@ -1150,6 +1150,15 @@ export function SheetEditor({ fileId }: { fileId: string }) {
                 {tab.name}
               </button>
             ))}
+            {activeTabId ? (
+              <a
+                href={`/api/sheets/export/${fileId}?tab=${activeTabId}`}
+                download
+                className="rounded-lg border border-border bg-card px-3 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted"
+              >
+                Exporter CSV
+              </a>
+            ) : null}
             {canEdit ? (
               <Button
                 size="sm"
