@@ -19,6 +19,7 @@ import { createNotification } from "@workspace/notifications";
 import type { Actor } from "@workspace/permissions";
 import { getStorage } from "@workspace/storage";
 import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
+import { buildGradebookCsv } from "./csv.ts";
 import {
   type GradeSummary,
   type StudentGradeSummary,
@@ -951,7 +952,7 @@ export async function createAssignment(
   courseId: string,
   input: { title: string; instructions?: string; dueAt?: string | null; points?: number },
 ): Promise<{ id: string }> {
-  await requireTeacher(actor, courseId);
+  const { course } = await requireTeacher(actor, courseId);
 
   const title = assertName(input.title, "Le titre");
   const instructions = (input.instructions ?? "").slice(0, MAX_INSTRUCTIONS_LENGTH);
@@ -972,6 +973,10 @@ export async function createAssignment(
     resourceId: created.id,
     result: "success",
   });
+
+  // Notification best-effort aux élèves du cours (jamais l'enseignant qui crée
+  // le devoir), déposée dans l'organisation où chacun suit le cours.
+  await notifyAssignmentCreated(courseId, course.orgId, title, dueAt);
 
   return created;
 }
@@ -1443,21 +1448,158 @@ export async function gradeSubmission(
   return { ok: true };
 }
 
+// ---------------------------------------------------------------------------
+// Export CSV du carnet de notes
+// ---------------------------------------------------------------------------
+
+/**
+ * Carnet de notes du cours au format CSV, réservé aux enseignants. Une ligne
+ * par élève, une colonne par devoir (barème rappelé), puis la moyenne — les
+ * mêmes règles que le carnet affiché : seules les copies corrigées comptent,
+ * un devoir non rendu n'est jamais un zéro.
+ */
+export async function exportGradesCsv(
+  actor: Actor,
+  courseId: string,
+): Promise<{ filename: string; body: string }> {
+  const { course } = await requireTeacher(actor, courseId);
+
+  const [students, assignments, submissions] = await Promise.all([
+    db()
+      .select({ userId: core.user.id, name: core.user.name })
+      .from(classroomMembers)
+      .innerJoin(core.user, eq(core.user.id, classroomMembers.userId))
+      .where(and(eq(classroomMembers.courseId, courseId), eq(classroomMembers.role, "student")))
+      .orderBy(asc(core.user.name)),
+    db()
+      .select({
+        id: classroomAssignments.id,
+        title: classroomAssignments.title,
+        points: classroomAssignments.points,
+      })
+      .from(classroomAssignments)
+      .where(eq(classroomAssignments.courseId, courseId))
+      .orderBy(asc(classroomAssignments.createdAt), asc(classroomAssignments.id)),
+    db()
+      .select({
+        studentId: classroomSubmissions.studentId,
+        assignmentId: classroomSubmissions.assignmentId,
+        grade: classroomSubmissions.grade,
+      })
+      .from(classroomSubmissions)
+      .innerJoin(
+        classroomAssignments,
+        eq(classroomAssignments.id, classroomSubmissions.assignmentId),
+      )
+      .where(eq(classroomAssignments.courseId, courseId)),
+  ]);
+
+  const gradeByKey = new Map(
+    submissions.map((row) => [`${row.studentId}:${row.assignmentId}`, row.grade]),
+  );
+
+  const rows = students.map((student) => {
+    const entries = assignments.map((assignment) => ({
+      grade: gradeByKey.get(`${student.userId}:${assignment.id}`) ?? null,
+      points: assignment.points,
+    }));
+    return {
+      name: student.name,
+      grades: entries.map((entry) => entry.grade),
+      summary: summarizeGrades(entries),
+    };
+  });
+
+  const csv = buildGradebookCsv({
+    columns: assignments.map((assignment) => ({
+      title: assignment.title,
+      points: assignment.points,
+    })),
+    rows,
+  });
+
+  return { filename: `${exportFilename(course.name)} — notes.csv`, body: csv };
+}
+
+/** Nom de fichier sûr : jamais de séparateur de chemin, une longueur bornée. */
+function exportFilename(courseName: string): string {
+  const clean = courseName.replace(/[/\\]/g, "-").trim();
+  return clean.length > 0 ? clean.slice(0, 100) : "cours";
+}
+
+/**
+ * Notifie chaque élève qu'un devoir vient d'être publié. Le kind `system` est
+ * la seule valeur du noyau qui ne mente pas sur ce que porte la notification —
+ * le titre, lui, dit exactement de quoi il s'agit. Best-effort : une panne de
+ * notification ne casse jamais la création du devoir.
+ */
+async function notifyAssignmentCreated(
+  courseId: string,
+  courseOrgId: string,
+  title: string,
+  dueAt: Date | null,
+): Promise<void> {
+  const students = await db()
+    .select({ userId: classroomMembers.userId })
+    .from(classroomMembers)
+    .where(and(eq(classroomMembers.courseId, courseId), eq(classroomMembers.role, "student")));
+  if (students.length === 0) return;
+
+  const orgIds = await notificationOrgIds(
+    students.map((student) => student.userId),
+    courseOrgId,
+  );
+  const body = dueAt
+    ? `À rendre le ${dueAt.toLocaleDateString("fr-FR")}.`
+    : "Consultez le devoir, sans échéance imposée.";
+  const href = getAppUrls().classroom;
+
+  for (const student of students) {
+    await createNotification({
+      orgId: orgIds.get(student.userId) ?? courseOrgId,
+      userId: student.userId,
+      kind: "system",
+      title: `Nouveau devoir : ${title}`,
+      body,
+      href,
+    }).catch(() => undefined);
+  }
+}
+
 /**
  * Organisation où notifier un destinataire : celle du cours quand il en est
  * membre (cas courant, l'élève inscrit dans l'établissement), sinon sa propre
  * organisation — la plus ancienne, celle de son espace personnel. Repli sur
- * l'organisation de l'acteur si l'utilisateur n'appartient à aucune.
+ * l'organisation fournie si l'utilisateur n'appartient à aucune.
  */
 async function notificationOrgId(userId: string, preferredOrgId: string): Promise<string> {
+  const ids = await notificationOrgIds([userId], preferredOrgId);
+  return ids.get(userId) ?? preferredOrgId;
+}
+
+/**
+ * Organisations de notification d'un lot d'utilisateurs : une seule requête
+ * d'appartenance pour tout le lot (pas de N+1). Pour chacun, l'organisation du
+ * cours prime ; à défaut, la plus ancienne.
+ */
+async function notificationOrgIds(
+  userIds: string[],
+  preferredOrgId: string,
+): Promise<Map<string, string>> {
+  const result = new Map<string, string>();
+  if (userIds.length === 0) return result;
+
   const rows = await db()
-    .select({ organizationId: core.member.organizationId })
+    .select({ userId: core.member.userId, organizationId: core.member.organizationId })
     .from(core.member)
-    .where(eq(core.member.userId, userId))
+    .where(inArray(core.member.userId, userIds))
     .orderBy(asc(core.member.createdAt));
-  if (rows.length === 0) return preferredOrgId;
-  // L'organisation du cours d'abord quand l'élève en est membre : la
-  // notification atterrit là où il suit le cours.
-  if (rows.some((row) => row.organizationId === preferredOrgId)) return preferredOrgId;
-  return rows[0]?.organizationId ?? preferredOrgId;
+
+  for (const row of rows) {
+    // La plus ancienne l'emporte ; l'organisation du cours la supplante.
+    if (!result.has(row.userId) || row.organizationId === preferredOrgId) {
+      result.set(row.userId, row.organizationId);
+    }
+  }
+  return result;
 }

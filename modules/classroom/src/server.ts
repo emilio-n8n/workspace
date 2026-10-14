@@ -10,6 +10,7 @@ import {
   deleteAnnouncement,
   deleteAssignment,
   deleteComment,
+  exportGradesCsv,
   getCourse,
   gradeSubmission,
   joinByCode,
@@ -88,6 +89,13 @@ export const getCourseFn = createServerFn({ method: "GET" })
   .handler(async ({ data }) => {
     const { actor } = await requireActor(getRequest().headers);
     return getCourse(actor, data.courseId);
+  });
+
+export const exportGradesCsvFn = createServerFn({ method: "GET" })
+  .validator((input: unknown) => z.object({ courseId: z.string().uuid() }).parse(input))
+  .handler(async ({ data }) => {
+    const { actor } = await requireActor(getRequest().headers);
+    return exportGradesCsv(actor, data.courseId);
   });
 
 export const createAssignmentFn = createServerFn({ method: "POST" })

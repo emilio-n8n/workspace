@@ -222,7 +222,12 @@ describe("classroom — devoirs et copies", () => {
     const [notification] = await getDb()
       .select()
       .from(coreSchema.notifications)
-      .where(eq(coreSchema.notifications.userId, f.actorBruno.userId));
+      .where(
+        and(
+          eq(coreSchema.notifications.userId, f.actorBruno.userId),
+          eq(coreSchema.notifications.kind, "graded"),
+        ),
+      );
     expect(notification).toMatchObject({
       orgId: f.orgId,
       kind: "graded",

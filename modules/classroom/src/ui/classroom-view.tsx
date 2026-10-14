@@ -485,7 +485,11 @@ export function CoursePage({ courseId }: { courseId: string }) {
 
           {/* Côté élève : sa moyenne du cours. Côté enseignant : le carnet de
               la classe. Le panneau choisit sa vue selon ce qui lui est fourni. */}
-          <GradesPanel myGrades={course.myGrades} classGrades={course.classGrades} />
+          <GradesPanel
+            myGrades={course.myGrades}
+            classGrades={course.classGrades}
+            courseId={course.id}
+          />
         </>
       ) : null}
 

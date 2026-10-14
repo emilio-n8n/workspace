@@ -163,6 +163,15 @@ test("classroom : cours, code d'accès, copie d'élève et notation", async ({ p
   await page.getByLabel(/Note sur/).fill("15");
   await page.getByRole("button", { name: "Noter" }).click();
   await expect(page.getByLabel(/Note sur/)).toHaveValue("15", { timeout: 25_000 });
+
+  // Export du carnet de notes (CSV) depuis la page du cours.
+  await page.reload();
+  await page.waitForSelector("html[data-hydrated='true']", { timeout: 40_000 });
+  const exportButton = page.getByRole("button", { name: "Exporter les notes (CSV)" });
+  await expect(exportButton).toBeVisible({ timeout: 20_000 });
+  const [download] = await Promise.all([page.waitForEvent("download"), exportButton.click()]);
+  expect(download.suggestedFilename()).toMatch(/\.csv$/);
+
   await page.screenshot({ path: "e2e/screenshots/classroom.png", fullPage: true });
 });
 

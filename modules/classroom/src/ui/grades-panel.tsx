@@ -1,5 +1,6 @@
 import {
   Badge,
+  Button,
   EmptyState,
   IconGraduation,
   Table,
@@ -10,8 +11,9 @@ import {
   TableHeader,
   TableRow,
 } from "@workspace/ui";
+import { useState } from "react";
 import { averageTone, formatAverage, formatGradedCount, gradeMention } from "../grades.ts";
-import type { ClassGrades, GradeSummary } from "../server.ts";
+import { type ClassGrades, exportGradesCsvFn, type GradeSummary } from "../server.ts";
 
 /** Teinte d'une moyenne, mappée sur les tokens sémantiques des pastilles. */
 const TONE_VARIANT = {
@@ -54,12 +56,39 @@ function AverageBadge({ average, children }: { average: number | null; children:
 export function GradesPanel({
   myGrades,
   classGrades,
+  courseId,
 }: {
   /** Notes de l'élève connecté ; `null` pour un enseignant. */
   myGrades: GradeSummary | null;
   /** Carnet de la classe ; `null` pour un élève. */
   classGrades: ClassGrades | null;
+  /** Cours courant : active l'export CSV côté enseignant. */
+  courseId?: string;
 }) {
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
+
+  /** Télécharge le carnet de notes au format CSV (mêmes règles que le tableau). */
+  async function onExportGrades() {
+    if (!courseId) return;
+    setExporting(true);
+    setExportError(null);
+    try {
+      const { filename, body } = await exportGradesCsvFn({ data: { courseId } });
+      const blob = new Blob([body], { type: "text/csv;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename;
+      link.click();
+      URL.revokeObjectURL(url);
+    } catch (caught) {
+      setExportError(caught instanceof Error ? caught.message : "Export impossible.");
+    } finally {
+      setExporting(false);
+    }
+  }
+
   if (myGrades) {
     return (
       <section aria-labelledby="grades-title" className="flex flex-col gap-3">
@@ -109,7 +138,23 @@ export function GradesPanel({
           <span className="text-xs text-muted-foreground">
             {formatGradedCount(summary)} · {students.length} élève{students.length > 1 ? "s" : ""}
           </span>
+          {courseId ? (
+            <Button
+              size="sm"
+              variant="outline"
+              className="ml-auto"
+              loading={exporting}
+              onClick={() => void onExportGrades()}
+            >
+              Exporter les notes (CSV)
+            </Button>
+          ) : null}
         </div>
+        {exportError ? (
+          <p role="alert" className="text-xs text-destructive">
+            {exportError}
+          </p>
+        ) : null}
 
         {summary.graded === 0 ? (
           <EmptyState

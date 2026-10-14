@@ -32,3 +32,7 @@ E2E deux comptes).
 
 ## Hors périmètre
 Fichiers joints aux devoirs, quiz, calendriers de cours, notifications.
+
+## Vague « notifications et export » (14 oct. 2026)
+- **Notification de nouveau devoir** : chaque élève est notifié à la publication (`kind` du noyau, best-effort — une panne n'empêche jamais la création), en plus de la notification de note existante.
+- **Export CSV du carnet de notes** (enseignants) : une ligne par élève, une colonne par devoir (barème rappelé), puis la moyenne — mêmes règles que le carnet affiché ; bouton « Exporter les notes (CSV) » sur la page du cours, téléchargement vérifié en E2E.
