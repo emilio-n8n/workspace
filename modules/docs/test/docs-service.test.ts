@@ -172,6 +172,62 @@ describe("docs — cycle de vie", () => {
     expect(versions.map((version) => version.version)).toEqual([2, 1]);
   });
 
+  it("accepte les nœuds avancés (tableau, image, saut de page) et refuse un nœud inconnu", async () => {
+    const { entry } = await createDocument(f.actorAlice, { title: "Tableaux" });
+    const content = {
+      type: "doc",
+      content: [
+        { type: "heading", attrs: { level: 1 }, content: [{ type: "text", text: "Rapport" }] },
+        {
+          type: "table",
+          content: [
+            {
+              type: "tableRow",
+              content: [
+                {
+                  type: "tableHeader",
+                  content: [{ type: "paragraph", content: [{ type: "text", text: "Nom" }] }],
+                },
+                {
+                  type: "tableCell",
+                  content: [
+                    {
+                      type: "paragraph",
+                      content: [
+                        {
+                          type: "text",
+                          text: "Ada",
+                          marks: [
+                            {
+                              type: "textStyle",
+                              attrs: { color: "var(--primary)", fontSize: "18px" },
+                            },
+                          ],
+                        },
+                      ],
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+        { type: "image", attrs: { src: "https://exemple.org/photo.png", alt: "Photo" } },
+        { type: "pageBreak" },
+      ],
+    };
+    await saveDocument(f.actorAlice, entry.id, { content });
+
+    const reloaded = await getDocumentByFileId(f.actorAlice, entry.id);
+    expect(reloaded.content).toEqual(content);
+
+    await expect(
+      saveDocument(f.actorAlice, entry.id, {
+        content: { type: "doc", content: [{ type: "script", content: [] }] },
+      }),
+    ).rejects.toThrow(DocsError);
+  });
+
   it("renomme le document (titre synchronisé avec Drive)", async () => {
     const { entry } = await createDocument(f.actorAlice, { title: "Avant" });
     const renamed = await renameDocument(f.actorAlice, entry.id, "Après");

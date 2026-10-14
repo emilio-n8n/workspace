@@ -78,6 +78,14 @@ const ALLOWED_NODE_TYPES = new Set([
   "blockquote",
   "horizontalRule",
   "hardBreak",
+  // Mise en forme avancée : tableaux (avec leurs lignes et cellules),
+  // images http(s) et saut de page — les mêmes nœuds que l'éditeur.
+  "table",
+  "tableRow",
+  "tableHeader",
+  "tableCell",
+  "image",
+  "pageBreak",
 ]);
 
 const MAX_CONTENT_BYTES = 1_000_000;
