@@ -22,10 +22,15 @@ export type ToastViewportProps = {
   children: ReactNode;
 };
 
-/** Zone d'affichage des toasts — pile fixée en bas à droite, au-dessus du contenu. */
+/** Zone d'affichage des toasts — pile fixée en bas à gauche, hors des zones
+ * d'action (les boutons d'envoi vivent en bas à droite). Le conteneur ne
+ * capture aucun clic : seules les notifications elles-mêmes sont cliquables. */
 export function ToastViewport({ children }: ToastViewportProps) {
   return (
-    <div aria-live="polite" className="fixed bottom-4 right-4 z-50 flex flex-col gap-2">
+    <div
+      aria-live="polite"
+      className="pointer-events-none fixed bottom-4 left-20 z-50 flex max-w-[min(24rem,calc(100vw-6rem))] flex-col gap-2"
+    >
       {children}
     </div>
   );
@@ -48,7 +53,7 @@ export function Toasts({ toasts, dismiss }: ToastsProps) {
           key={toast.id}
           role={toast.tone === "danger" ? "alert" : "status"}
           className={cn(
-            "flex items-start gap-2 rounded-md border border-border bg-card px-3 py-2 text-sm shadow-lift",
+            "pointer-events-auto flex items-start gap-2 rounded-md border border-border bg-card px-3 py-2 text-sm shadow-lift",
             toast.tone === "danger" ? "text-destructive" : undefined,
           )}
         >
