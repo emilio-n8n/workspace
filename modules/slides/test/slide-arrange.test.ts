@@ -22,8 +22,8 @@ describe("slides — disposition d'objets", () => {
     expect(alignPatches(targets, "left").map((patch) => patch.x)).toEqual([10, 10]);
     // Aligner à droite : x 10..80 → les deux finissent à 60.
     expect(alignPatches(targets, "right").map((patch) => patch.x)).toEqual([60, 60]);
-    // Centrer verticalement : y 10..40, hauteur 10 → y 20 pour les deux.
-    expect(alignPatches(targets, "vcenter").map((patch) => patch.y)).toEqual([20, 20]);
+    // Centrer verticalement : boîte englobante y 10..50 (hauteur 40) → y 25.
+    expect(alignPatches(targets, "vcenter").map((patch) => patch.y)).toEqual([25, 25]);
   });
 
   it("borne l'alignement à la diapositive sans changer les tailles", () => {
