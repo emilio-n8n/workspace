@@ -16,7 +16,7 @@ import type { ReactNode } from "react";
 /** Pastille d'application de la barre d'outils. */
 function AppMark({ tone, children }: { tone: string; children: ReactNode }) {
   return (
-    <span className={cn("grid size-6 shrink-0 place-items-center rounded-md text-white", tone)}>
+    <span className={cn(tone, "grid size-6 shrink-0 place-items-center rounded-md bg-primary text-primary-foreground")}>
       {children}
     </span>
   );
@@ -24,11 +24,13 @@ function AppMark({ tone, children }: { tone: string; children: ReactNode }) {
 
 /** Avatars de présence — initiales plutôt que photos. */
 function Presence() {
+  // Fonds neutres + texte encre : du blanc sur les tons d'app ne passe pas le
+  // contraste WCAG (axe le vérifie sur la landing).
   const people = [
-    { initials: "JD", tone: "bg-app-sheets" },
-    { initials: "NE", tone: "bg-app-calendar" },
-    { initials: "SL", tone: "bg-app-mail" },
-    { initials: "BL", tone: "bg-app-drive" },
+    { initials: "JD", tone: "bg-muted" },
+    { initials: "NE", tone: "bg-muted" },
+    { initials: "SL", tone: "bg-muted" },
+    { initials: "BL", tone: "bg-muted" },
   ];
   return (
     <span className="flex items-center gap-1.5">
@@ -41,7 +43,7 @@ function Presence() {
           <span
             key={person.initials}
             className={cn(
-              "grid size-6 place-items-center rounded-full text-[10px] font-semibold text-white ring-2 ring-card",
+              "grid size-6 place-items-center rounded-full text-[10px] font-semibold text-foreground ring-2 ring-card",
               person.tone,
             )}
           >
@@ -80,12 +82,10 @@ function WindowChrome({ title }: { title: string }) {
 /** Curseur distant étiqueté (comme dans une vraie session collaborative). */
 function RemoteCursor({
   name,
-  tone,
   className,
   cursorClassName,
 }: {
   name: string;
-  tone: string;
   className?: string;
   cursorClassName?: string;
 }) {
@@ -100,7 +100,7 @@ function RemoteCursor({
       </svg>
       <span
         className={cn(
-          "ml-2 inline-block rounded-full px-2 py-0.5 text-[10px] font-semibold text-white",
+          "ml-2 inline-block rounded-full bg-foreground px-2 py-0.5 text-[10px] font-semibold text-background",
           tone,
         )}
       >
@@ -210,7 +210,7 @@ function SheetsWindow() {
         ))}
       </div>
 
-      <RemoteCursor name="Élodie" tone="bg-app-calendar" className="left-[30%] top-[46%]" />
+      <RemoteCursor name="Élodie" className="left-[30%] top-[46%]" />
 
       <div className="mt-3 flex flex-wrap items-center gap-3 rounded-lg border border-border bg-card p-3 shadow-soft">
         <span className="flex items-center gap-1.5 text-[11px] font-semibold text-app-sheets">
@@ -277,7 +277,7 @@ function DriveWindow() {
               className="flex items-center gap-3 rounded-lg border border-border bg-card px-3 py-2 text-[11px] shadow-soft"
             >
               <span
-                className={cn("grid size-7 place-items-center rounded-md text-white", file.tone)}
+                className={cn(file.tone, "grid size-7 place-items-center rounded-md bg-muted text-foreground")}
               >
                 <IconFileText className="size-3.5" />
               </span>
@@ -298,11 +298,11 @@ function DriveWindow() {
 function CalendarWindow() {
   const days = ["Lun.", "Mar.", "Mer.", "Jeu.", "Ven."];
   const events = [
-    { day: 0, top: "8%", height: "42%", label: "Point produit", tone: "bg-app-calendar" },
-    { day: 1, top: "30%", height: "26%", label: "Revue de design", tone: "bg-app-meet" },
-    { day: 2, top: "12%", height: "52%", label: "Assemblée générale", tone: "bg-app-drive" },
-    { day: 3, top: "46%", height: "30%", label: "Démo client", tone: "bg-app-mail" },
-    { day: 4, top: "18%", height: "24%", label: "Rétrospective", tone: "bg-app-tasks" },
+    { day: 0, top: "8%", height: "42%", label: "Point produit", tone: "bg-app-calendar/25" },
+    { day: 1, top: "30%", height: "26%", label: "Revue de design", tone: "bg-app-meet/25" },
+    { day: 2, top: "12%", height: "52%", label: "Assemblée générale", tone: "bg-app-drive/25" },
+    { day: 3, top: "46%", height: "30%", label: "Démo client", tone: "bg-app-mail/25" },
+    { day: 4, top: "18%", height: "24%", label: "Rétrospective", tone: "bg-app-tasks/25" },
   ];
 
   return (
@@ -328,7 +328,7 @@ function CalendarWindow() {
                   <span
                     key={event.label}
                     className={cn(
-                      "absolute inset-x-1 rounded-md px-1.5 py-1 text-[9px] font-medium leading-tight text-white shadow-soft",
+                      "absolute inset-x-1 rounded-md px-1.5 py-1 text-[9px] font-medium leading-tight text-foreground shadow-soft",
                       event.tone,
                     )}
                     style={{ top: event.top, height: event.height }}

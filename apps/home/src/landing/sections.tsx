@@ -231,16 +231,16 @@ export function HeroSection() {
 
         <ProductWindow />
 
-        <dl className="mt-20 grid gap-px overflow-hidden rounded-xl border border-border bg-border sm:grid-cols-3">
+        <ul className="mt-20 grid gap-px overflow-hidden rounded-xl border border-border bg-border sm:grid-cols-3">
           {HERO.facts.map((fact) => (
-            <div key={fact.label} className="flex flex-col gap-1 bg-background px-6 py-5">
-              <dt className="text-xs font-medium uppercase tracking-widest text-muted-foreground">
+            <li key={fact.label} className="flex flex-col gap-1 bg-background px-6 py-5">
+              <span className="text-xs font-medium uppercase tracking-widest text-muted-foreground">
                 {fact.label}
-              </dt>
-              <dd className="font-display text-lg font-semibold">{fact.value}</dd>
-            </div>
+              </span>
+              <span className="font-display text-lg font-semibold">{fact.value}</span>
+            </li>
           ))}
-        </dl>
+        </ul>
       </div>
 
       <div className="mt-20 border-y border-border bg-muted/30">
@@ -572,9 +572,9 @@ function FloatingHint({ id, delay }: { id: ShowcaseId; delay?: string }) {
 
 /** Messages d'équipe du panneau flottant haut (la collaboration en un coup d'œil). */
 const COMMENTS: Record<ShowcaseId, { name: string; tone: string; text: string }> = {
-  drive: { name: "Sofia", tone: "bg-app-sheets", text: "Je t'ai partagé le dossier « Budget »." },
-  sheets: { name: "Élodie", tone: "bg-app-calendar", text: "On valide les chiffres du T3 ?" },
-  calendar: { name: "Sofia", tone: "bg-app-mail", text: "La salle B est libre à 14 h." },
+  drive: { name: "Sofia", tone: "bg-muted", text: "Je t'ai partagé le dossier « Budget »." },
+  sheets: { name: "Élodie", tone: "bg-muted", text: "On valide les chiffres du T3 ?" },
+  calendar: { name: "Sofia", tone: "bg-muted", text: "La salle B est libre à 14 h." },
 };
 
 function CommentHint({ id }: { id: ShowcaseId }) {
@@ -587,7 +587,7 @@ function CommentHint({ id }: { id: ShowcaseId }) {
       <span className="flex items-center gap-2">
         <span
           className={cn(
-            "grid size-6 place-items-center rounded-full text-[9px] font-semibold text-white",
+            "grid size-6 place-items-center rounded-full text-[9px] font-semibold text-foreground",
             comment.tone,
           )}
         >
