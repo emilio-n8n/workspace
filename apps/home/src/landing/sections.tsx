@@ -386,17 +386,19 @@ export function FeaturesSection() {
           <h3 className="font-display text-2xl font-semibold tracking-tight md:text-3xl">
             {COMMITMENTS.title}
           </h3>
-          <dl className="mt-10 grid gap-px overflow-hidden rounded-2xl border border-border bg-border sm:grid-cols-2 lg:grid-cols-4">
+          <ul className="mt-10 grid gap-px overflow-hidden rounded-2xl border border-border bg-border sm:grid-cols-2 lg:grid-cols-4">
             {COMMITMENTS.items.map((item, index) => (
-              <div key={item.title} className="flex flex-col gap-3 bg-background p-7">
-                <span className="font-mono text-xs text-muted-foreground">
+              <li key={item.title} className="flex flex-col gap-3 bg-background p-7">
+                <span aria-hidden className="font-mono text-xs text-muted-foreground">
                   {String(index + 1).padStart(2, "0")}
                 </span>
-                <dt className="font-display text-lg font-semibold tracking-tight">{item.title}</dt>
-                <dd className={bodyMuted}>{item.body}</dd>
-              </div>
+                <span className="font-display text-lg font-semibold tracking-tight">
+                  {item.title}
+                </span>
+                <span className={bodyMuted}>{item.body}</span>
+              </li>
             ))}
-          </dl>
+          </ul>
         </div>
       </div>
     </section>
@@ -914,7 +916,7 @@ export function LandingFooter() {
 
       <p
         aria-hidden
-        className="select-none overflow-hidden whitespace-nowrap pb-6 text-center font-display text-[clamp(4rem,19vw,16rem)] font-semibold leading-none tracking-[-0.06em] text-muted/60"
+        className="select-none overflow-hidden whitespace-nowrap pb-6 text-center font-display text-[clamp(4rem,19vw,16rem)] font-semibold leading-none tracking-[-0.06em] text-muted-foreground"
       >
         Workspace
       </p>
