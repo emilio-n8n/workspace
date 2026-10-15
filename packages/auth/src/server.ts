@@ -126,7 +126,7 @@ export async function ensurePersonalOrganization(
         body: { organizationId: active.id },
       });
     }
-    return { organizationId: active.id, created: false };
+    return { organizationId: active.id, created: false, kind: "personal" };
   }
 
   const slug = `${orgSlugPrefix(kind)}-${randomUUID().slice(0, 8)}`;
