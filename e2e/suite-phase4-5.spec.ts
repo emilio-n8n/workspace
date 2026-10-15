@@ -9,6 +9,9 @@ const CLASSROOM = "http://localhost:3012";
 const ADMIN = "http://localhost:3013";
 
 test("chat : canal, message envoyé, compteur de non-lus", async ({ page }) => {
+  // Parcours long par nature : inscription, ouverture de l'app, création d'un
+  // canal puis envoi — le budget par défaut est trop juste sur un runner partagé.
+  test.setTimeout(120_000);
   const email = uniqueEmail("chat");
   await signupNewUser(page, "Chat E2E", email);
 
