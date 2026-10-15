@@ -103,12 +103,7 @@ function RemoteCursor({
       >
         <path d="M1 1l5.2 14 2-5.2 5.2-2L1 1z" />
       </svg>
-      <span
-        className={cn(
-          "ml-2 inline-block rounded-full bg-foreground px-2 py-0.5 text-[10px] font-semibold text-background",
-          tone,
-        )}
-      >
+      <span className="ml-2 inline-block rounded-full bg-foreground px-2 py-0.5 text-[10px] font-semibold text-background">
         {name}
       </span>
     </span>
