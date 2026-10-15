@@ -16,7 +16,12 @@ import type { ReactNode } from "react";
 /** Pastille d'application de la barre d'outils. */
 function AppMark({ tone, children }: { tone: string; children: ReactNode }) {
   return (
-    <span className={cn(tone, "grid size-6 shrink-0 place-items-center rounded-md bg-primary text-primary-foreground")}>
+    <span
+      className={cn(
+        tone,
+        "grid size-6 shrink-0 place-items-center rounded-md bg-primary text-primary-foreground",
+      )}
+    >
       {children}
     </span>
   );
@@ -277,7 +282,10 @@ function DriveWindow() {
               className="flex items-center gap-3 rounded-lg border border-border bg-card px-3 py-2 text-[11px] shadow-soft"
             >
               <span
-                className={cn(file.tone, "grid size-7 place-items-center rounded-md bg-muted text-foreground")}
+                className={cn(
+                  file.tone,
+                  "grid size-7 place-items-center rounded-md bg-muted text-foreground",
+                )}
               >
                 <IconFileText className="size-3.5" />
               </span>
