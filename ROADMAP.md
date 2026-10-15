@@ -1,7 +1,7 @@
 # ROADMAP — Workspace
 
 > Source de vérité de l'avancement. Mise à jour à chaque jalon livré et vérifié.
-> Dernière mise à jour : 2026-10-10.
+> Dernière mise à jour : 2026-10-15.
 
 **Légende** : ✅ terminé (vérifié) · ▶ en cours · ○ à venir · ⛔ bloqué
 
@@ -64,6 +64,18 @@ Prouver de bout en bout : authentification → stockage → permissions → édi
 ## Phase 6 — MCP, intégrations et maturité ○
 
 Élargissement des outils MCP, API publique documentée, observabilité, sauvegardes testées, image Docker de production, préparation à la production.
+
+## Refonte UI — parité « Slides » ✅ (livrée le 2026-10-15, CI en cours)
+
+Toutes les applications au niveau de l'éditeur Slides : barre d'outils unique (ghost, groupes, séparateurs, défilement), contrôles contextuels selon la sélection, actions rares en menu « ⋯ », **aucun panneau permanent** de mise en forme, panneaux secondaires fermables et réouvrables, édition en place sur le contenu, plein viewport avec scrolls internes, dialogues centrés (correction du primitif `Dialog` : le reset Tailwind écrasait le centrage natif de `<dialog>` — impactait les 14 apps), historique `Ctrl+Z`/`Ctrl+Maj+Z`/`Ctrl+Y` là où il manquait, `prefers-reduced-motion` respecté partout.
+
+- [x] Spec et suivi : `docs/refonte-parite.md` (modèle Slides, checklist, contraintes, état par app)
+- [x] Documents : Docs (barre unique, insertions en menu, info-bulles recollées), Sheets (5 rangées → 1, onglets en bande basse, undo ajouté), Drive, Sites (édition en place des blocs, propriétés en dialogue), Forms (historique remplaçant le toast d'annulation), Chat (édition de message en place), Meet (salle d'attente en volet, périphériques en dialogue)
+- [x] Communication/Education : Calendar (navigation fermable, 4 vues plein écran), Tasks (édition en place des tâches), Classroom, Admin (onglets, ⋯), Accueil
+- [x] Pages publiques : landing refaite (héros éditorial, fenêtres produit reconstituées, scène spatiale — les écrans arrivent du fond, champ d'étoiles 3D continu), logo `BrandMark` en SVG (carreau dégradé encre/vert + W géométrique), dialogues centrés
+- [x] Multi-comptes : type d'espace à l'inscription (**personnel / entreprise / éducation**) stocké en méta d'organisation (sans migration, parité ascendante), applications filtrées par audience (Classroom, Sites, Admin), création de **comptes gérés** dans Admin (compte créé via better-auth + mot de passe temporaire affiché une seule fois)
+- [x] Qualité : Biome propre sur 884 fichiers (suppressions ciblées justifiées), tests unitaires et E2E conservés (parcours mis à jour pour l'édition en place)
+- [ ] Suite : filtrer le rail d'applications dans toutes les apps (aujourd'hui seul l'accueil filtre — point d'accroche `getAppUrls(kind)` prêt), garde serveur interdisant les comptes gérés sur un espace personnel
 
 ## Dépendances structurantes
 
