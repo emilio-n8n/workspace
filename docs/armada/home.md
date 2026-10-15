@@ -22,7 +22,7 @@
 ### TASK-001 → TASK-003 — page d'accueil publique
 
 Fichiers : `apps/home/src/routes/index.tsx`, `apps/home/src/landing/content.ts`,
-`apps/home/src/landing/sections.tsx`, `apps/home/src/landing/mockups.tsx`.
+`apps/home/src/landing/sections.tsx`, `apps/home/src/landing/showcase-windows.tsx`.
 
 - **Contenu (001)** : six sections dans l'ordre — héros, fonctionnalités, captures,
   tarifs, questions fréquentes, appel à l'action. Un seul `<h1>`, un `<h2>` par

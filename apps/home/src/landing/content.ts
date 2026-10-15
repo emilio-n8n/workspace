@@ -126,8 +126,10 @@ export const CAPTURES_INTRO =
 export type Capture = {
   /** Identifiant d'ancre et de libellé accessible. */
   id: string;
-  /** Clé de la maquette vectorielle (voir `mockups.tsx`). */
+  /** Clé de la fenêtre produit reconstituée (voir `showcase-windows.tsx`). */
   mock: "drive" | "sheets" | "calendar";
+  /** Titre affiché dans la barre de la fenêtre. */
+  window: string;
   title: string;
   description: string;
 };
@@ -136,6 +138,7 @@ export const CAPTURES: Capture[] = [
   {
     id: "capture-drive",
     mock: "drive",
+    window: "drive.workspace.local — Mes fichiers",
     title: "Drive — l'arborescence des fichiers",
     description:
       "Dossiers, fichiers récents et panneau latéral : toutes les applications de la suite restent à " +
@@ -144,6 +147,7 @@ export const CAPTURES: Capture[] = [
   {
     id: "capture-sheets",
     mock: "sheets",
+    window: "sheets.workspace.local — Ventes Q3",
     title: "Sheets — une feuille de calcul partagée",
     description:
       "Grille, formules et barre de saisie. Plusieurs personnes travaillent sur la même feuille, sans " +
@@ -152,6 +156,7 @@ export const CAPTURES: Capture[] = [
   {
     id: "capture-calendar",
     mock: "calendar",
+    window: "calendar.workspace.local — Semaine 42",
     title: "Calendar — la semaine de l'équipe",
     description:
       "Créneaux, événements et ligne de l'heure courante sur un agenda partagé, lisible d'un coup d'œil.",

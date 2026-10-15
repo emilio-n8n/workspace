@@ -21,3 +21,11 @@ body {
 body {
   margin: 0;
 }
+
+/* L'application Chat remplit exactement la fenêtre : la zone de contenu de la
+   coque perd son rembourrage et son défilement, la liste, le fil et le
+   compositeur gèrent les leurs. */
+main#contenu:has(.chat-app) {
+  padding: 0;
+  overflow: hidden;
+}

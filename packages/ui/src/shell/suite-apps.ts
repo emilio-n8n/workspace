@@ -36,12 +36,17 @@ export type SuiteAppId =
   | "classroom"
   | "admin";
 
+/** Type de compte choisi à l'inscription (miroir de `@workspace/auth`). */
+export type AccountKind = "personal" | "business" | "education";
+
 export interface SuiteAppDefinition {
   id: SuiteAppId;
   name: string;
   description: string;
   phase: number;
   shipped: boolean;
+  /** Types de compte qui voient l'application ; absent = tout le monde. */
+  audiences?: AccountKind[];
   /** Classe de ton statique (petite marque d'identité uniquement). */
   toneClass: string;
   Icon: ComponentType<SVGProps<SVGSVGElement>>;
@@ -154,6 +159,7 @@ export const SUITE_APPS: SuiteAppDefinition[] = [
     phase: 5,
     shipped: true,
     toneClass: "text-app-sites",
+    audiences: ["business", "education"],
     Icon: IconGlobe,
   },
   {
@@ -163,6 +169,7 @@ export const SUITE_APPS: SuiteAppDefinition[] = [
     phase: 5,
     shipped: true,
     toneClass: "text-app-classroom",
+    audiences: ["education"],
     Icon: IconGraduation,
   },
   {
@@ -172,6 +179,7 @@ export const SUITE_APPS: SuiteAppDefinition[] = [
     phase: 5,
     shipped: true,
     toneClass: "text-app-admin",
+    audiences: ["business", "education"],
     Icon: IconSettings,
   },
 ];
@@ -179,9 +187,21 @@ export const SUITE_APPS: SuiteAppDefinition[] = [
 /** Application + son URL réelle (fournie par l'application hôtesse). */
 export type ResolvedSuiteApp = SuiteAppDefinition & { href?: string };
 
-/** Associe les URLs configurées aux définitions du registre. */
-export function resolveSuiteApps(urls: Partial<Record<SuiteAppId, string>>): ResolvedSuiteApp[] {
-  return SUITE_APPS.map((app) => ({ ...app, href: urls[app.id] }));
+/**
+ * Associe les URLs configurées aux définitions du registre.
+ *
+ * `kind` restreint la suite au type de compte (personnel, entreprise,
+ * éducation) : un espace personnel ne voit ni Classroom, ni Sites, ni Admin.
+ * Sans `kind` (anciens espaces créés avant le choix du type), la suite complète
+ * reste visible — la parité ascendante prime.
+ */
+export function resolveSuiteApps(
+  urls: Partial<Record<SuiteAppId, string>>,
+  kind?: AccountKind,
+): ResolvedSuiteApp[] {
+  return SUITE_APPS.filter((app) => !kind || !app.audiences || app.audiences.includes(kind)).map(
+    (app) => ({ ...app, href: urls[app.id] }),
+  );
 }
 
 export function shippedApps(apps: ResolvedSuiteApp[]): ResolvedSuiteApp[] {

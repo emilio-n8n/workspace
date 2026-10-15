@@ -13,6 +13,8 @@ export type SlideNotesFieldProps = {
   index: number;
   canEdit: boolean;
   onNotesChange: (notes: string) => void;
+  /** Ferme complètement la barre de notes (réouverte depuis la barre d'outils). */
+  onClose?: () => void;
 };
 
 /**
@@ -21,7 +23,13 @@ export type SlideNotesFieldProps = {
  * montrées au spectateur ; une pastille les signale dans la colonne des
  * diapositives et elles s'affichent en mode présentation.
  */
-export function SlideNotesField({ slide, index, canEdit, onNotesChange }: SlideNotesFieldProps) {
+export function SlideNotesField({
+  slide,
+  index,
+  canEdit,
+  onNotesChange,
+  onClose,
+}: SlideNotesFieldProps) {
   const [open, setOpen] = useState(false);
   const baseId = useId();
   const counterId = `${baseId}-counter`;
@@ -62,6 +70,17 @@ export function SlideNotesField({ slide, index, canEdit, onNotesChange }: SlideN
         <span className="ml-auto hidden text-[11px] text-muted-foreground sm:block">
           {canEdit ? "Visibles par vous seul, en présentation." : "Lecture seule."}
         </span>
+        {onClose ? (
+          <button
+            type="button"
+            aria-label="Fermer les notes du présentateur"
+            title="Fermer les notes du présentateur"
+            onClick={onClose}
+            className="shrink-0 rounded-md px-1.5 py-0.5 text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            ✕
+          </button>
+        ) : null}
       </div>
       {open ? (
         <div className="px-3 pb-3">

@@ -1,4 +1,5 @@
-import { Alert, Button, cn, Dialog, Input, Kbd, Label, LoadingState } from "@workspace/ui";
+// biome-ignore-all lint/correctness/useExhaustiveDependencies: effets volontairement liés aux seules valeurs stables (handlers recréés à chaque rendu) — arbitrage documenté dans la refonte Slides.
+import { Alert, Button, cn, Dialog, Input, LoadingState, Menu } from "@workspace/ui";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
@@ -7,7 +8,6 @@ import {
   type EditorElement,
   type EditorSlide,
   mergeSavedIds,
-  rebindSlide,
   round1,
   slideTitle,
   toEditor,
@@ -20,6 +20,12 @@ import {
   updatePresentationSettingFn,
 } from "../server.ts";
 import {
+  type ArrangeMode,
+  type ArrangePatch,
+  alignPatches,
+  distributePatches,
+} from "../slide-arrange.ts";
+import {
   aspectLabel,
   conversionSummary,
   convertScene,
@@ -28,6 +34,7 @@ import {
   SLIDE_ASPECT_IDS,
   type SlideAspectId,
 } from "../slide-aspect.ts";
+import { HISTORY_LIMIT } from "../slide-history.ts";
 import {
   layoutElements,
   layoutHint,
@@ -108,22 +115,18 @@ import {
 import { SlideCanvas } from "./slide-canvas.tsx";
 import { SlideFilmstrip } from "./slide-filmstrip.tsx";
 import { PresenterNotes, SlideNotesField } from "./slide-notes-panel.tsx";
-import { SlideUndoToast } from "./slide-undo-toast.tsx";
+import { useEditorFocus } from "./use-editor-focus.ts";
 
 type SaveStatus = "idle" | "saving" | "saved" | "error";
 
-/** Durée d'affichage du message d'annulation avant application définitive (6 s). */
-const UNDO_MS = 6000;
+/** Fenêtre de fusion des actions répétées (frappe, flèches) dans l'historique. */
+const COALESCE_MS = 600;
 
 /** Géométrie d'une zone de texte insérée librement (centrée sur la diapositive). */
 const FREE_TEXT = { w: 40, h: 12, x: 30, y: 44 };
 
-/** Libellé d'ajout d'une forme, avec l'élision correcte (« un rectangle »). */
-const SHAPE_ADD_LABELS: Record<SlideShapeKind, string> = {
-  rectangle: "Ajouter un rectangle",
-  ellipse: "Ajouter une ellipse",
-  line: "Ajouter une ligne",
-};
+/** Décalage appliqué à une copie d'élément (duplication, collage), en %. */
+const COPY_OFFSET = 2;
 
 /** Libellé d'un élément pour les annonces vocales et les messages. */
 function elementLabel(element: EditorElement): string {
@@ -175,16 +178,24 @@ function freeElement(
 const TOOLBAR_SELECT_CLASS =
   "h-8 rounded-md border border-input bg-background px-1.5 text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
 
+/** Instantané complet pour l'historique : scène, sélection et réglages. */
+type EditorSnapshot = {
+  slides: EditorSlide[];
+  selectedSlide: number;
+  selectedKeys: string[];
+  aspect: SlideAspectId;
+  theme: SlideThemeId;
+  transition: SlideTransitionId;
+  transitionMs: number;
+};
+
 /**
- * Éditeur de présentation, organisé comme un outil de présentation :
- * bandeau du titre, barre d'outils unique (annuler, zoom, insertion, mise en
- * forme contextuelle, transitions), colonne des diapositives à gauche,
- * canevas centré sur un fond de travail, panneau de mise en forme à droite,
- * barre de notes du présentateur en pied, mode présentation plein écran.
- *
- * La scène vit en pourcentages de la diapositive ; les mises en page créent
- * des zones à remplir (« Cliquez pour ajouter un titre ») et l'édition du
- * texte se fait en place, avec la typographie exacte du rendu final.
+ * Éditeur de présentation, organisé comme un produit fini : historique
+ * annuler/rétablir, barre d'outils unique (zoom ajustable, insertion, mise en
+ * forme contextuelle, transitions), colonne de diapositives numérotées,
+ * plan de travail avec guides aimantés et sélection multiple, panneau de mise
+ * en forme (élément, disposition d'objets, diapositive), notes en pied et
+ * mode présentation plein écran.
  */
 export function SlidesEditor({ fileId }: { fileId: string }) {
   const [title, setTitle] = useState("");
@@ -195,7 +206,8 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
   const [transitionMs, setTransitionMs] = useState(400);
   const [slides, setSlides] = useState<EditorSlide[]>([]);
   const [selectedSlide, setSelectedSlide] = useState(0);
-  const [selectedElementKey, setSelectedElementKey] = useState<string | null>(null);
+  /** Clés des éléments sélectionnés (sélection multiple possible). */
+  const [selectedKeys, setSelectedKeys] = useState<string[]>([]);
   /** Élément dont le texte est édité en place sur la diapositive. */
   const [editingKey, setEditingKey] = useState<string | null>(null);
   const [status, setStatus] = useState<SaveStatus>("idle");
@@ -214,12 +226,15 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
   /** Dernière diapositive animée en présentation (-1 : aucune session). */
   const lastAnimatedIndexRef = useRef(-1);
   const [notesOpen, setNotesOpen] = useState(false);
+  /** Barre de notes du présentateur : visible, repliable, fermable. */
+  const [notesVisible, setNotesVisible] = useState(true);
   const [elapsed, setElapsed] = useState(0);
   const [printToken, setPrintToken] = useState(0);
-  const [undo, setUndo] = useState<{ message: string } | null>(null);
   const [imageOpen, setImageOpen] = useState(false);
   const [imageBusy, setImageBusy] = useState(false);
   const [imageError, setImageError] = useState<string | null>(null);
+  /** Zone image en attente d'un fichier (remplacée par l'image choisie). */
+  const [pendingImageKey, setPendingImageKey] = useState<string | null>(null);
   /** Dialogue de choix de mise en page d'une nouvelle diapositive. */
   const [layoutOpen, setLayoutOpen] = useState(false);
   /** Zoom d'affichage du canevas : ajusté à la fenêtre par défaut. */
@@ -228,21 +243,29 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
   const workspaceRef = useRef<HTMLDivElement>(null);
   const slidesRef = useRef<EditorSlide[]>([]);
   const canEditRef = useRef(false);
-  /** Vrai quand un élément est sélectionné : les flèches le déplacent alors. */
+  /** Vrai quand au moins un élément est sélectionné : les flèches le déplacent. */
   const elementSelectedRef = useRef(false);
   const revisionRef = useRef(1);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  /** Action annulable en attente (suppression, duplication) et son minuteur. */
-  const undoRef = useRef<null | (() => void)>(null);
-  const undoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** Historique annuler/rétablir : instantanés empilés, bornés. */
+  const pastRef = useRef<EditorSnapshot[]>([]);
+  const futureRef = useRef<EditorSnapshot[]>([]);
+  /** Re-rend les boutons Annuler/Rétablir quand les piles changent. */
+  const [historyVersion, setHistoryVersion] = useState(0);
+  /** Dernière action poussée : fusionne les répétitions (frappe, flèches). */
+  const lastPushRef = useRef<{ kind: string; at: number } | null>(null);
+  /** Presse-papiers interne des éléments (Ctrl+C / Ctrl+V). */
+  const clipboardRef = useRef<EditorElement[]>([]);
+  /** Mode concentration : masque le rail et la barre haute de la suite. */
+  const { active: focusActive, toggle: toggleFocus, exit: exitFocus } = useEditorFocus();
 
   useEffect(() => {
     slidesRef.current = slides;
   }, [slides]);
 
   useEffect(() => {
-    elementSelectedRef.current = selectedElementKey !== null;
-  }, [selectedElementKey]);
+    elementSelectedRef.current = selectedKeys.length > 0;
+  }, [selectedKeys]);
 
   const load = useCallback(async () => {
     try {
@@ -255,7 +278,14 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
       setTransition(normalizeTransition(data.transition));
       setTransitionMs(normalizeTransitionMs(data.transitionMs));
       revisionRef.current = data.revision;
-      setSlides(toEditor(data.slides));
+      const loaded = toEditor(data.slides);
+      slidesRef.current = loaded;
+      setSlides(loaded);
+      // Un rechargement repart d'un historique vierge : rien à annuler avant.
+      pastRef.current = [];
+      futureRef.current = [];
+      lastPushRef.current = null;
+      setHistoryVersion((version) => version + 1);
       setError(null);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Chargement impossible.");
@@ -307,47 +337,6 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
     timerRef.current = setTimeout(() => void save(), 900);
   }, [save]);
 
-  /** Ferme le message d'annulation sans rien rétablir. */
-  const clearUndo = useCallback(() => {
-    if (undoTimerRef.current) {
-      clearTimeout(undoTimerRef.current);
-      undoTimerRef.current = null;
-    }
-    undoRef.current = null;
-    setUndo(null);
-  }, []);
-
-  /**
-   * Propose d'annuler une action : le message s'affiche 6 s et retient la
-   * fonction de rétablissement ; passé ce délai, l'action devient définitive.
-   * Une seule annulation en attente à la fois (la dernière action prime).
-   */
-  const offerUndo = useCallback((message: string, restore: () => void) => {
-    if (undoTimerRef.current) clearTimeout(undoTimerRef.current);
-    undoRef.current = restore;
-    setUndo({ message });
-    undoTimerRef.current = setTimeout(() => {
-      undoTimerRef.current = null;
-      undoRef.current = null;
-      setUndo(null);
-    }, UNDO_MS);
-  }, []);
-
-  /** Rétablit l'état d'avant la dernière action annulable. */
-  const runUndo = useCallback(() => {
-    const restore = undoRef.current;
-    clearUndo();
-    if (restore) restore();
-  }, [clearUndo]);
-
-  // Le minuteur d'annulation ne survit pas au démontage de l'éditeur.
-  useEffect(
-    () => () => {
-      if (undoTimerRef.current) clearTimeout(undoTimerRef.current);
-    },
-    [],
-  );
-
   // Zoom « ajuster à la fenêtre » : recalculé quand la zone de travail change
   // de largeur (panneau ouvert, fenêtre redimensionnée).
   useEffect(() => {
@@ -360,6 +349,90 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
     observer.observe(node);
     return () => observer.disconnect();
   }, [fitZoom]);
+
+  // -------------------------------------------------------------------------
+  // Historique annuler / rétablir
+  // -------------------------------------------------------------------------
+
+  /** Instantané de l'état courant, capturé avant chaque action. */
+  function capture(): EditorSnapshot {
+    return {
+      slides: slidesRef.current,
+      selectedSlide,
+      selectedKeys,
+      aspect,
+      theme,
+      transition,
+      transitionMs,
+    };
+  }
+
+  /** Empile l'état courant avant une action ; les répétitions se fusionnent. */
+  function pushHistory(kind: string) {
+    const now = Date.now();
+    const last = lastPushRef.current;
+    if (last && last.kind === kind && now - last.at < COALESCE_MS) {
+      last.at = now;
+      return;
+    }
+    pastRef.current = [...pastRef.current, capture()].slice(-HISTORY_LIMIT);
+    futureRef.current = [];
+    lastPushRef.current = { kind, at: now };
+    setHistoryVersion((version) => version + 1);
+  }
+
+  /** Remet un instantané en place ; les réglages changés sont re-persistés. */
+  function restore(snapshot: EditorSnapshot) {
+    slidesRef.current = snapshot.slides;
+    setSlides(snapshot.slides);
+    setSelectedSlide(snapshot.selectedSlide);
+    setSelectedKeys(snapshot.selectedKeys);
+    setEditingKey(null);
+    if (snapshot.aspect !== aspect) {
+      setAspect(snapshot.aspect);
+      void persistSetting({ aspect: snapshot.aspect });
+    }
+    if (snapshot.theme !== theme) {
+      setTheme(snapshot.theme);
+      void persistSetting({ theme: snapshot.theme });
+    }
+    if (snapshot.transition !== transition) {
+      setTransition(snapshot.transition);
+      void persistSetting({ transition: snapshot.transition });
+    }
+    if (snapshot.transitionMs !== transitionMs) {
+      setTransitionMs(snapshot.transitionMs);
+      void persistSetting({ transitionMs: snapshot.transitionMs });
+    }
+    schedule();
+  }
+
+  function doUndo() {
+    const previous = pastRef.current[pastRef.current.length - 1];
+    if (!previous) return;
+    pastRef.current = pastRef.current.slice(0, -1);
+    futureRef.current = [capture(), ...futureRef.current].slice(0, HISTORY_LIMIT);
+    restore(previous);
+    setHistoryVersion((version) => version + 1);
+    setAnnouncement("Modification annulée.");
+  }
+
+  function doRedo() {
+    const [next, ...rest] = futureRef.current;
+    if (!next) return;
+    futureRef.current = rest;
+    pastRef.current = [...pastRef.current, capture()].slice(-HISTORY_LIMIT);
+    restore(next);
+    setHistoryVersion((version) => version + 1);
+    setAnnouncement("Modification rétablie.");
+  }
+
+  const canUndo = historyVersion >= 0 && pastRef.current.length > 0;
+  const canRedo = historyVersion >= 0 && futureRef.current.length > 0;
+
+  // -------------------------------------------------------------------------
+  // Mutations
+  // -------------------------------------------------------------------------
 
   function mutateSlide(index: number, updater: (slide: EditorSlide) => EditorSlide) {
     setSlides((current) =>
@@ -379,16 +452,37 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
 
   const selectSlide = useCallback((index: number) => {
     setSelectedSlide(index);
-    setSelectedElementKey(null);
+    setSelectedKeys([]);
     setEditingKey(null);
   }, []);
 
-  /** Entre en édition en place sur un élément (double-clic ou zone vide). */
-  const startEdit = useCallback((key: string) => {
+  /** Sélection d'un élément : simple, ou ajoutée avec Shift (multiple). */
+  function selectElement(key: string | null, additive = false) {
+    if (key === null) {
+      setSelectedKeys([]);
+      setEditingKey(null);
+      return;
+    }
+    setSelectedKeys((current) => {
+      if (!additive) return [key];
+      return current.includes(key) ? current.filter((item) => item !== key) : [...current, key];
+    });
+  }
+
+  /** Rectangle de sélection : la liste croisée remplace la sélection. */
+  function selectMany(keys: string[]) {
+    setSelectedKeys(keys);
+    setEditingKey(null);
+  }
+
+  /** Entre en édition en place (double-clic, Entrée, frappe, zone vide). */
+  function startEdit(key: string) {
     if (!canEditRef.current) return;
-    setSelectedElementKey(key);
+    // Instantané d'historique : toute la session de frappe s'annule d'un coup.
+    pushHistory("text");
+    setSelectedKeys([key]);
     setEditingKey(key);
-  }, []);
+  }
 
   const endEdit = useCallback(() => setEditingKey(null), []);
 
@@ -418,21 +512,23 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
   /** Ajoute un élément à la diapositive courante et le sélectionne. */
   function appendElement(element: EditorElement) {
     mutateSlide(selectedSlide, (slide) => ({ ...slide, elements: [...slide.elements, element] }));
-    setSelectedElementKey(element.key);
+    setSelectedKeys([element.key]);
     setEditingKey(null);
   }
 
   function addText() {
+    pushHistory("add-text");
     appendElement(freeElement("text", FREE_TEXT, "Texte"));
   }
 
   function addShape(kind: SlideShapeKind) {
+    pushHistory("add-shape");
     appendElement(freeElement(kind, shapeGeometry(kind), ""));
   }
 
   /**
-   * Téléverse l'image choisie, puis l'ajoute à la diapositive courante.
-   * Le binaire vit dans le stockage du module ; l'élément ne garde que la clé.
+   * Téléverse l'image choisie puis l'installe : elle remplace la zone image
+   * qui l'a demandée, ou s'ajoute à la diapositive courante.
    */
   async function onImageSelected(event: React.ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
@@ -452,14 +548,46 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
         throw new Error(payload?.message ?? "Téléversement impossible.");
       }
       const { mediaKey } = (await response.json()) as { mediaKey: string };
-      const element: EditorElement = {
-        ...freeElement("image", { x: 20, y: 20, w: 30, h: 25 }, ""),
-        mediaKey,
-      };
-      mutateSlide(selectedSlide, (slide) => ({ ...slide, elements: [...slide.elements, element] }));
-      setSelectedElementKey(element.key);
+      const target = pendingImageKey;
+      pushHistory("image");
+      if (target) {
+        // La zone à remplir devient une image : elle garde sa place exacte.
+        setSlides((current) =>
+          current.map((slide, position) =>
+            position === selectedSlide
+              ? {
+                  ...slide,
+                  elements: slide.elements.map((element) =>
+                    element.key === target
+                      ? {
+                          ...element,
+                          kind: "image" as const,
+                          mediaKey,
+                          text: "",
+                          placeholder: null,
+                        }
+                      : element,
+                  ),
+                }
+              : slide,
+          ),
+        );
+        setSelectedKeys([target]);
+      } else {
+        const element: EditorElement = {
+          ...freeElement("image", { x: 20, y: 20, w: 30, h: 25 }, ""),
+          mediaKey,
+        };
+        mutateSlide(selectedSlide, (slide) => ({
+          ...slide,
+          elements: [...slide.elements, element],
+        }));
+        setSelectedKeys([element.key]);
+      }
       setEditingKey(null);
       setImageOpen(false);
+      setPendingImageKey(null);
+      setAnnouncement("Image insérée.");
     } catch (caught) {
       setImageError(caught instanceof Error ? caught.message : "Téléversement impossible.");
     } finally {
@@ -467,54 +595,172 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
     }
   }
 
-  const deleteElement = useCallback(() => {
-    if (!selectedElementKey) return;
+  /** Ouvre le dialogue d'image pour remplacer une zone à remplir. */
+  function requestImage(key: string) {
+    setPendingImageKey(key);
+    setImageError(null);
+    setImageOpen(true);
+  }
+
+  function deleteSelection() {
+    if (selectedKeys.length === 0) return;
+    pushHistory("delete");
     setSlides((current) =>
       current.map((slide, position) =>
         position === selectedSlide
           ? {
               ...slide,
-              elements: slide.elements.filter((element) => element.key !== selectedElementKey),
+              elements: slide.elements.filter((element) => !selectedKeys.includes(element.key)),
             }
           : slide,
       ),
     );
-    setSelectedElementKey(null);
+    setSelectedKeys([]);
     setEditingKey(null);
     schedule();
-  }, [selectedElementKey, selectedSlide, schedule]);
+    setAnnouncement(
+      selectedKeys.length > 1 ? `${selectedKeys.length} éléments supprimés.` : "Élément supprimé.",
+    );
+  }
 
-  /** Déplace l'élément sélectionné de un point (ou cinq avec Maj), en %. */
-  const nudgeSelected = useCallback(
-    (dx: number, dy: number) => {
-      const key = selectedElementKey;
-      const slide = slidesRef.current[selectedSlide];
-      const element = slide?.elements.find((item) => item.key === key);
-      if (!key || !element) return;
-      const x = round1(clamp(element.x + dx, 0, 100 - element.w));
-      const y = round1(clamp(element.y + dy, 0, 100 - element.h));
-      setSlides((current) =>
-        current.map((item, position) =>
-          position === selectedSlide
-            ? {
-                ...item,
-                elements: item.elements.map((candidate) =>
-                  candidate.key === key ? { ...candidate, x, y } : candidate,
-                ),
-              }
-            : item,
-        ),
-      );
-      schedule();
-      setAnnouncement(
-        `Élément déplacé : ${Math.round(x)} % de la largeur, ${Math.round(y)} % de la hauteur.`,
-      );
-    },
-    [selectedElementKey, selectedSlide, schedule],
-  );
+  /** Copies internes des éléments sélectionnés (Ctrl+C). */
+  function copySelection() {
+    const slide = slidesRef.current[selectedSlide];
+    if (!slide) return;
+    const items = slide.elements.filter((element) => selectedKeys.includes(element.key));
+    if (items.length === 0) return;
+    clipboardRef.current = items.map((element) => ({ ...element }));
+    setAnnouncement(items.length > 1 ? `${items.length} éléments copiés.` : "Élément copié.");
+  }
+
+  /** Colle les copies décalées, sélectionnées (Ctrl+V). */
+  function pasteClipboard(offset = COPY_OFFSET) {
+    const items = clipboardRef.current;
+    if (!canEdit || items.length === 0) return;
+    pushHistory("paste");
+    const clones = items.map((element) => ({
+      ...element,
+      key: crypto.randomUUID(),
+      id: undefined,
+      x: round1(clamp(element.x + offset, 0, 100 - element.w)),
+      y: round1(clamp(element.y + offset, 0, 100 - element.h)),
+    }));
+    mutateSlide(selectedSlide, (slide) => ({
+      ...slide,
+      elements: [...slide.elements, ...clones],
+    }));
+    setSelectedKeys(clones.map((clone) => clone.key));
+    setEditingKey(null);
+    setAnnouncement(clones.length > 1 ? `${clones.length} éléments collés.` : "Élément collé.");
+  }
+
+  /** Duplique la sélection sur place, décalée (Ctrl+D). */
+  function duplicateSelection() {
+    if (selectedKeys.length === 0) return;
+    copySelection();
+    pasteClipboard(COPY_OFFSET + 1);
+    setAnnouncement("Sélection dupliquée.");
+  }
+
+  /** Déplace tous les éléments sélectionnés de un point (cinq avec Maj), en %. */
+  function nudgeSelection(dx: number, dy: number) {
+    if (selectedKeys.length === 0) return;
+    pushHistory("nudge");
+    setSlides((current) =>
+      current.map((slide, position) =>
+        position === selectedSlide
+          ? {
+              ...slide,
+              elements: slide.elements.map((element) =>
+                selectedKeys.includes(element.key)
+                  ? {
+                      ...element,
+                      x: round1(clamp(element.x + dx, 0, 100 - element.w)),
+                      y: round1(clamp(element.y + dy, 0, 100 - element.h)),
+                    }
+                  : element,
+              ),
+            }
+          : slide,
+      ),
+    );
+    schedule();
+  }
+
+  /** Applique une mise en forme texte à l'élément unique sélectionné. */
+  function setFormat(patch: Partial<ElementView>, kind: string) {
+    const key = selectedKeys.length === 1 ? selectedKeys[0] : undefined;
+    if (!key) return;
+    pushHistory(kind);
+    updateElement(key, patch);
+  }
+
+  /** Change la variante de la forme sélectionnée. */
+  function setShape(kind: SlideShapeKind) {
+    const key = selectedKeys.length === 1 ? selectedKeys[0] : undefined;
+    if (!key) return;
+    pushHistory("shape");
+    updateElement(key, { kind });
+  }
+
+  /** Change la taille du texte de l'élément sélectionné. */
+  function setFontSize(next: number) {
+    const key = selectedKeys.length === 1 ? selectedKeys[0] : undefined;
+    if (!key) return;
+    pushHistory("size");
+    updateElement(key, { fontSize: clamp(next, 8, 200) });
+  }
+
+  /** Applique des patchs de disposition (alignement, répartition). */
+  function applyArrange(patches: ArrangePatch[]) {
+    if (patches.length === 0) return;
+    pushHistory("arrange");
+    const byKey = new Map(patches.map((patch) => [patch.key, patch] as const));
+    setSlides((current) =>
+      current.map((slide, position) =>
+        position === selectedSlide
+          ? {
+              ...slide,
+              elements: slide.elements.map((element) => {
+                const patch = byKey.get(element.key);
+                return patch ? { ...element, x: patch.x, y: patch.y } : element;
+              }),
+            }
+          : slide,
+      ),
+    );
+    schedule();
+    setAnnouncement("Disposition mise à jour.");
+  }
+
+  /** Cibles de disposition : les éléments sélectionnés de la diapositive. */
+  function arrangeTargets() {
+    const slide = slidesRef.current[selectedSlide];
+    if (!slide) return [];
+    return slide.elements
+      .filter((element) => selectedKeys.includes(element.key))
+      .map((element) => ({
+        key: element.key,
+        box: { x: element.x, y: element.y, w: element.w, h: element.h },
+      }));
+  }
+
+  function arrangeSelection(mode: ArrangeMode) {
+    applyArrange(alignPatches(arrangeTargets(), mode));
+  }
+
+  function distributeSelection(axis: "x" | "y") {
+    const patches = distributePatches(arrangeTargets(), axis);
+    if (patches.length === 0) {
+      setAnnouncement("La répartition demande au moins trois éléments.");
+      return;
+    }
+    applyArrange(patches);
+  }
 
   /** Ajoute une diapositive avec la mise en page choisie. */
   function addSlide(layout: SlideLayoutId) {
+    pushHistory("add-slide");
     const elements: EditorElement[] = layoutElements(layout).map((zone) => ({
       key: crypto.randomUUID(),
       kind: "text",
@@ -541,7 +787,7 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
       },
     ]);
     setSelectedSlide(slides.length);
-    setSelectedElementKey(null);
+    setSelectedKeys([]);
     setEditingKey(null);
     setAnnouncement(`Diapositive ajoutée — mise en page « ${layoutLabel(layout)} ».`);
     schedule();
@@ -551,6 +797,7 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
     const index = selectedSlide;
     const source = slides[index];
     if (!source) return;
+    pushHistory("duplicate-slide");
     const name = slideTitle(source, index);
     const copy = cloneSlide(source, `${name} (copie)`);
     const insertAt = index + 1;
@@ -560,57 +807,33 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
       return next;
     });
     setSelectedSlide(insertAt);
-    setSelectedElementKey(null);
+    setSelectedKeys([]);
     setEditingKey(null);
     schedule();
     setAnnouncement(`Diapositive « ${name} » dupliquée.`);
-    // Annulation : la copie est retirée ; sa clé la retrouve quoi qu'il arrive.
-    offerUndo(`Diapositive « ${name} » dupliquée.`, () => {
-      setSlides((current) => current.filter((slide) => slide.key !== copy.key));
-      setSelectedSlide(index);
-      setSelectedElementKey(null);
-      setEditingKey(null);
-      setAnnouncement("Duplication annulée.");
-      schedule();
-    });
   }
 
   function deleteSlide() {
     const index = selectedSlide;
     const slide = slides[index];
     if (!slide || slides.length <= 1) return;
+    pushHistory("delete-slide");
     const name = slideTitle(slide, index);
     setSlides((current) => current.filter((_, position) => position !== index));
     setSelectedSlide(Math.max(0, index - 1));
-    setSelectedElementKey(null);
+    setSelectedKeys([]);
     setEditingKey(null);
     schedule();
-    setAnnouncement(`Diapositive « ${name} » supprimée.`);
-    // Annulation : la diapositive est réinsérée à sa place. Ses identifiants
-    // serveur sont abandonnés (ses lignes ont pu être supprimées) : la
-    // sauvegarde suivante la recrée sans dupliquer aucun élément.
-    offerUndo(`Diapositive « ${name} » supprimée.`, () => {
-      const restored = rebindSlide(slide);
-      const at = Math.min(index, slidesRef.current.length);
-      setSlides((current) => {
-        const next = [...current];
-        next.splice(at, 0, restored);
-        return next;
-      });
-      setSelectedSlide(at);
-      setSelectedElementKey(null);
-      setEditingKey(null);
-      setAnnouncement(`Diapositive « ${name} » rétablie.`);
-      schedule();
-    });
+    setAnnouncement(`Diapositive « ${name} » supprimée — annulable.`);
   }
 
   /** Change l'ordre z de l'élément sélectionné (avant-plan / arrière-plan). */
   function zOrderSelected(move: ZMove) {
-    const key = selectedElementKey;
+    const key = selectedKeys[0];
     const slide = slidesRef.current[selectedSlide];
     const element = slide?.elements.find((item) => item.key === key);
-    if (!key || !element) return;
+    if (!key || !element || selectedKeys.length !== 1) return;
+    pushHistory("zorder");
     mutateSlide(selectedSlide, (current) => {
       const position = current.elements.findIndex((item) => item.key === key);
       return { ...current, elements: zOrderMove(current.elements, position, move) };
@@ -619,7 +842,7 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
   }
 
   /**
-   * Enregistre un réglage de présentation (format, thème, transition) de
+   * Enregistre un réglage de présentation (format, design, transition) de
    * façon optimiste : l'interface change tout de suite, le serveur confirme,
    * et un échec rend sa valeur précédente au réglage.
    */
@@ -646,6 +869,7 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
 
   function changeTransition(next: SlideTransitionId) {
     if (next === transition || !canEdit) return;
+    pushHistory("transition");
     setTransition(next);
     setAnnouncement(
       next === "none"
@@ -658,6 +882,8 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
   function changeTransitionMs(next: number) {
     if (!canEdit) return;
     const value = normalizeTransitionMs(next);
+    if (value === transitionMs) return;
+    pushHistory("transition-ms");
     setTransitionMs(value);
     void persistSetting({ transitionMs: value });
   }
@@ -670,6 +896,7 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
    */
   function changeAspect(next: SlideAspectId) {
     if (next === aspect || !canEdit) return;
+    pushHistory("aspect");
     const from = aspect;
     setSlides((current) =>
       current.map((slide) => ({
@@ -685,17 +912,19 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
 
   function changeTheme(next: SlideThemeId) {
     if (next === theme || !canEdit) return;
+    pushHistory("theme");
     setTheme(next);
-    setAnnouncement(`Thème « ${themeLabel(next)} » appliqué à la présentation.`);
+    setAnnouncement(`Design « ${themeLabel(next)} » appliqué à la présentation.`);
     void persistSetting({ theme: next });
   }
 
   /** Déplacement d'une diapositive : la sélection la suit. */
   function moveSlideTo(from: number, to: number) {
     if (from === to) return;
+    pushHistory("move-slide");
     setSlides((current) => reorderSlides(current, from, to));
     setSelectedSlide(to);
-    setSelectedElementKey(null);
+    setSelectedKeys([]);
     setEditingKey(null);
     setAnnouncement(`Diapositive ${from + 1} déplacée en position ${to + 1}.`);
     schedule();
@@ -737,6 +966,24 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
     setZoom((current) => nextZoom(current, direction));
   }
 
+  // -------------------------------------------------------------------------
+  // Clavier
+  // -------------------------------------------------------------------------
+
+  // Sortie du mode concentration au clavier : Échap le referme avant toute
+  // autre action (la sélection garde le sien, la saisie son comportement natif).
+  useEffect(() => {
+    if (!focusActive) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      const target = event.target as Element | null;
+      if (isTypingTarget(target) || isInsideModal(target)) return;
+      exitFocus();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [focusActive, exitFocus]);
+
   // Navigation clavier entre diapositives, partout dans l'éditeur : flèches,
   // Page préc./suiv., Début/Fin. Les champs de saisie et les fenêtres modales
   // gardent le clavier (la colonne traite ses propres flèches), et un élément
@@ -764,28 +1011,69 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [presenting, selectSlide, selectedSlide, slides.length]);
 
-  // Clavier sur l'élément sélectionné : ordre z (Ctrl/Cmd + ↑/↓, Maj pour les
-  // extrémités), déplacement aux flèches (Maj : pas de 5 %), Entrée pour
-  // modifier en place, Suppr pour supprimer, Échap pour désélectionner.
-  // Actif seulement hors saisie, hors fenêtre modale et hors présentation.
+  // Raccourcis d'outil, toujours disponibles hors saisie : annuler/rétablir,
+  // copier/coller/dupliquer. Les champs de saisie gardent leurs raccourcis
+  // natifs (annuler une frappe dans le texte en place).
   useEffect(() => {
-    if (presenting || !canEdit || !selectedElementKey) return;
+    if (presenting || !canEdit) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as Element | null;
+      if (isTypingTarget(target) || isInsideModal(target)) return;
+      if (!(event.ctrlKey || event.metaKey)) return;
+      const key = event.key.toLowerCase();
+      if (key === "z") {
+        event.preventDefault();
+        if (event.shiftKey) doRedo();
+        else doUndo();
+        return;
+      }
+      if (key === "y") {
+        event.preventDefault();
+        doRedo();
+        return;
+      }
+      if (key === "d" && !event.shiftKey) {
+        event.preventDefault();
+        duplicateSelection();
+        return;
+      }
+      if (key === "c") {
+        copySelection();
+        return;
+      }
+      if (key === "v" && clipboardRef.current.length > 0) {
+        event.preventDefault();
+        pasteClipboard();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [presenting, canEdit, doUndo, doRedo, duplicateSelection, copySelection, pasteClipboard]);
+
+  // Clavier sur la sélection : ordre z (Ctrl/Cmd + ↑/↓, Maj pour les
+  // extrémités, un seul élément), déplacement aux flèches (Maj : pas de 5 %),
+  // Entrée pour modifier en place, Suppr pour supprimer, Échap pour
+  // désélectionner. Actif seulement hors saisie, fenêtre modale et présentation.
+  useEffect(() => {
+    if (presenting || !canEdit || selectedKeys.length === 0) return;
     const onKeyDown = (event: KeyboardEvent) => {
       const target = event.target as Element | null;
       if (isTypingTarget(target) || isInsideModal(target)) return;
       if (target?.closest("button")) return;
       const slide = slidesRef.current[selectedSlide];
-      const element = slide?.elements.find((item) => item.key === selectedElementKey);
-      if (!element) return;
-      const move = zMoveForKey({
-        key: event.key,
-        ctrlKey: event.ctrlKey,
-        metaKey: event.metaKey,
-        shiftKey: event.shiftKey,
-        altKey: event.altKey,
-      });
-      if (move) {
+      const primary = slide?.elements.find((item) => item.key === selectedKeys[0]);
+      const move = primary
+        ? zMoveForKey({
+            key: event.key,
+            ctrlKey: event.ctrlKey,
+            metaKey: event.metaKey,
+            shiftKey: event.shiftKey,
+            altKey: event.altKey,
+          })
+        : null;
+      if (move && selectedKeys.length === 1 && primary) {
         event.preventDefault();
+        pushHistory("zorder");
         setSlides((current) =>
           current.map((item, position) =>
             position === selectedSlide
@@ -793,46 +1081,65 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
                   ...item,
                   elements: zOrderMove(
                     item.elements,
-                    item.elements.findIndex((candidate) => candidate.key === selectedElementKey),
+                    item.elements.findIndex((candidate) => candidate.key === primary.key),
                     move,
                   ),
                 }
               : item,
           ),
         );
-        setAnnouncement(zOrderAnnouncement(move, elementLabel(element)));
+        setAnnouncement(zOrderAnnouncement(move, elementLabel(primary)));
         schedule();
         return;
       }
       if (event.key === "Delete" || event.key === "Backspace") {
         event.preventDefault();
-        deleteElement();
-        setAnnouncement("Élément supprimé.");
+        deleteSelection();
         return;
       }
-      if (event.key === "Enter" && element.kind !== "image") {
+      if (event.key === "Enter" && selectedKeys.length === 1 && primary) {
         event.preventDefault();
-        startEdit(element.key);
+        if (primary.placeholder === "image") requestImage(primary.key);
+        else if (primary.kind !== "image") startEdit(primary.key);
+        return;
+      }
+      // Frappe directe : une lettre sur un élément texte sélectionné ouvre
+      // l'édition en place et commence le mot — le geste d'un vrai outil.
+      if (
+        selectedKeys.length === 1 &&
+        primary &&
+        primary.kind === "text" &&
+        primary.placeholder !== "image" &&
+        event.key.length === 1 &&
+        event.key !== " " &&
+        !event.ctrlKey &&
+        !event.metaKey &&
+        !event.altKey
+      ) {
+        event.preventDefault();
+        const existing = primary.text.trim().length === 0 ? "" : primary.text;
+        startEdit(primary.key);
+        updateElement(primary.key, { text: existing + event.key });
         return;
       }
       if (event.key === "Escape") {
         event.preventDefault();
-        setSelectedElementKey(null);
+        setSelectedKeys([]);
         return;
       }
       const step = event.shiftKey ? 5 : 1;
       if (event.key === "ArrowLeft") {
         event.preventDefault();
-        nudgeSelected(-step, 0);
+        nudgeSelection(-step, 0);
       } else if (event.key === "ArrowRight") {
         event.preventDefault();
-        nudgeSelected(step, 0);
+        nudgeSelection(step, 0);
       } else if (event.key === "ArrowUp") {
         event.preventDefault();
-        nudgeSelected(0, -step);
+        nudgeSelection(0, -step);
       } else if (event.key === "ArrowDown") {
         event.preventDefault();
-        nudgeSelected(0, step);
+        nudgeSelection(0, step);
       }
     };
     window.addEventListener("keydown", onKeyDown);
@@ -840,12 +1147,15 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
   }, [
     presenting,
     canEdit,
-    selectedElementKey,
+    selectedKeys,
     selectedSlide,
     schedule,
     startEdit,
-    deleteElement,
-    nudgeSelected,
+    deleteSelection,
+    nudgeSelection,
+    pushHistory,
+    requestImage,
+    zOrderSelected,
   ]);
 
   // Plein écran : le navigateur peut aussi rendre la main à l'utilisateur
@@ -948,17 +1258,22 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
     return () => window.removeEventListener("afterprint", clear);
   }, [printToken]);
 
+  // -------------------------------------------------------------------------
+  // Rendu
+  // -------------------------------------------------------------------------
+
   const current = slides[selectedSlide] ?? null;
-  const selectedElement =
-    current?.elements.find((element) => element.key === selectedElementKey) ?? null;
-  const selectedElementIndex = selectedElement
-    ? (current?.elements.findIndex((element) => element.key === selectedElement.key) ?? -1)
+  const selectedElements =
+    current?.elements.filter((element) => selectedKeys.includes(element.key)) ?? [];
+  const singleSelection = selectedKeys.length === 1 ? (selectedElements[0] ?? null) : null;
+  const selectedElementIndex = singleSelection
+    ? (current?.elements.findIndex((element) => element.key === singleSelection.key) ?? -1)
     : -1;
   const selectedShape =
-    selectedElement && isShapeKind(selectedElement.kind) ? selectedElement.kind : null;
+    singleSelection && isShapeKind(singleSelection.kind) ? singleSelection.kind : null;
   const elementCount = current?.elements.length ?? 0;
   /** Élément porteur de texte (tout sauf une image) : cible du formatage. */
-  const textElement = selectedElement && selectedElement.kind !== "image" ? selectedElement : null;
+  const textElement = singleSelection && singleSelection.kind !== "image" ? singleSelection : null;
 
   const statusLabel =
     status === "saving"
@@ -970,7 +1285,7 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
           : "";
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
+    <div className="slides-editor flex h-full min-h-0 flex-1 flex-col">
       <header className="flex flex-wrap items-center gap-2 border-b border-border bg-card px-3 py-2 print-hide">
         <a
           href="/"
@@ -1005,13 +1320,14 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
             </span>
           ) : null}
           {canEdit ? (
-            <fieldset className="flex items-center gap-1" aria-label="Thème de la présentation">
+            <fieldset className="flex items-center gap-1" aria-label="Design de la présentation">
+              <legend className="sr-only">Design de la présentation</legend>
               {SLIDE_THEME_IDS.map((value) => (
                 <button
                   key={value}
                   type="button"
                   aria-pressed={theme === value}
-                  title={`Thème ${themeLabel(value)}`}
+                  title={`Design ${themeLabel(value)}`}
                   onClick={() => changeTheme(value)}
                   className={cn(
                     "size-5 rounded-full border transition-shadow",
@@ -1019,11 +1335,36 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
                     theme === value ? "ring-2 ring-ring" : "hover:ring-1 hover:ring-ring",
                   )}
                 >
-                  <span className="sr-only">{`Thème ${themeLabel(value)}`}</span>
+                  <span className="sr-only">{`Design ${themeLabel(value)}`}</span>
                 </button>
               ))}
             </fieldset>
           ) : null}
+          <Button
+            size="sm"
+            variant="ghost"
+            aria-pressed={notesVisible}
+            aria-label="Notes du présentateur"
+            title="Afficher ou masquer les notes du présentateur"
+            disabled={!current}
+            onClick={() => setNotesVisible((visible) => !visible)}
+          >
+            Notes
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            aria-pressed={focusActive}
+            aria-label={
+              focusActive ? "Afficher les barres de la suite" : "Masquer les barres de la suite"
+            }
+            title={
+              focusActive ? "Afficher les barres de la suite" : "Masquer les barres de la suite"
+            }
+            onClick={toggleFocus}
+          >
+            ⛶
+          </Button>
           <Button
             size="sm"
             variant="outline"
@@ -1069,8 +1410,30 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
           <div
             role="toolbar"
             aria-label="Outils de la présentation"
-            className="flex flex-wrap items-center gap-1 border-b border-border bg-card px-3 py-1.5 print-hide"
+            className="flex flex-nowrap items-center gap-0.5 overflow-x-auto border-b border-border bg-card px-2 py-1 print-hide [&>*]:shrink-0"
           >
+            <Button
+              size="sm"
+              variant="ghost"
+              aria-label="Annuler"
+              title="Annuler (Ctrl+Z)"
+              disabled={!canEdit || !canUndo}
+              onClick={doUndo}
+            >
+              ↺
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              aria-label="Rétablir"
+              title="Rétablir (Ctrl+Maj+Z)"
+              disabled={!canEdit || !canRedo}
+              onClick={doRedo}
+            >
+              ↻
+            </Button>
+            <span aria-hidden className="mx-1 h-4 w-px shrink-0 bg-border" />
+
             {/* Zoom : ajuster à la fenêtre ou un niveau précis. */}
             <select
               aria-label="Zoom"
@@ -1104,200 +1467,385 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
             >
               ＋
             </Button>
-            <span aria-hidden className="mx-1 h-5 w-px bg-border" />
+            <span aria-hidden className="mx-1 h-4 w-px shrink-0 bg-border" />
 
-            {/* Diapositives. */}
+            {/* Insertion : les gestes de base, comme un outil de présentation. */}
             <Button
               size="sm"
-              variant="outline"
+              variant="ghost"
+              className="font-medium"
               aria-label="Nouvelle diapositive"
               disabled={!canEdit}
               onClick={() => setLayoutOpen(true)}
             >
               ＋ Diapositive
             </Button>
-            <Button size="sm" variant="ghost" disabled={!canEdit} onClick={duplicateSlide}>
-              Dupliquer
-            </Button>
             <Button
               size="sm"
               variant="ghost"
-              className="text-destructive"
-              disabled={!canEdit || slides.length <= 1}
-              onClick={deleteSlide}
-            >
-              Supprimer
-            </Button>
-            <Button
-              size="sm"
-              variant="ghost"
-              aria-label="Monter la diapositive"
-              disabled={!canEdit || !canMoveSlide(selectedSlide, -1, slides.length)}
-              onClick={() => moveSlide(-1)}
-            >
-              ↑
-            </Button>
-            <Button
-              size="sm"
-              variant="ghost"
-              aria-label="Descendre la diapositive"
-              disabled={!canEdit || !canMoveSlide(selectedSlide, 1, slides.length)}
-              onClick={() => moveSlide(1)}
-            >
-              ↓
-            </Button>
-            <span aria-hidden className="mx-1 h-5 w-px bg-border" />
-
-            {/* Insertion. */}
-            <Button
-              size="sm"
-              variant="outline"
               aria-label="Ajouter une zone de texte"
               disabled={!canEdit}
               onClick={addText}
             >
-              Zone de texte
+              Texte
             </Button>
-            {SLIDE_SHAPE_KINDS.map((kind) => (
-              <Button
-                key={kind}
-                size="sm"
-                variant="outline"
-                aria-label={SHAPE_ADD_LABELS[kind]}
-                disabled={!canEdit}
-                onClick={() => addShape(kind)}
-              >
-                {shapeLabel(kind)}
-              </Button>
-            ))}
             <Button
               size="sm"
-              variant="outline"
+              variant="ghost"
               aria-label="Ajouter une image"
               disabled={!canEdit}
               onClick={() => {
+                setPendingImageKey(null);
                 setImageError(null);
                 setImageOpen(true);
               }}
             >
               Image
             </Button>
-            <span aria-hidden className="mx-1 h-5 w-px bg-border" />
+            <Menu
+              label="Formes"
+              align="start"
+              triggerClassName="h-8 border-transparent bg-transparent px-2 font-medium hover:bg-muted focus-visible:ring-offset-0"
+              items={SLIDE_SHAPE_KINDS.map((kind) => ({
+                id: kind,
+                label: shapeLabel(kind),
+                disabled: !canEdit,
+                onSelect: () => addShape(kind),
+              }))}
+            />
 
-            {/* Mise en forme contextuelle : active avec un élément porteur de texte. */}
-            <Button
-              size="sm"
-              variant={textElement?.bold ? "secondary" : "ghost"}
-              aria-label="Gras"
-              aria-pressed={textElement?.bold === true}
-              disabled={!canEdit || !textElement}
-              onClick={() =>
-                textElement && updateElement(textElement.key, { bold: !textElement.bold })
-              }
-            >
-              <strong>G</strong>
-            </Button>
-            <Button
-              size="sm"
-              variant={textElement?.italic ? "secondary" : "ghost"}
-              aria-label="Italique"
-              aria-pressed={textElement?.italic === true}
-              disabled={!canEdit || !textElement}
-              onClick={() =>
-                textElement && updateElement(textElement.key, { italic: !textElement.italic })
-              }
-            >
-              <em>I</em>
-            </Button>
-            <Button
-              size="sm"
-              variant={textElement?.underline ? "secondary" : "ghost"}
-              aria-label="Souligné"
-              aria-pressed={textElement?.underline === true}
-              disabled={!canEdit || !textElement}
-              onClick={() =>
-                textElement && updateElement(textElement.key, { underline: !textElement.underline })
-              }
-            >
-              <span className="underline">S</span>
-            </Button>
-            <select
-              aria-label="Couleur du texte"
-              value={textElement?.textColor ?? "default"}
-              disabled={!canEdit || !textElement}
-              onChange={(event) =>
-                textElement &&
-                updateElement(textElement.key, {
-                  textColor: event.target.value as SlideTextColor,
-                })
-              }
-              className={TOOLBAR_SELECT_CLASS}
-            >
-              {SLIDE_TEXT_COLOR_IDS.map((color) => (
-                <option key={color} value={color}>
-                  {textColorLabel(color)}
-                </option>
-              ))}
-            </select>
-            <Button
-              size="sm"
-              variant={textElement?.align === "left" ? "secondary" : "ghost"}
-              aria-label="Aligner à gauche"
-              aria-pressed={textElement?.align === "left"}
-              disabled={!canEdit || !textElement}
-              onClick={() => textElement && updateElement(textElement.key, { align: "left" })}
-            >
-              ⇤
-            </Button>
-            <Button
-              size="sm"
-              variant={textElement?.align === "center" ? "secondary" : "ghost"}
-              aria-label="Centrer"
-              aria-pressed={textElement?.align === "center"}
-              disabled={!canEdit || !textElement}
-              onClick={() => textElement && updateElement(textElement.key, { align: "center" })}
-            >
-              ⇔
-            </Button>
-            <Button
-              size="sm"
-              variant={textElement?.align === "right" ? "secondary" : "ghost"}
-              aria-label="Aligner à droite"
-              aria-pressed={textElement?.align === "right"}
-              disabled={!canEdit || !textElement}
-              onClick={() => textElement && updateElement(textElement.key, { align: "right" })}
-            >
-              ⇥
-            </Button>
-            <Button
-              size="sm"
-              variant={textElement && isBulletList(textElement.text) ? "secondary" : "ghost"}
-              aria-label="Puces"
-              aria-pressed={textElement ? isBulletList(textElement.text) : false}
-              disabled={!canEdit || !textElement}
-              onClick={() =>
-                textElement &&
-                updateElement(textElement.key, { text: toggleBulletList(textElement.text) })
-              }
-            >
-              • Puces
-            </Button>
-            <Button
-              size="sm"
-              variant={textElement && isNumberedList(textElement.text) ? "secondary" : "ghost"}
-              aria-label="Numérotation"
-              aria-pressed={textElement ? isNumberedList(textElement.text) : false}
-              disabled={!canEdit || !textElement}
-              onClick={() =>
-                textElement &&
-                updateElement(textElement.key, { text: toggleNumberedList(textElement.text) })
-              }
-            >
-              1. Numérotation
-            </Button>
-            <span aria-hidden className="mx-1 h-5 w-px bg-border" />
+            {textElement ? (
+              <>
+                <span aria-hidden className="mx-1 h-4 w-px shrink-0 bg-border" />
+                {/* Mise en forme contextuelle : l'outil suit l'élément cliqué. */}
+                <Button
+                  size="sm"
+                  variant={textElement?.bold ? "secondary" : "ghost"}
+                  aria-label="Gras"
+                  aria-pressed={textElement?.bold === true}
+                  disabled={!canEdit || !textElement}
+                  onClick={() => setFormat({ bold: !(textElement?.bold ?? false) }, "format-bold")}
+                >
+                  <strong>G</strong>
+                </Button>
+                <Button
+                  size="sm"
+                  variant={textElement?.italic ? "secondary" : "ghost"}
+                  aria-label="Italique"
+                  aria-pressed={textElement?.italic === true}
+                  disabled={!canEdit || !textElement}
+                  onClick={() =>
+                    setFormat({ italic: !(textElement?.italic ?? false) }, "format-italic")
+                  }
+                >
+                  <em>I</em>
+                </Button>
+                <Button
+                  size="sm"
+                  variant={textElement?.underline ? "secondary" : "ghost"}
+                  aria-label="Souligné"
+                  aria-pressed={textElement?.underline === true}
+                  disabled={!canEdit || !textElement}
+                  onClick={() =>
+                    setFormat({ underline: !(textElement?.underline ?? false) }, "format-underline")
+                  }
+                >
+                  <span className="underline">S</span>
+                </Button>
+                <select
+                  aria-label="Couleur du texte"
+                  value={textElement?.textColor ?? "default"}
+                  disabled={!canEdit || !textElement}
+                  onChange={(event) =>
+                    setFormat({ textColor: event.target.value as SlideTextColor }, "format-color")
+                  }
+                  className={TOOLBAR_SELECT_CLASS}
+                >
+                  {SLIDE_TEXT_COLOR_IDS.map((color) => (
+                    <option key={color} value={color}>
+                      {textColorLabel(color)}
+                    </option>
+                  ))}
+                </select>
+                <Button
+                  size="sm"
+                  variant={textElement?.align === "left" ? "secondary" : "ghost"}
+                  aria-label="Aligner le texte à gauche"
+                  aria-pressed={textElement?.align === "left"}
+                  disabled={!canEdit || !textElement}
+                  onClick={() => setFormat({ align: "left" }, "format-align")}
+                >
+                  ⇤
+                </Button>
+                <Button
+                  size="sm"
+                  variant={textElement?.align === "center" ? "secondary" : "ghost"}
+                  aria-label="Centrer le texte"
+                  aria-pressed={textElement?.align === "center"}
+                  disabled={!canEdit || !textElement}
+                  onClick={() => setFormat({ align: "center" }, "format-align")}
+                >
+                  ⇔
+                </Button>
+                <Button
+                  size="sm"
+                  variant={textElement?.align === "right" ? "secondary" : "ghost"}
+                  aria-label="Aligner le texte à droite"
+                  aria-pressed={textElement?.align === "right"}
+                  disabled={!canEdit || !textElement}
+                  onClick={() => setFormat({ align: "right" }, "format-align")}
+                >
+                  ⇥
+                </Button>
+                <Button
+                  size="sm"
+                  variant={textElement && isBulletList(textElement.text) ? "secondary" : "ghost"}
+                  aria-label="Puces"
+                  aria-pressed={textElement ? isBulletList(textElement.text) : false}
+                  disabled={!canEdit || !textElement}
+                  onClick={() =>
+                    setFormat({ text: toggleBulletList(textElement?.text ?? "") }, "format-list")
+                  }
+                >
+                  • Puces
+                </Button>
+                <Button
+                  size="sm"
+                  variant={textElement && isNumberedList(textElement.text) ? "secondary" : "ghost"}
+                  aria-label="Numérotation"
+                  aria-pressed={textElement ? isNumberedList(textElement.text) : false}
+                  disabled={!canEdit || !textElement}
+                  onClick={() =>
+                    setFormat({ text: toggleNumberedList(textElement?.text ?? "") }, "format-list")
+                  }
+                >
+                  1. Numérotation
+                </Button>
+                <span aria-hidden className="mx-1 h-4 w-px shrink-0 bg-border" />
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  aria-label="Réduire la taille"
+                  title="Réduire la taille"
+                  onClick={() => setFontSize(bumpFontSize(textElement.fontSize, -1))}
+                >
+                  A−
+                </Button>
+                <Input
+                  aria-label="Taille du texte"
+                  type="number"
+                  min={8}
+                  max={200}
+                  value={textElement.fontSize}
+                  onChange={(event) => setFontSize(Number(event.target.value) || 24)}
+                  className="h-8 w-14 text-center"
+                />
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  aria-label="Augmenter la taille"
+                  title="Augmenter la taille"
+                  onClick={() => setFontSize(bumpFontSize(textElement.fontSize, 1))}
+                >
+                  A+
+                </Button>
+                {selectedShape ? (
+                  <>
+                    <span aria-hidden className="mx-1 h-4 w-px shrink-0 bg-border" />
+                    {SLIDE_SHAPE_KINDS.map((kind) => {
+                      const active = shapeVariant(selectedShape) === kind;
+                      return (
+                        <Button
+                          key={kind}
+                          size="sm"
+                          variant={active ? "secondary" : "ghost"}
+                          aria-label={`Forme ${shapeLabel(kind).toLowerCase()}`}
+                          title={shapeLabel(kind)}
+                          aria-pressed={active}
+                          onClick={() => setShape(kind)}
+                        >
+                          {kind === "rectangle" ? "▭" : kind === "ellipse" ? "◯" : "⟋"}
+                        </Button>
+                      );
+                    })}
+                  </>
+                ) : null}
+              </>
+            ) : singleSelection?.kind === "image" ? (
+              <>
+                <span aria-hidden className="mx-1 h-4 w-px shrink-0 bg-border" />
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  aria-label="Remplacer l'image"
+                  disabled={!canEdit}
+                  onClick={() => singleSelection && requestImage(singleSelection.key)}
+                >
+                  Remplacer l'image
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="text-destructive"
+                  aria-label="Supprimer l'image"
+                  disabled={!canEdit}
+                  onClick={deleteSelection}
+                >
+                  Supprimer
+                </Button>
+              </>
+            ) : null}
 
-            {/* Transition de la présentation, avec aperçu immédiat. */}
+            {selectedKeys.length > 0 ? (
+              <>
+                <span aria-hidden className="mx-1 h-4 w-px shrink-0 bg-border" />
+                {selectedKeys.length > 1 ? (
+                  <span className="px-1 text-xs tabular-nums text-muted-foreground">
+                    {`${selectedKeys.length} éléments`}
+                  </span>
+                ) : null}
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  aria-label="Aligner à gauche"
+                  title="Aligner à gauche"
+                  disabled={!canEdit}
+                  onClick={() => arrangeSelection("left")}
+                >
+                  ⇤
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  aria-label="Aligner au centre"
+                  title="Aligner au centre"
+                  disabled={!canEdit}
+                  onClick={() => arrangeSelection("hcenter")}
+                >
+                  ↔
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  aria-label="Aligner à droite"
+                  title="Aligner à droite"
+                  disabled={!canEdit}
+                  onClick={() => arrangeSelection("right")}
+                >
+                  ⇥
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  aria-label="Aligner en haut"
+                  title="Aligner en haut"
+                  disabled={!canEdit}
+                  onClick={() => arrangeSelection("top")}
+                >
+                  ⇡
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  aria-label="Aligner au milieu"
+                  title="Aligner au milieu"
+                  disabled={!canEdit}
+                  onClick={() => arrangeSelection("vcenter")}
+                >
+                  ↕
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  aria-label="Aligner en bas"
+                  title="Aligner en bas"
+                  disabled={!canEdit}
+                  onClick={() => arrangeSelection("bottom")}
+                >
+                  ⇣
+                </Button>
+                <Menu
+                  label="Autres actions"
+                  align="end"
+                  triggerClassName="h-8 w-8 border-transparent bg-transparent px-0 hover:bg-muted focus-visible:ring-offset-0"
+                  triggerIcon={<span aria-hidden>⋯</span>}
+                  items={[
+                    {
+                      id: "duplicate",
+                      label: "Dupliquer",
+                      shortcut: "Ctrl+D",
+                      disabled: !canEdit,
+                      onSelect: duplicateSelection,
+                    },
+                    {
+                      id: "copy",
+                      label: "Copier",
+                      shortcut: "Ctrl+C",
+                      disabled: !canEdit,
+                      onSelect: copySelection,
+                    },
+                    {
+                      id: "paste",
+                      label: "Coller",
+                      shortcut: "Ctrl+V",
+                      disabled: !canEdit || clipboardRef.current.length === 0,
+                      onSelect: () => pasteClipboard(),
+                    },
+                    {
+                      id: "dist-x",
+                      label: "Répartir horizontalement",
+                      separated: true,
+                      disabled: !canEdit || selectedKeys.length < 3,
+                      onSelect: () => distributeSelection("x"),
+                    },
+                    {
+                      id: "dist-y",
+                      label: "Répartir verticalement",
+                      disabled: !canEdit || selectedKeys.length < 3,
+                      onSelect: () => distributeSelection("y"),
+                    },
+                    ...Z_MOVE_ORDER.map((move, index) => ({
+                      id: `z-${move}`,
+                      label: zMoveLabel(move),
+                      separated: index === 0,
+                      disabled:
+                        !canEdit ||
+                        selectedKeys.length !== 1 ||
+                        !canMoveZ(selectedElementIndex, move, elementCount),
+                      onSelect: () => zOrderSelected(move),
+                    })),
+                    {
+                      id: "delete",
+                      label: "Supprimer",
+                      shortcut: "Suppr",
+                      separated: true,
+                      destructive: true,
+                      disabled: !canEdit,
+                      onSelect: deleteSelection,
+                    },
+                  ]}
+                />
+              </>
+            ) : null}
+
+            <span aria-hidden className="mx-1 h-4 w-px shrink-0 bg-border" />
+
+            {/* Présentation : format de la diapositive, toujours à portée. */}
+            <Menu
+              label="Présentation"
+              align="start"
+              triggerClassName="h-8 border-transparent bg-transparent px-2 text-sm hover:bg-muted focus-visible:ring-offset-0"
+              items={SLIDE_ASPECT_IDS.map((value) => ({
+                id: value,
+                label: `${aspectLabel(value)}${aspect === value ? " ✓" : ""}`,
+                disabled: !canEdit,
+                onSelect: () => changeAspect(value),
+              }))}
+            />
+
+            <span aria-hidden className="mx-1 h-4 w-px shrink-0 bg-border" />
+
+            {/* Transition : sélecteur compact, durée et aperçu. */}
             <select
               aria-label="Transition"
               value={transition}
@@ -1321,19 +1869,21 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
               disabled={!canEdit || transition === "none"}
               onChange={(event) => setTransitionMs(Number(event.target.value) || transitionMs)}
               onBlur={(event) => changeTransitionMs(Number(event.target.value))}
-              className="h-8 w-20"
+              className="h-8 w-16"
             />
+            <span className="text-[11px] text-muted-foreground">ms</span>
             <Button
               size="sm"
               variant="ghost"
-              disabled={!canEdit || transition === "none"}
+              aria-label="Aperçu de la transition"
               title={transitionHint(transition)}
+              disabled={!canEdit || transition === "none"}
               onClick={() => {
                 setAnnouncement(`Aperçu : ${transitionSummary(transition, transitionMs)}`);
                 animateTransition(previewRef.current, transition, transitionMs);
               }}
             >
-              Aperçu
+              ▶
             </Button>
           </div>
 
@@ -1346,18 +1896,18 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
               onSelect={selectSlide}
               onMove={moveSlideTo}
               onAdd={() => setLayoutOpen(true)}
+              onDuplicate={duplicateSlide}
+              onDelete={deleteSlide}
+              onMoveUp={() => moveSlide(-1)}
+              onMoveDown={() => moveSlide(1)}
+              canDelete={slides.length > 1}
+              canMoveUp={canMoveSlide(selectedSlide, -1, slides.length)}
+              canMoveDown={canMoveSlide(selectedSlide, 1, slides.length)}
               aspect={aspect}
               theme={theme}
             />
 
-            <div
-              ref={workspaceRef}
-              className="min-h-0 flex-1 overflow-auto bg-muted/40 p-6"
-              onPointerDown={(event) => {
-                // Un clic dans le vide du plan de travail désélectionne.
-                if (event.target === event.currentTarget) setSelectedElementKey(null);
-              }}
-            >
+            <div ref={workspaceRef} className="min-h-0 flex-1 overflow-auto bg-muted/40 p-6">
               <div
                 className="mx-auto"
                 style={{ width: `${Math.round((SLIDE_BASE_WIDTH * zoom) / 100)}px` }}
@@ -1367,261 +1917,102 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
                     slide={current}
                     fileId={fileId}
                     interactive={canEdit}
-                    selectedElementKey={selectedElementKey}
-                    onSelectElement={(key) => {
-                      setSelectedElementKey(key);
-                      if (key === null) setEditingKey(null);
-                    }}
+                    selectedElementKeys={selectedKeys}
+                    onSelectElement={selectElement}
+                    onSelectionChange={selectMany}
                     onGeometryChange={updateElement}
+                    onGestureStart={() => pushHistory("geometry")}
                     editingKey={editingKey}
                     onStartEdit={startEdit}
                     onTextChange={changeText}
                     onEndEdit={endEdit}
+                    onRequestImage={requestImage}
                     aspect={aspect}
                     theme={theme}
                   />
                 </div>
               </div>
             </div>
-
-            <aside
-              aria-label="Panneau de mise en forme"
-              className="flex w-72 shrink-0 flex-col gap-3 overflow-y-auto border-l border-border bg-card p-3 print-hide"
-            >
-              {selectedElement && canEdit ? (
-                <div className="flex flex-col gap-3">
-                  <div className="flex items-baseline justify-between gap-2">
-                    <p className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">
-                      Élément sélectionné
-                    </p>
-                    <span className="text-[11px] text-muted-foreground">
-                      {selectedElementIndex + 1}/{elementCount}
-                    </span>
-                  </div>
-                  {selectedElement.kind === "image" ? (
-                    <p className="text-sm font-medium">Image</p>
-                  ) : null}
-                  {selectedElement.kind === "text" ? (
-                    <div className="flex flex-col gap-1">
-                      <Label htmlFor="element-text">Texte</Label>
-                      <textarea
-                        id="element-text"
-                        value={selectedElement.text}
-                        onChange={(event) =>
-                          updateElement(selectedElement.key, { text: event.target.value })
-                        }
-                        rows={3}
-                        maxLength={2000}
-                        className="rounded-md border border-input bg-background px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                      />
-                      <p className="text-[11px] leading-snug text-muted-foreground">
-                        ou double-cliquez sur la zone pour modifier en place.
-                      </p>
-                    </div>
-                  ) : null}
-                  {selectedShape ? (
-                    <fieldset className="flex flex-col gap-1">
-                      <legend className="text-xs font-medium text-muted-foreground">Forme</legend>
-                      <div className="flex flex-wrap gap-1">
-                        {SLIDE_SHAPE_KINDS.map((kind) => {
-                          const active = shapeVariant(selectedShape) === kind;
-                          return (
-                            <Button
-                              key={kind}
-                              size="sm"
-                              variant={active ? "secondary" : "ghost"}
-                              aria-pressed={active}
-                              onClick={() => updateElement(selectedElement.key, { kind })}
-                            >
-                              {shapeLabel(kind)}
-                            </Button>
-                          );
-                        })}
-                      </div>
-                    </fieldset>
-                  ) : null}
-                  <div className="flex flex-col gap-1">
-                    <Label htmlFor="element-size">Taille du texte</Label>
-                    <div className="flex items-center gap-2">
-                      <Input
-                        id="element-size"
-                        type="number"
-                        min={8}
-                        max={200}
-                        value={selectedElement.fontSize}
-                        onChange={(event) =>
-                          updateElement(selectedElement.key, {
-                            fontSize: clamp(Number(event.target.value) || 24, 8, 200),
-                          })
-                        }
-                        className="h-8"
-                      />
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        aria-label="Réduire la taille"
-                        onClick={() =>
-                          updateElement(selectedElement.key, {
-                            fontSize: bumpFontSize(selectedElement.fontSize, -1),
-                          })
-                        }
-                      >
-                        A−
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        aria-label="Augmenter la taille"
-                        onClick={() =>
-                          updateElement(selectedElement.key, {
-                            fontSize: bumpFontSize(selectedElement.fontSize, 1),
-                          })
-                        }
-                      >
-                        A+
-                      </Button>
-                    </div>
-                  </div>
-                  <fieldset className="flex flex-col gap-1">
-                    <legend className="text-xs font-medium text-muted-foreground">
-                      Ordre (avant / arrière-plan)
-                    </legend>
-                    <div className="flex flex-wrap gap-1">
-                      {Z_MOVE_ORDER.map((move) => (
-                        <Button
-                          key={move}
-                          size="sm"
-                          variant="outline"
-                          disabled={!canMoveZ(selectedElementIndex, move, elementCount)}
-                          onClick={() => zOrderSelected(move)}
-                        >
-                          {zMoveLabel(move)}
-                        </Button>
-                      ))}
-                    </div>
-                    <p className="text-[11px] leading-snug text-muted-foreground">
-                      <Kbd>Ctrl</Kbd>+<Kbd>↑</Kbd> avancer, <Kbd>Ctrl</Kbd>+<Kbd>↓</Kbd> reculer,
-                      avec <Kbd>Maj</Kbd> pour les extrémités.
-                    </p>
-                  </fieldset>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    className="self-start text-destructive"
-                    onClick={deleteElement}
-                  >
-                    Supprimer l'élément
-                  </Button>
-                </div>
-              ) : (
-                <div className="flex flex-col gap-3">
-                  <p className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">
-                    Diapositive
-                  </p>
-                  <div className="flex flex-col gap-1">
-                    <Label htmlFor="slide-title">Titre de la diapositive</Label>
-                    <Input
-                      id="slide-title"
-                      value={current.title}
-                      disabled={!canEdit}
-                      onChange={(event) =>
-                        mutateSlide(selectedSlide, (slide) => ({
-                          ...slide,
-                          title: event.target.value,
-                        }))
-                      }
-                      maxLength={255}
-                    />
-                  </div>
-                  <fieldset className="flex flex-col gap-1">
-                    <legend className="text-xs font-medium text-muted-foreground">
-                      Format de la diapositive
-                    </legend>
-                    <div className="flex flex-wrap gap-1">
-                      {SLIDE_ASPECT_IDS.map((value) => (
-                        <Button
-                          key={value}
-                          size="sm"
-                          variant={aspect === value ? "secondary" : "ghost"}
-                          aria-pressed={aspect === value}
-                          title={aspectLabel(value)}
-                          disabled={!canEdit}
-                          onClick={() => changeAspect(value)}
-                        >
-                          {value === "16:9" ? "Écran large (16:9)" : "Standard (4:3)"}
-                        </Button>
-                      ))}
-                    </div>
-                  </fieldset>
-                  <p className="text-xs leading-relaxed text-muted-foreground">
-                    Cliquez un élément pour le mettre en forme. <Kbd>Entrée</Kbd> l'ouvre en
-                    édition, <Kbd>Suppr</Kbd> le supprime, les flèches le déplacent (<Kbd>Maj</Kbd>{" "}
-                    : pas de 5 %). <Kbd>←</Kbd> <Kbd>→</Kbd> changent de diapositive.
-                  </p>
-                </div>
-              )}
-            </aside>
           </section>
 
-          <SlideNotesField
-            slide={current}
-            index={selectedSlide}
-            canEdit={canEdit}
-            onNotesChange={(notes) => mutateSlide(selectedSlide, (slide) => ({ ...slide, notes }))}
-          />
+          {notesVisible ? (
+            <SlideNotesField
+              slide={current}
+              index={selectedSlide}
+              canEdit={canEdit}
+              onNotesChange={(notes) => {
+                pushHistory("notes");
+                mutateSlide(selectedSlide, (slide) => ({ ...slide, notes }));
+              }}
+              onClose={() => setNotesVisible(false)}
+            />
+          ) : null}
         </>
       ) : null}
 
-      {/* Dialogue de mise en page d'une nouvelle diapositive. */}
+      {/* Galerie des mises en page : aperçus générés depuis la vraie géométrie. */}
       <Dialog open={layoutOpen} onClose={() => setLayoutOpen(false)} title="Nouvelle diapositive">
         <div className="flex flex-col gap-3">
           <p className="text-sm text-muted-foreground">
             Choisissez une mise en page de départ — les zones se remplissent d'un clic.
           </p>
-          <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
-            {SLIDE_LAYOUT_IDS.map((layoutId) => (
-              <button
-                key={layoutId}
-                type="button"
-                onClick={() => {
-                  setLayoutOpen(false);
-                  addSlide(layoutId);
-                }}
-                className="flex flex-col gap-2 rounded-lg border border-border bg-card p-3 text-left transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              >
-                <span
-                  aria-hidden
-                  className="flex aspect-video w-full flex-col justify-center gap-1.5 rounded border border-border bg-background p-2"
+          <div className="grid max-h-[60vh] grid-cols-2 gap-2 overflow-y-auto pr-1">
+            {SLIDE_LAYOUT_IDS.map((layoutId) => {
+              const zones = layoutElements(layoutId);
+              return (
+                <button
+                  key={layoutId}
+                  type="button"
+                  onClick={() => {
+                    setLayoutOpen(false);
+                    addSlide(layoutId);
+                  }}
+                  className="flex flex-col gap-2 rounded-lg border border-border bg-card p-3 text-left transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 >
-                  {layoutId === "title" ? (
-                    <>
-                      <span className="mx-auto h-1.5 w-3/4 rounded-full bg-foreground/70" />
-                      <span className="mx-auto h-1 w-1/2 rounded-full bg-muted-foreground/60" />
-                    </>
-                  ) : null}
-                  {layoutId === "title-content" ? (
-                    <>
-                      <span className="h-1.5 w-2/3 rounded-full bg-foreground/70" />
-                      <span className="h-1 w-full rounded-full bg-muted-foreground/50" />
-                      <span className="h-1 w-full rounded-full bg-muted-foreground/50" />
-                      <span className="h-1 w-5/6 rounded-full bg-muted-foreground/50" />
-                    </>
-                  ) : null}
-                  {layoutId === "blank" ? (
-                    <span className="text-center text-[10px] text-muted-foreground">
-                      Aucune zone
-                    </span>
-                  ) : null}
-                </span>
-                <span className="text-sm font-medium">{layoutLabel(layoutId)}</span>
-                <span className="text-xs text-muted-foreground">{layoutHint(layoutId)}</span>
-              </button>
-            ))}
+                  <span
+                    aria-hidden
+                    className="relative block aspect-video w-full overflow-hidden rounded border border-border bg-background"
+                  >
+                    {zones.map((zone) => (
+                      <span
+                        key={`${zone.placeholder}-${zone.x}-${zone.y}`}
+                        className={cn(
+                          "absolute rounded-[2px]",
+                          zone.placeholder === "image"
+                            ? "border border-dashed border-muted-foreground/50 bg-muted/50"
+                            : "bg-foreground/40",
+                        )}
+                        style={{
+                          left: `${zone.x}%`,
+                          top: `${zone.y}%`,
+                          width: `${zone.w}%`,
+                          height: `${zone.h}%`,
+                        }}
+                      />
+                    ))}
+                    {zones.length === 0 ? (
+                      <span className="absolute inset-0 grid place-items-center text-[10px] text-muted-foreground">
+                        Aucune zone
+                      </span>
+                    ) : null}
+                  </span>
+                  <span className="text-sm font-medium">{layoutLabel(layoutId)}</span>
+                  <span className="text-xs text-muted-foreground">{layoutHint(layoutId)}</span>
+                </button>
+              );
+            })}
           </div>
         </div>
       </Dialog>
 
-      <Dialog open={imageOpen} onClose={() => setImageOpen(false)} title="Ajouter une image">
+      <Dialog
+        open={imageOpen}
+        onClose={() => {
+          setImageOpen(false);
+          setPendingImageKey(null);
+        }}
+        title={pendingImageKey ? "Remplir la zone image" : "Ajouter une image"}
+      >
         <div className="flex flex-col gap-3">
           <input
             type="file"
@@ -1633,6 +2024,7 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
           />
           <p className="text-xs text-muted-foreground">
             PNG, JPEG, WebP, GIF ou AVIF — 8 Mo maximum.
+            {pendingImageKey ? " L'image prendra la place de la zone." : ""}
           </p>
           {imageBusy ? <p className="text-xs text-muted-foreground">Téléversement…</p> : null}
           {imageError ? <p className="text-xs text-destructive">{imageError}</p> : null}
@@ -1755,11 +2147,6 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
       <p role="status" aria-live="polite" className="sr-only print-hide">
         {announcement}
       </p>
-
-      {/* Message d'annulation : suppression ou duplication réversible 6 s. */}
-      {undo ? (
-        <SlideUndoToast message={undo.message} onUndo={runUndo} onDismiss={clearUndo} />
-      ) : null}
 
       {/* Racine d'impression : toutes les diapositives, une page chacune.
           Portal vers <body> pour échapper aux conteneurs défilants. */}

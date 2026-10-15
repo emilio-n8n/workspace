@@ -6,6 +6,7 @@ import {
   EmptyState,
   IconChat,
   LoadingState,
+  Menu,
 } from "@workspace/ui";
 import { type FormEvent, useCallback, useEffect, useState } from "react";
 import {
@@ -212,22 +213,27 @@ export function CourseFeed({
                       {formatDateTime(announcement.createdAt) ?? "date inconnue"}
                     </p>
                   </div>
+                  {/* Action rare : regroupée dans le menu « ⋯ » de la publication. */}
                   {announcement.canDelete ? (
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      className="text-destructive"
-                      onClick={() =>
-                        setDeleteTarget({
-                          kind: "announcement",
-                          id: announcement.id,
-                          label: "cette publication et ses commentaires",
-                        })
-                      }
-                    >
-                      Supprimer
-                    </Button>
+                    <Menu
+                      label="Actions sur la publication"
+                      align="end"
+                      triggerIcon={<span aria-hidden>⋯</span>}
+                      triggerClassName="h-8 w-8 border-transparent bg-transparent px-0 hover:bg-muted focus-visible:ring-offset-0"
+                      items={[
+                        {
+                          id: "delete",
+                          label: "Supprimer la publication",
+                          destructive: true,
+                          onSelect: () =>
+                            setDeleteTarget({
+                              kind: "announcement",
+                              id: announcement.id,
+                              label: "cette publication et ses commentaires",
+                            }),
+                        },
+                      ]}
+                    />
                   ) : null}
                 </div>
 
@@ -267,21 +273,25 @@ export function CourseFeed({
                               {formatDateTime(comment.createdAt) ?? "date inconnue"}
                             </span>
                             {comment.canDelete ? (
-                              <Button
-                                type="button"
-                                variant="ghost"
-                                size="sm"
-                                aria-label={`Supprimer le commentaire de ${comment.author.name}`}
-                                onClick={() =>
-                                  setDeleteTarget({
-                                    kind: "comment",
-                                    id: comment.id,
-                                    label: "ce commentaire",
-                                  })
-                                }
-                              >
-                                Supprimer
-                              </Button>
+                              <Menu
+                                label={`Actions sur le commentaire de ${comment.author.name}`}
+                                align="end"
+                                triggerIcon={<span aria-hidden>⋯</span>}
+                                triggerClassName="h-8 w-8 border-transparent bg-transparent px-0 hover:bg-muted focus-visible:ring-offset-0"
+                                items={[
+                                  {
+                                    id: "delete",
+                                    label: "Supprimer le commentaire",
+                                    destructive: true,
+                                    onSelect: () =>
+                                      setDeleteTarget({
+                                        kind: "comment",
+                                        id: comment.id,
+                                        label: "ce commentaire",
+                                      }),
+                                  },
+                                ]}
+                              />
                             ) : null}
                           </div>
                           <p className="whitespace-pre-wrap text-sm text-muted-foreground">

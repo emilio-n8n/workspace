@@ -14,6 +14,7 @@ import {
   IconKey,
   IconSearch,
   IconSettings,
+  PageHeader,
   resolveSuiteApps,
 } from "@workspace/ui";
 import { useCallback, useEffect, useState } from "react";
@@ -316,7 +317,7 @@ function DashboardPage() {
     );
   }
 
-  const apps = resolveSuiteApps(urls);
+  const apps = resolveSuiteApps(urls, workspace.activeOrganization?.kind);
 
   // Espace « nouveau » : aucune organisation partagée (proxy du nombre de membres,
   // absent de l'état existant) et au plus trois fichiers.
@@ -328,15 +329,12 @@ function DashboardPage() {
 
   return (
     <div className="mx-auto flex max-w-5xl flex-col gap-6">
-      <header className="flex flex-col gap-1">
-        <h1 className="font-display text-3xl font-semibold tracking-tight">
-          {`Bonjour ${workspace.user.name.split(" ")[0]}`}
-        </h1>
-        <p className="text-sm text-muted-foreground">
-          Votre espace de travail
-          {workspace.activeOrganization ? ` — ${workspace.activeOrganization.name}` : ""}.
-        </p>
-      </header>
+      <PageHeader
+        title={`Bonjour ${workspace.user.name.split(" ")[0]}`}
+        description={`Votre espace de travail${
+          workspace.activeOrganization ? ` — ${workspace.activeOrganization.name}` : ""
+        }.`}
+      />
 
       <Link
         to="/app/recherche"

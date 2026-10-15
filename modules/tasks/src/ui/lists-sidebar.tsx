@@ -5,6 +5,7 @@ import {
   Dialog,
   EmptyState,
   IconCheckSquare,
+  IconClose,
   IconGrid,
   Input,
   Label,
@@ -22,6 +23,10 @@ import type { TaskListView } from "../server.ts";
  * glisser-déposer, réservé à une mission dédiée), et chaque déplacement est
  * annoncé dans une région `aria-live`. L'ordre est partagé par toute
  * l'organisation : il exige le droit d'écriture sur chaque liste.
+ *
+ * Panneau secondaire fermable : la croix de l'en-tête le referme, et
+ * l'en-tête de la page porte un bouton « Listes » qui le rouvre (l'état vit
+ * dans `TasksView`, seul endroit qui connaît les deux).
  */
 
 export type ListsSidebarProps = {
@@ -31,6 +36,8 @@ export type ListsSidebarProps = {
   showMyTasks: boolean;
   onSelectList: (listId: string) => void;
   onShowMyTasks: () => void;
+  /** Ferme le panneau (croix de l'en-tête) ; sans rappel, la croix n'est pas rendue. */
+  onClose?: () => void;
   onCreateList: (name: string) => Promise<boolean>;
   onRenameList: (listId: string, name: string) => Promise<boolean>;
   onReorderLists: (listIds: string[]) => Promise<boolean>;
@@ -44,6 +51,7 @@ export function ListsSidebar({
   showMyTasks,
   onSelectList,
   onShowMyTasks,
+  onClose,
   onCreateList,
   onRenameList,
   onReorderLists,
@@ -99,21 +107,38 @@ export function ListsSidebar({
   }
 
   return (
-    <aside className="flex w-64 shrink-0 flex-col rounded-lg border border-border bg-card">
-      <div className="flex items-center justify-between border-b border-border px-3 py-2">
-        <h2 className="text-sm font-semibold">Listes</h2>
-        <Button
-          variant="ghost"
-          size="sm"
-          aria-expanded={creating}
-          aria-controls="new-list-form"
-          onClick={() => {
-            setCreating((current) => !current);
-            setFormError(null);
-          }}
-        >
-          Nouvelle liste
-        </Button>
+    <aside
+      id="lists-sidebar"
+      className="flex w-64 shrink-0 flex-col rounded-lg border border-border bg-card"
+    >
+      <div className="flex items-center justify-between gap-1 border-b border-border px-3 py-2">
+        <h2 className="min-w-0 truncate text-sm font-semibold">Listes</h2>
+        <div className="flex shrink-0 items-center">
+          <Button
+            variant="ghost"
+            size="sm"
+            aria-expanded={creating}
+            aria-controls="new-list-form"
+            onClick={() => {
+              setCreating((current) => !current);
+              setFormError(null);
+            }}
+          >
+            Nouvelle liste
+          </Button>
+          {onClose ? (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="px-1.5"
+              aria-label="Fermer les listes"
+              title="Fermer les listes"
+              onClick={onClose}
+            >
+              <IconClose className="size-4" />
+            </Button>
+          ) : null}
+        </div>
       </div>
 
       {creating ? (

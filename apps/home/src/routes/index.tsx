@@ -67,7 +67,7 @@ function LandingPage() {
   }, []);
 
   return (
-    <div className="flex min-h-screen flex-col bg-background text-foreground">
+    <div className="flex min-h-dvh flex-col bg-background text-foreground">
       {/* Premier élément focusable de la page : évite l'en-tête au clavier. */}
       <a
         href="#contenu"

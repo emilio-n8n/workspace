@@ -30,11 +30,14 @@ export function FormPreview({
   description,
   questions,
   accent,
+  onClose,
 }: {
   title: string;
   description: string;
   questions: PreviewQuestion[];
   accent: string;
+  /** Fermeture du panneau d'aperçu (croix visible en en-tête). */
+  onClose?: () => void;
 }) {
   const [answers, setAnswers] = useState<Record<string, string | string[]>>({});
   const rootRef = useRef<HTMLDivElement>(null);
@@ -50,8 +53,18 @@ export function FormPreview({
       aria-label="Aperçu du formulaire"
       className="flex flex-col gap-2 rounded-xl border border-border bg-card shadow-soft"
     >
-      <p className="border-b border-border px-4 py-2 text-xs font-medium uppercase tracking-widest text-muted-foreground">
-        Aperçu en direct
+      <p className="flex items-center gap-2 border-b border-border px-4 py-2 text-xs font-medium uppercase tracking-widest text-muted-foreground">
+        <span className="min-w-0 flex-1">Aperçu en direct</span>
+        {onClose ? (
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Fermer l'aperçu"
+            className="grid size-6 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            ✕
+          </button>
+        ) : null}
       </p>
       <div ref={rootRef} className="flex flex-col gap-4 px-4 py-4">
         <header

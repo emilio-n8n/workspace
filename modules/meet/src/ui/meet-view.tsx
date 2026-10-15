@@ -9,6 +9,7 @@ import {
   Input,
   Label,
   LoadingState,
+  Menu,
   PageHeader,
   Toasts,
   useToasts,
@@ -132,26 +133,35 @@ export function MeetView() {
                   {room.requireAdmission ? "entrée sur admission" : "entrée libre"}
                 </p>
               </div>
-              <Button size="sm" variant="outline" onClick={() => void copyLink(room.slug)}>
-                Copier le lien
-              </Button>
               <Button
                 size="sm"
                 onClick={() => void navigate({ to: "/room/$slug", params: { slug: room.slug } })}
               >
                 Rejoindre
               </Button>
-              {room.mine ? (
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  className="text-destructive"
-                  loading={busy}
-                  onClick={() => setRoomToDelete(room)}
-                >
-                  Supprimer
-                </Button>
-              ) : null}
+              <Menu
+                label={`Actions pour la salle « ${room.name} »`}
+                triggerIcon={<span aria-hidden>⋯</span>}
+                triggerClassName="h-8 w-8 border-transparent bg-transparent px-0 hover:bg-muted focus-visible:ring-offset-0"
+                items={[
+                  {
+                    id: "copy-link",
+                    label: "Copier le lien",
+                    onSelect: () => void copyLink(room.slug),
+                  },
+                  ...(room.mine
+                    ? [
+                        {
+                          id: "delete",
+                          label: "Supprimer",
+                          separated: true,
+                          destructive: true,
+                          onSelect: () => setRoomToDelete(room),
+                        },
+                      ]
+                    : []),
+                ]}
+              />
             </li>
           ))}
         </ul>

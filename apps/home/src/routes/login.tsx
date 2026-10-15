@@ -91,7 +91,7 @@ function LoginPage() {
   }
 
   return (
-    <main className="flex min-h-screen items-center justify-center bg-background px-4 text-foreground">
+    <main className="flex min-h-dvh items-center justify-center bg-background px-4 text-foreground">
       <Card className="w-full max-w-sm">
         <CardHeader>
           <CardTitle>Connexion à Workspace</CardTitle>

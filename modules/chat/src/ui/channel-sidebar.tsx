@@ -1,7 +1,17 @@
-import { Badge, Button, cn, IconArchive, IconGlobe, Spinner } from "@workspace/ui";
+import {
+  Badge,
+  Button,
+  cn,
+  IconArchive,
+  IconClose,
+  IconGlobe,
+  IconMail,
+  Menu,
+  Spinner,
+} from "@workspace/ui";
 import { useState } from "react";
 import type { ChannelView } from "../server.ts";
-import { IconLock } from "./icons.tsx";
+import { IconLock, IconMore } from "./icons.tsx";
 
 export type ChannelSidebarProps = {
   channels: ChannelView[];
@@ -11,6 +21,8 @@ export type ChannelSidebarProps = {
   onCreateChannel: () => void;
   onStartDm: () => void;
   onDiscover: () => void;
+  /** Ferme la barre latérale — repliée en rail, réouvrable d'un clic. */
+  onClose: () => void;
 };
 
 /** Libellé d'une ligne de la barre latérale (#canal, @discussion, archivage). */
@@ -32,6 +44,7 @@ export function ChannelSidebar({
   onCreateChannel,
   onStartDm,
   onDiscover,
+  onClose,
 }: ChannelSidebarProps) {
   const [archivedOpen, setArchivedOpen] = useState(false);
 
@@ -41,37 +54,43 @@ export function ChannelSidebar({
 
   return (
     <aside className="flex min-h-0 w-64 shrink-0 flex-col gap-2 rounded-xl border border-border bg-card p-3">
-      <div className="flex items-center gap-1">
-        <h1 className="font-display text-base font-semibold">Chat</h1>
-        <div className="ml-auto flex gap-1">
-          <Button
-            size="sm"
-            variant="ghost"
-            aria-label="Nouveau canal"
-            title="Nouveau canal"
-            onClick={onCreateChannel}
-          >
-            ＋
-          </Button>
-          <Button
-            size="sm"
-            variant="ghost"
-            aria-label="Nouvelle discussion"
-            title="Nouvelle discussion"
-            onClick={onStartDm}
-          >
-            ✉
-          </Button>
-          <Button
-            size="sm"
-            variant="ghost"
-            aria-label="Découvrir les canaux publics"
-            title="Découvrir les canaux publics"
-            onClick={onDiscover}
-          >
-            <IconGlobe />
-          </Button>
-        </div>
+      <div className="flex items-center gap-0.5">
+        <h1 className="min-w-0 flex-1 truncate font-display text-base font-semibold">Chat</h1>
+        <Button
+          size="sm"
+          variant="ghost"
+          className="size-8 px-0"
+          aria-label="Nouveau canal"
+          title="Nouveau canal"
+          onClick={onCreateChannel}
+        >
+          ＋
+        </Button>
+        <Menu
+          label="Plus d'actions"
+          triggerIcon={<IconMore />}
+          align="end"
+          triggerClassName="size-8 rounded-md border-transparent bg-transparent px-0 font-normal hover:bg-muted focus-visible:ring-offset-0"
+          items={[
+            { id: "dm", label: "Nouvelle discussion", icon: <IconMail />, onSelect: onStartDm },
+            {
+              id: "discover",
+              label: "Découvrir les canaux publics",
+              icon: <IconGlobe />,
+              onSelect: onDiscover,
+            },
+          ]}
+        />
+        <Button
+          size="sm"
+          variant="ghost"
+          className="size-8 px-0"
+          aria-label="Masquer les conversations"
+          title="Masquer les conversations"
+          onClick={onClose}
+        >
+          <IconClose />
+        </Button>
       </div>
 
       <div aria-live="polite" className="sr-only">
@@ -89,7 +108,10 @@ export function ChannelSidebar({
         </p>
       ) : (
         <>
-          <ul aria-label="Conversations" className="flex flex-col gap-1 overflow-y-auto">
+          <ul
+            aria-label="Conversations"
+            className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto"
+          >
             {active.map((channel) => (
               <li key={channel.id}>
                 <button
@@ -117,7 +139,7 @@ export function ChannelSidebar({
           </ul>
 
           {archived.length > 0 ? (
-            <div className="mt-auto flex flex-col gap-1 border-t border-border pt-2">
+            <div className="mt-auto flex shrink-0 flex-col gap-1 border-t border-border pt-2">
               <button
                 type="button"
                 onClick={() => setArchivedOpen((open) => !open)}
@@ -128,7 +150,10 @@ export function ChannelSidebar({
                 Archivés ({archived.length})
               </button>
               {archivedOpen ? (
-                <ul aria-label="Conversations archivées" className="flex flex-col gap-1">
+                <ul
+                  aria-label="Conversations archivées"
+                  className="flex max-h-40 flex-col gap-1 overflow-y-auto"
+                >
                   {archived.map((channel) => (
                     <li key={channel.id}>
                       <button

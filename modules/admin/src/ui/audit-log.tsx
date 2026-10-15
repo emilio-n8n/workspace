@@ -79,7 +79,7 @@ export function AuditLog({ refreshKey = 0 }: { refreshKey?: number }) {
 
   return (
     <section
-      className="flex flex-col gap-3 rounded-xl border border-border bg-card p-4"
+      className="flex min-h-0 flex-1 flex-col gap-3 rounded-xl border border-border bg-card p-4"
       aria-busy={loading}
     >
       <h2 className="font-display text-sm font-semibold">Journal d'audit</h2>
@@ -180,7 +180,7 @@ export function AuditLog({ refreshKey = 0 }: { refreshKey?: number }) {
           {total === 0 ? "Aucun évènement pour ces critères." : "Aucun évènement sur cette page."}
         </p>
       ) : (
-        <ul className="flex max-h-96 flex-col divide-y divide-border overflow-y-auto">
+        <ul className="flex min-h-0 flex-1 flex-col divide-y divide-border overflow-y-auto">
           {rows.map((entry: AuditEntry) => {
             const result = RESULT_LABELS[entry.result] ?? { label: entry.result };
             return (

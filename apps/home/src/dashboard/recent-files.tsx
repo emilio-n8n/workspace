@@ -168,7 +168,10 @@ export function RecentFilesSection({
                   <li key={entry.id}>
                     <a
                       href={entryHref(entry, urls)}
-                      className="flex h-11 items-center gap-3 rounded-md border border-border bg-card px-3 text-sm transition-colors hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 motion-reduce:transition-none"
+                      className={cn(
+                        "flex h-11 items-center gap-3 rounded-md border border-border bg-card px-3 text-sm transition-colors hover:bg-muted motion-reduce:transition-none",
+                        focusRing,
+                      )}
                     >
                       <FileIcon kind={entry.kind} mimeType={entry.mimeType} name={entry.name} />
                       <span className="truncate font-medium">{entry.name}</span>

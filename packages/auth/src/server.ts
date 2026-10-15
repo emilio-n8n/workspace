@@ -71,13 +71,47 @@ export class NoOrganizationError extends Error {
   }
 }
 
+/** Type de compte choisi à l'inscription : il décide des apps disponibles. */
+export type AccountKind = "personal" | "business" | "education";
+
+/** Nom de l'espace créé à l'inscription pour chaque type de compte. */
+const ORG_NAME: Record<AccountKind, string> = {
+  personal: "Espace personnel",
+  business: "Mon organisation",
+  education: "Mon établissement",
+};
+
+function orgSlugPrefix(kind: AccountKind): string {
+  if (kind === "business") return "org";
+  if (kind === "education") return "etab";
+  return "perso";
+}
+
+/**
+ * Lit le type de compte dans la méta d'organisation (texte JSON en base).
+ * Indéfini si la méta est absente ou illisible : les anciens espaces gardent
+ * alors la totalité de la suite (aucune app n'est retirée par défaut).
+ */
+export function parseAccountKind(metadata: unknown): AccountKind | undefined {
+  if (typeof metadata !== "string") return undefined;
+  try {
+    const parsed = JSON.parse(metadata) as { kind?: unknown };
+    const kind = parsed?.kind;
+    if (kind === "personal" || kind === "business" || kind === "education") return kind;
+  } catch {
+    // Méta non-JSON : aucune décision possible, on retombe sur le défaut.
+  }
+  return undefined;
+}
+
 /**
  * Garantit que l'utilisateur possède au moins une organisation
- * (espace personnel créé à l'inscription). Retourne l'organisation active.
+ * (espace créé à l'inscription, du type choisi). Retourne l'organisation active.
  */
 export async function ensurePersonalOrganization(
   headers: Headers,
-): Promise<{ organizationId: string; created: boolean }> {
+  kind: AccountKind = "personal",
+): Promise<{ organizationId: string; created: boolean; kind: AccountKind }> {
   const session = await getSession(headers);
   if (!session) throw new UnauthorizedError();
 
@@ -95,18 +129,18 @@ export async function ensurePersonalOrganization(
     return { organizationId: active.id, created: false };
   }
 
-  const slug = `perso-${randomUUID().slice(0, 8)}`;
+  const slug = `${orgSlugPrefix(kind)}-${randomUUID().slice(0, 8)}`;
   const created = await auth.api.createOrganization({
     headers,
     body: {
-      name: "Espace personnel",
+      name: ORG_NAME[kind],
       slug,
-      metadata: { kind: "personal" },
+      metadata: { kind },
     },
   });
 
   await auth.api.setActiveOrganization({ headers, body: { organizationId: created.id } });
-  return { organizationId: created.id, created: true };
+  return { organizationId: created.id, created: true, kind };
 }
 
 export type { Auth } from "./auth.ts";

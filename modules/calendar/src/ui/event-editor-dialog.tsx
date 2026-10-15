@@ -106,6 +106,7 @@ export function EventEditorDialog({
       open={editor !== null}
       onClose={onClose}
       title={editor?.eventId ? "Modifier l'événement" : "Nouvel événement"}
+      className="max-w-lg"
     >
       {editor ? (
         <form

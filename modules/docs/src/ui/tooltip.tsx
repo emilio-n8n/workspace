@@ -31,6 +31,13 @@ export type TooltipTriggerProps = Pick<
 const OPEN_DELAY_MS = 200;
 /** Délai de disparition après le départ du pointeur ou du focus. */
 const CLOSE_DELAY_MS = 120;
+/** Décalage vertical entre le déclencheur et l'info-bulle (pixels). */
+const GAP_PX = 6;
+/** Sous cette hauteur, l'info-bulle passe sous le déclencheur (mode focus). */
+const FLIP_THRESHOLD_PX = 56;
+
+/** Position écran mesurée à l'ouverture. */
+type TooltipPosition = { top: number; left: number; below: boolean };
 
 /**
  * Info-bulle de la barre d'outils : texte français et raccourci clavier.
@@ -40,12 +47,18 @@ const CLOSE_DELAY_MS = 120;
  * `Échap`. Le raccourci est référencé par `aria-describedby` : il est donc
  * annoncé par les lecteurs d'écran, pas seulement visible.
  *
+ * Positionnée en `fixed` d'après le rectangle du déclencheur : elle échappe
+ * ainsi au conteneur `overflow-x-auto` de la barre d'outils qui la rognerait.
+ *
  * Seul le raccourci entre dans l'arbre d'accessibilité — le texte de l'infobulle
  * est masqué aux lecteurs d'écran, sinon il double le nom accessible du bouton.
  */
 export function Tooltip({ content, shortcut, children }: TooltipProps) {
   const id = useId();
   const [open, setOpen] = useState(false);
+  const [position, setPosition] = useState<TooltipPosition | null>(null);
+  /** Déclencheur de la mesure : le bouton qui a demandé l'info-bulle. */
+  const anchor = useRef<HTMLElement | null>(null);
   const openTimer = useRef<number | null>(null);
   const closeTimer = useRef<number | null>(null);
 
@@ -58,8 +71,47 @@ export function Tooltip({ content, shortcut, children }: TooltipProps) {
 
   useEffect(() => clearTimers, [clearTimers]);
 
+  // Mesure le déclencheur à l'ouverture puis à chaque défilement (la barre
+  // défile horizontalement) : l'info-bulle reste collée au bouton. Si le
+  // défilement l'emporte hors de l'écran, on la referme.
+  useEffect(() => {
+    if (!open) {
+      setPosition(null);
+      return;
+    }
+    let frame = 0;
+    const measure = () => {
+      frame = 0;
+      const node = anchor.current;
+      if (!node) return;
+      const rect = node.getBoundingClientRect();
+      if (rect.bottom < 0 || rect.top > window.innerHeight) {
+        setOpen(false);
+        return;
+      }
+      const below = rect.top < FLIP_THRESHOLD_PX;
+      setPosition({
+        top: below ? rect.bottom + GAP_PX : rect.top - GAP_PX,
+        left: rect.left + rect.width / 2,
+        below,
+      });
+    };
+    measure();
+    const onScroll = () => {
+      if (frame === 0) frame = window.requestAnimationFrame(measure);
+    };
+    window.addEventListener("scroll", onScroll, true);
+    window.addEventListener("resize", onScroll);
+    return () => {
+      window.removeEventListener("scroll", onScroll, true);
+      window.removeEventListener("resize", onScroll);
+      if (frame !== 0) window.cancelAnimationFrame(frame);
+    };
+  }, [open]);
+
   /** `immediate` : le focus clavier n'attend pas (l'annonce serait décalée). */
-  function show(immediate: boolean) {
+  function show(immediate: boolean, trigger: HTMLElement) {
+    anchor.current = trigger;
     if (closeTimer.current !== null) {
       window.clearTimeout(closeTimer.current);
       closeTimer.current = null;
@@ -85,12 +137,12 @@ export function Tooltip({ content, shortcut, children }: TooltipProps) {
   function onFocus(event: FocusEvent<HTMLButtonElement>) {
     const target = event.target;
     if (typeof target.matches === "function" && !target.matches(":focus-visible")) return;
-    show(true);
+    show(true, event.currentTarget);
   }
 
   /** Souris uniquement : les tactiles n'ouvrent pas l'info-bulle. */
   function onPointerEnter(event: PointerEvent<HTMLButtonElement>) {
-    if (event.pointerType === "mouse") show(false);
+    if (event.pointerType === "mouse") show(false, event.currentTarget);
   }
 
   function onKeyDown(event: KeyboardEvent<HTMLButtonElement>) {
@@ -113,9 +165,11 @@ export function Tooltip({ content, shortcut, children }: TooltipProps) {
       <span
         role="tooltip"
         id={id}
+        style={position ? { top: position.top, left: position.left } : undefined}
         className={cn(
-          "pointer-events-none absolute bottom-full left-1/2 z-50 mb-1.5 flex w-max max-w-56 -translate-x-1/2 items-center rounded-md border border-border bg-popover px-2 py-1 text-xs text-popover-foreground shadow-lift transition-opacity duration-150 motion-reduce:transition-none",
-          open ? "visible opacity-100" : "invisible opacity-0",
+          "pointer-events-none fixed z-50 flex w-max max-w-56 -translate-x-1/2 items-center rounded-md border border-border bg-popover px-2 py-1 text-xs text-popover-foreground shadow-lift transition-opacity duration-150 motion-reduce:transition-none",
+          position?.below ? undefined : "-translate-y-full",
+          open && position ? "visible opacity-100" : "invisible opacity-0",
         )}
       >
         <span aria-hidden>{content}</span>

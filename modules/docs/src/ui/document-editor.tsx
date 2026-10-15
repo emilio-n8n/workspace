@@ -8,7 +8,7 @@ import { TextStyleKit } from "@tiptap/extension-text-style";
 import { NodeSelection } from "@tiptap/pm/state";
 import { type Editor, EditorContent, type JSONContent, useEditor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
-import { Alert, Button, cn, Dialog, Input, Label, LoadingState } from "@workspace/ui";
+import { Alert, Button, cn, Dialog, Input, Label, LoadingState, Menu } from "@workspace/ui";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { type CollabSession, createCollabSession } from "../collab-client.ts";
 import {
@@ -95,7 +95,7 @@ function isFormatActive(editor: WorkspaceEditor, id: FormatActionId): boolean {
 
 /** Classe commune des sélecteurs compacts de la barre d'outils. */
 const TOOLBAR_SELECT_CLASS =
-  "h-7 rounded-md border border-input bg-background px-1.5 text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
+  "h-8 rounded-md border border-input bg-background px-1.5 text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
 
 /** Style de paragraphe actif sous le curseur (catalogue `doc-format.ts`). */
 function activeParagraphStyle(editor: WorkspaceEditor): ParagraphStyleId {
@@ -571,257 +571,274 @@ function EditorSurface({
           role="toolbar"
           aria-label="Mise en forme du document"
           onKeyDown={onToolbarArrowKeys}
-          className="flex flex-wrap items-center gap-1 border-b border-border px-3 py-2"
+          className="print-hide flex items-center gap-0.5 border-b border-border bg-card px-2 py-1"
         >
-          <ToolbarButton
-            label="Plan"
-            pressed={outlineOpen}
-            onClick={() => setOutlineOpen((current) => !current)}
-          >
-            <OutlineIcon />
-          </ToolbarButton>
-          <ToolbarButton
-            label="Rechercher"
-            shortcutKey="f"
-            pressed={searchOpen}
-            onClick={() => setSearchOpen((current) => !current)}
-          >
-            <SearchIcon />
-          </ToolbarButton>
-          <ToolbarButton label="Mode focus" pressed={focusActive} onClick={toggleFocus}>
-            <FocusIcon />
-          </ToolbarButton>
-
-          <ToolbarSeparator />
-
-          <ToolbarButton
-            label="Annuler"
-            disabled={!canEdit || !editor.can().undo()}
-            onClick={() => editor.chain().focus().undo().run()}
-          >
-            ↺
-          </ToolbarButton>
-          <ToolbarButton
-            label="Rétablir"
-            disabled={!canEdit || !editor.can().redo()}
-            onClick={() => editor.chain().focus().redo().run()}
-          >
-            ↻
-          </ToolbarButton>
-
-          <ToolbarSeparator />
-
-          {/* Styles de paragraphe et taille de police — deux sélecteurs
-              compacts, comme dans un traitement de texte. */}
-          <select
-            aria-label="Style de paragraphe"
-            value={activeParagraphStyle(editor)}
-            disabled={!canEdit}
-            onChange={(event) =>
-              applyParagraphStyle(editor, event.target.value as ParagraphStyleId)
-            }
-            className={TOOLBAR_SELECT_CLASS}
-          >
-            {PARAGRAPH_STYLES.map((style) => (
-              <option key={style.id} value={style.id}>
-                {style.label}
-              </option>
-            ))}
-          </select>
-          <select
-            aria-label="Taille de police"
-            value={activeFontSize(editor) ?? ""}
-            disabled={!canEdit}
-            onChange={(event) => applyFontSize(editor, event.target.value)}
-            className={TOOLBAR_SELECT_CLASS}
-          >
-            <option value="">Taille</option>
-            {DOC_FONT_SIZES.map((size) => (
-              <option key={size} value={size}>
-                {size}
-              </option>
-            ))}
-          </select>
-
-          <ToolbarSeparator />
-
-          {/* Mise en forme : libellés, glyphes et raccourcis viennent du
-              catalogue — les mêmes commandes tournent au clavier. */}
-          {FORMAT_ACTIONS.map((action) => (
+          {/* Rangée unique : à l'étroit, les commandes défilent horizontalement
+              au lieu de passer à la ligne. Les menus restent hors de cette zone
+              de défilement pour que leurs panneaux ne soient jamais rognés. */}
+          <div className="flex min-w-0 flex-1 flex-nowrap items-center gap-0.5 overflow-x-auto [&>*]:shrink-0">
             <ToolbarButton
-              key={action.id}
-              label={action.label}
-              shortcutKey={action.shortcutKey}
-              pressed={isFormatActive(editor, action.id)}
-              disabled={!canEdit}
-              onClick={() => runFormatAction(editor, action.id)}
+              label="Plan"
+              pressed={outlineOpen}
+              onClick={() => setOutlineOpen((current) => !current)}
             >
-              <span className={action.glyphClassName}>{action.glyph}</span>
+              <OutlineIcon />
             </ToolbarButton>
-          ))}
+            <ToolbarButton
+              label="Rechercher"
+              shortcutKey="f"
+              pressed={searchOpen}
+              onClick={() => setSearchOpen((current) => !current)}
+            >
+              <SearchIcon />
+            </ToolbarButton>
+            <ToolbarButton label="Mode focus" pressed={focusActive} onClick={toggleFocus}>
+              <FocusIcon />
+            </ToolbarButton>
 
-          <ToolbarSeparator />
+            <ToolbarSeparator />
 
-          <ToolbarButton
-            label="Barré"
-            pressed={editor.isActive("strike")}
-            disabled={!canEdit}
-            onClick={() => editor.chain().focus().toggleStrike().run()}
-          >
-            <span className="line-through">S</span>
-          </ToolbarButton>
-          <ToolbarButton
-            label="Code en ligne"
-            pressed={editor.isActive("code")}
-            disabled={!canEdit}
-            onClick={() => editor.chain().focus().toggleCode().run()}
-          >
-            {"</>"}
-          </ToolbarButton>
+            <ToolbarButton
+              label="Annuler"
+              disabled={!canEdit || !editor.can().undo()}
+              onClick={() => editor.chain().focus().undo().run()}
+            >
+              ↺
+            </ToolbarButton>
+            <ToolbarButton
+              label="Rétablir"
+              disabled={!canEdit || !editor.can().redo()}
+              onClick={() => editor.chain().focus().redo().run()}
+            >
+              ↻
+            </ToolbarButton>
 
-          <ToolbarSeparator />
+            <ToolbarSeparator />
 
-          <select
-            aria-label="Couleur du texte"
-            value={activeTextColor(editor)}
-            disabled={!canEdit}
-            onChange={(event) => applyTextColor(editor, event.target.value)}
-            className={TOOLBAR_SELECT_CLASS}
-          >
-            {DOC_TEXT_COLORS.map((color) => (
-              <option key={color.id} value={color.id}>
-                {color.label}
-              </option>
-            ))}
-          </select>
-          <select
-            aria-label="Surlignage"
-            value={activeHighlight(editor)}
-            disabled={!canEdit}
-            onChange={(event) => applyHighlight(editor, event.target.value)}
-            className={TOOLBAR_SELECT_CLASS}
-          >
-            {DOC_HIGHLIGHTS.map((highlight) => (
-              <option key={highlight.id} value={highlight.id}>
-                {highlight.label}
-              </option>
-            ))}
-          </select>
-
-          <ToolbarSeparator />
-
-          <ToolbarButton
-            label="Liste à puces"
-            pressed={editor.isActive("bulletList")}
-            disabled={!canEdit}
-            onClick={() => editor.chain().focus().toggleBulletList().run()}
-          >
-            •
-          </ToolbarButton>
-          <ToolbarButton
-            label="Liste numérotée"
-            pressed={editor.isActive("orderedList")}
-            disabled={!canEdit}
-            onClick={() => editor.chain().focus().toggleOrderedList().run()}
-          >
-            1.
-          </ToolbarButton>
-
-          <ToolbarSeparator />
-
-          <ToolbarButton
-            label="Aligner à gauche"
-            pressed={editor.isActive({ textAlign: "left" })}
-            disabled={!canEdit}
-            onClick={() => editor.chain().focus().setTextAlign("left").run()}
-          >
-            <AlignLeftIcon />
-          </ToolbarButton>
-          <ToolbarButton
-            label="Centrer"
-            pressed={editor.isActive({ textAlign: "center" })}
-            disabled={!canEdit}
-            onClick={() => editor.chain().focus().setTextAlign("center").run()}
-          >
-            <AlignCenterIcon />
-          </ToolbarButton>
-          <ToolbarButton
-            label="Aligner à droite"
-            pressed={editor.isActive({ textAlign: "right" })}
-            disabled={!canEdit}
-            onClick={() => editor.chain().focus().setTextAlign("right").run()}
-          >
-            <AlignRightIcon />
-          </ToolbarButton>
-          <ToolbarButton
-            label="Justifier"
-            pressed={editor.isActive({ textAlign: "justify" })}
-            disabled={!canEdit}
-            onClick={() => editor.chain().focus().setTextAlign("justify").run()}
-          >
-            <AlignJustifyIcon />
-          </ToolbarButton>
-
-          <ToolbarSeparator />
-
-          <ToolbarButton
-            label="Insérer un tableau"
-            disabled={!canEdit}
-            onClick={() => setTableOpen(true)}
-          >
-            <TableIcon />
-          </ToolbarButton>
-          <ToolbarButton
-            label="Insérer une image"
-            disabled={!canEdit}
-            onClick={() => {
-              setImageUrl("");
-              setImageAlt("");
-              setImageError(null);
-              setImageOpen(true);
-            }}
-          >
-            <ImageIcon />
-          </ToolbarButton>
-          <ToolbarButton
-            label="Insérer un lien"
-            shortcutKey="k"
-            disabled={!canEdit}
-            onClick={() => {
-              const current = editor.getAttributes("link").href;
-              setLinkUrl(typeof current === "string" ? current : "");
-              setLinkError(null);
-              setLinkOpen(true);
-            }}
-          >
-            <LinkIcon />
-          </ToolbarButton>
-          <ToolbarButton
-            label="Séparateur"
-            disabled={!canEdit}
-            onClick={() => editor.chain().focus().setHorizontalRule().run()}
-          >
-            ―
-          </ToolbarButton>
-          <ToolbarButton
-            label="Saut de page"
-            disabled={!canEdit}
-            onClick={() => {
-              const { selection } = editor.state;
-              // Un nœud sélectionné (par exemple un saut précédent) serait
-              // remplacé par la nouvelle insertion : le saut s'ajoute alors
-              // juste après lui, jamais à sa place.
-              if (selection instanceof NodeSelection) {
-                editor.chain().focus().insertContentAt(selection.to, { type: "pageBreak" }).run();
-              } else {
-                editor.chain().focus().insertContent({ type: "pageBreak" }).run();
+            {/* Styles de paragraphe et taille de police — deux sélecteurs
+                compacts, comme dans un traitement de texte. */}
+            <select
+              aria-label="Style de paragraphe"
+              value={activeParagraphStyle(editor)}
+              disabled={!canEdit}
+              onChange={(event) =>
+                applyParagraphStyle(editor, event.target.value as ParagraphStyleId)
               }
-            }}
-          >
-            <PageBreakIcon />
-          </ToolbarButton>
+              className={TOOLBAR_SELECT_CLASS}
+            >
+              {PARAGRAPH_STYLES.map((style) => (
+                <option key={style.id} value={style.id}>
+                  {style.label}
+                </option>
+              ))}
+            </select>
+            <select
+              aria-label="Taille de police"
+              value={activeFontSize(editor) ?? ""}
+              disabled={!canEdit}
+              onChange={(event) => applyFontSize(editor, event.target.value)}
+              className={TOOLBAR_SELECT_CLASS}
+            >
+              <option value="">Taille</option>
+              {DOC_FONT_SIZES.map((size) => (
+                <option key={size} value={size}>
+                  {size}
+                </option>
+              ))}
+            </select>
 
-          <div className="ml-auto flex items-center gap-2">
+            <ToolbarSeparator />
+
+            {/* Mise en forme : libellés, glyphes et raccourcis viennent du
+                catalogue — les mêmes commandes tournent au clavier. */}
+            {FORMAT_ACTIONS.map((action) => (
+              <ToolbarButton
+                key={action.id}
+                label={action.label}
+                shortcutKey={action.shortcutKey}
+                pressed={isFormatActive(editor, action.id)}
+                disabled={!canEdit}
+                onClick={() => runFormatAction(editor, action.id)}
+              >
+                <span className={action.glyphClassName}>{action.glyph}</span>
+              </ToolbarButton>
+            ))}
+
+            <ToolbarSeparator />
+
+            <ToolbarButton
+              label="Barré"
+              pressed={editor.isActive("strike")}
+              disabled={!canEdit}
+              onClick={() => editor.chain().focus().toggleStrike().run()}
+            >
+              <span className="line-through">S</span>
+            </ToolbarButton>
+            <ToolbarButton
+              label="Code en ligne"
+              pressed={editor.isActive("code")}
+              disabled={!canEdit}
+              onClick={() => editor.chain().focus().toggleCode().run()}
+            >
+              {"</>"}
+            </ToolbarButton>
+
+            <ToolbarSeparator />
+
+            <select
+              aria-label="Couleur du texte"
+              value={activeTextColor(editor)}
+              disabled={!canEdit}
+              onChange={(event) => applyTextColor(editor, event.target.value)}
+              className={TOOLBAR_SELECT_CLASS}
+            >
+              {DOC_TEXT_COLORS.map((color) => (
+                <option key={color.id} value={color.id}>
+                  {color.label}
+                </option>
+              ))}
+            </select>
+            <select
+              aria-label="Surlignage"
+              value={activeHighlight(editor)}
+              disabled={!canEdit}
+              onChange={(event) => applyHighlight(editor, event.target.value)}
+              className={TOOLBAR_SELECT_CLASS}
+            >
+              {DOC_HIGHLIGHTS.map((highlight) => (
+                <option key={highlight.id} value={highlight.id}>
+                  {highlight.label}
+                </option>
+              ))}
+            </select>
+
+            <ToolbarSeparator />
+
+            <ToolbarButton
+              label="Liste à puces"
+              pressed={editor.isActive("bulletList")}
+              disabled={!canEdit}
+              onClick={() => editor.chain().focus().toggleBulletList().run()}
+            >
+              •
+            </ToolbarButton>
+            <ToolbarButton
+              label="Liste numérotée"
+              pressed={editor.isActive("orderedList")}
+              disabled={!canEdit}
+              onClick={() => editor.chain().focus().toggleOrderedList().run()}
+            >
+              1.
+            </ToolbarButton>
+
+            <ToolbarSeparator />
+
+            <ToolbarButton
+              label="Aligner à gauche"
+              pressed={editor.isActive({ textAlign: "left" })}
+              disabled={!canEdit}
+              onClick={() => editor.chain().focus().setTextAlign("left").run()}
+            >
+              <AlignLeftIcon />
+            </ToolbarButton>
+            <ToolbarButton
+              label="Centrer"
+              pressed={editor.isActive({ textAlign: "center" })}
+              disabled={!canEdit}
+              onClick={() => editor.chain().focus().setTextAlign("center").run()}
+            >
+              <AlignCenterIcon />
+            </ToolbarButton>
+            <ToolbarButton
+              label="Aligner à droite"
+              pressed={editor.isActive({ textAlign: "right" })}
+              disabled={!canEdit}
+              onClick={() => editor.chain().focus().setTextAlign("right").run()}
+            >
+              <AlignRightIcon />
+            </ToolbarButton>
+            <ToolbarButton
+              label="Justifier"
+              pressed={editor.isActive({ textAlign: "justify" })}
+              disabled={!canEdit}
+              onClick={() => editor.chain().focus().setTextAlign("justify").run()}
+            >
+              <AlignJustifyIcon />
+            </ToolbarButton>
+
+            <ToolbarSeparator />
+
+            <ToolbarButton
+              label="Insérer un tableau"
+              disabled={!canEdit}
+              onClick={() => setTableOpen(true)}
+            >
+              <TableIcon />
+            </ToolbarButton>
+            <ToolbarButton
+              label="Saut de page"
+              disabled={!canEdit}
+              onClick={() => {
+                const { selection } = editor.state;
+                // Un nœud sélectionné (par exemple un saut précédent) serait
+                // remplacé par la nouvelle insertion : le saut s'ajoute alors
+                // juste après lui, jamais à sa place.
+                if (selection instanceof NodeSelection) {
+                  editor.chain().focus().insertContentAt(selection.to, { type: "pageBreak" }).run();
+                } else {
+                  editor.chain().focus().insertContent({ type: "pageBreak" }).run();
+                }
+              }}
+            >
+              <PageBreakIcon />
+            </ToolbarButton>
+          </div>
+
+          <span aria-hidden className="mx-1 h-4 w-px shrink-0 bg-border" />
+
+          {/* Actions rares d'insertion — hors de la zone de défilement, pour
+              que le panneau du menu ne soit jamais rogné par celle-ci. */}
+          <Menu
+            label="Autres insertions"
+            align="end"
+            triggerIcon={<span aria-hidden>⋯</span>}
+            triggerClassName="h-8 w-8 shrink-0 border-transparent bg-transparent px-0 hover:bg-muted focus-visible:ring-offset-0"
+            items={[
+              {
+                id: "insert-image",
+                label: "Insérer une image",
+                icon: <ImageIcon />,
+                disabled: !canEdit,
+                onSelect: () => {
+                  setImageUrl("");
+                  setImageAlt("");
+                  setImageError(null);
+                  setImageOpen(true);
+                },
+              },
+              {
+                id: "insert-link",
+                label: "Insérer un lien",
+                icon: <LinkIcon />,
+                disabled: !canEdit,
+                onSelect: () => {
+                  const current = editor.getAttributes("link").href;
+                  setLinkUrl(typeof current === "string" ? current : "");
+                  setLinkError(null);
+                  setLinkOpen(true);
+                },
+              },
+              {
+                id: "insert-rule",
+                label: "Séparateur",
+                separated: true,
+                disabled: !canEdit,
+                onSelect: () => editor.chain().focus().setHorizontalRule().run(),
+              },
+            ]}
+          />
+
+          <div className="flex shrink-0 items-center gap-2">
             {session ? (
               <span role="status" className="text-xs text-muted-foreground">
                 Collaboration active
@@ -866,7 +883,7 @@ function EditorSurface({
             role="toolbar"
             aria-label="Outils du tableau"
             onKeyDown={onToolbarArrowKeys}
-            className="flex flex-wrap items-center gap-1 border-b border-border px-3 py-1.5"
+            className="print-hide flex flex-nowrap items-center gap-0.5 overflow-x-auto border-b border-border bg-card px-2 py-1 [&>*]:shrink-0"
           >
             <span className="pr-1 text-xs font-medium text-muted-foreground">Tableau</span>
             <ToolbarButton

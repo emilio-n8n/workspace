@@ -36,6 +36,14 @@ export type SlideFilmstripProps = {
   onMove: (from: number, to: number) => void;
   /** Ouvre le choix de mise en page pour une nouvelle diapositive. */
   onAdd?: () => void;
+  /** Actions de la diapositive courante, en pied de colonne. */
+  onDuplicate?: () => void;
+  onDelete?: () => void;
+  onMoveUp?: () => void;
+  onMoveDown?: () => void;
+  canDelete?: boolean;
+  canMoveUp?: boolean;
+  canMoveDown?: boolean;
   /** Format et thème de la présentation : les vignettes sont fidèles au rendu. */
   aspect?: SlideAspectId;
   theme?: SlideThemeId;
@@ -60,6 +68,13 @@ export function SlideFilmstrip({
   onSelect,
   onMove,
   onAdd,
+  onDuplicate,
+  onDelete,
+  onMoveUp,
+  onMoveDown,
+  canDelete = true,
+  canMoveUp = true,
+  canMoveDown = true,
   aspect = DEFAULT_SLIDE_ASPECT,
   theme = DEFAULT_SLIDE_THEME,
 }: SlideFilmstripProps) {
@@ -287,7 +302,7 @@ export function SlideFilmstrip({
       </ol>
 
       {canEdit && onAdd ? (
-        <div className="px-2 pt-1.5">
+        <div className="flex flex-col gap-1 px-2 pt-1.5">
           <Button
             size="sm"
             variant="outline"
@@ -297,6 +312,52 @@ export function SlideFilmstrip({
           >
             ＋ Diapositive
           </Button>
+          <div className="flex items-center gap-1">
+            <Button
+              size="sm"
+              variant="ghost"
+              className="flex-1"
+              aria-label="Dupliquer la diapositive"
+              title="Dupliquer la diapositive"
+              disabled={onDuplicate === undefined}
+              onClick={onDuplicate}
+            >
+              ⧉
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              className="flex-1 text-destructive"
+              aria-label="Supprimer la diapositive"
+              title="Supprimer la diapositive"
+              disabled={onDelete === undefined || !canDelete}
+              onClick={onDelete}
+            >
+              ✕
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              className="flex-1"
+              aria-label="Monter la diapositive"
+              title="Monter la diapositive"
+              disabled={onMoveUp === undefined || !canMoveUp}
+              onClick={onMoveUp}
+            >
+              ↑
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              className="flex-1"
+              aria-label="Descendre la diapositive"
+              title="Descendre la diapositive"
+              disabled={onMoveDown === undefined || !canMoveDown}
+              onClick={onMoveDown}
+            >
+              ↓
+            </Button>
+          </div>
         </div>
       ) : null}
 

@@ -144,11 +144,19 @@ test("slides : zone de texte, sauvegarde et persistance", async ({ page }) => {
     });
   }).toPass({ timeout: 20_000 });
   // Le nom accessible de l'élément dérive de son texte (« Élément texte » à la création).
-  await page
-    .getByRole("button", { name: /Élément/ })
-    .first()
-    .click();
-  await page.getByRole("textbox", { name: "Texte", exact: true }).fill("Bonjour E2E");
+  // L'édition se fait directement sur la diapositive : le clic sur la zone
+  // vide ouvre la saisie en place, le texte s'écrit sur la diapositive.
+  await expect(async () => {
+    await page
+      .getByRole("button", { name: /Élément/ })
+      .first()
+      .click();
+    await expect(page.getByRole("textbox", { name: "Modifier le texte" })).toBeVisible({
+      timeout: 2_000,
+    });
+  }).toPass({ timeout: 20_000 });
+  await page.getByRole("textbox", { name: "Modifier le texte" }).fill("Bonjour E2E");
+  await page.getByRole("textbox", { name: "Modifier le texte" }).press("Escape");
   await expect(page.getByRole("status").filter({ hasText: "Enregistré" })).toBeVisible({
     timeout: 15_000,
   });

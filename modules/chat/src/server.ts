@@ -6,6 +6,7 @@ import {
   addChannelMember,
   archiveChannel,
   createChannel,
+  editMessage,
   getUnreadState,
   joinChannel,
   listChannelMembers,
@@ -164,6 +165,25 @@ export const sendMessageFn = createServerFn({ method: "POST" })
   .handler(async ({ data }) => {
     const { actor } = await requireActor(getRequest().headers);
     return sendMessage(actor, data.channelId, data.body, data.attachments ?? []);
+  });
+
+/**
+ * Modification en place d'un message par son auteur : le corps remplace
+ * l'ancien, les pièces jointes restent attachées.
+ */
+export const editMessageFn = createServerFn({ method: "POST" })
+  .validator((input: unknown) =>
+    z
+      .object({
+        channelId: channelIdSchema,
+        messageId: channelIdSchema,
+        body: z.string().trim().min(1).max(4000),
+      })
+      .parse(input),
+  )
+  .handler(async ({ data }) => {
+    const { actor } = await requireActor(getRequest().headers);
+    return editMessage(actor, data.channelId, data.messageId, data.body);
   });
 
 /**

@@ -1,3 +1,4 @@
+// biome-ignore-all lint/a11y/useSemanticElements: éléments interactifs stylés ; le rôle et le clavier sont posés explicitement à côté.
 import { Button, Dialog, IconFolder, IconTrash, LoadingState } from "@workspace/ui";
 import { useCallback, useEffect, useState } from "react";
 import { type DriveEntryView, listMoveTargetsFn } from "../server.ts";
@@ -20,10 +21,10 @@ export type SelectionActionBarProps = {
 };
 
 /**
- * Barre d'actions de la sélection multiple : apparue dès qu'un élément est
- * sélectionné, elle remplace les commandes de la barre d'outils et rend le
- * focus visible sur ce qu'il va arriver à la sélection. Chaque action est
- * désactivée — et expliquée — quand elle ne peut pas s'appliquer.
+ * Groupe contextuel de la sélection multiple, rendu en ligne dans la barre
+ * d'outils (une seule rangée) dès qu'un élément est sélectionné : compteur puis
+ * actions de lot. Chaque action est désactivée — et expliquée — quand elle ne
+ * peut pas s'appliquer.
  */
 export function SelectionActionBar({
   count,
@@ -35,49 +36,32 @@ export function SelectionActionBar({
   onDelete,
 }: SelectionActionBarProps) {
   return (
-    <div
-      role="toolbar"
-      aria-label="Actions de la sélection"
-      className="flex flex-wrap items-center gap-2 rounded-lg border border-border bg-accent/40 px-3 py-2"
-    >
-      <p aria-live="polite" className="text-sm font-medium">
+    <div role="group" aria-label="Actions de la sélection" className="flex items-center gap-0.5">
+      <p aria-live="polite" className="whitespace-nowrap px-1 text-sm font-medium">
         {selectionLabel(count)}
       </p>
-      <div className="flex flex-wrap items-center gap-2">
-        <Button
-          size="sm"
-          variant="outline"
-          onClick={onDownload}
-          disabled={busy || downloadCount === 0}
-        >
-          Télécharger
-          {downloadCount > 0 ? (
-            <span className="text-muted-foreground">({downloadCount})</span>
-          ) : null}
-        </Button>
-        <Button size="sm" variant="outline" onClick={onMove} disabled={busy}>
-          Déplacer
-        </Button>
-        <Button
-          size="sm"
-          variant="ghost"
-          onClick={onDelete}
-          disabled={busy}
-          className="text-destructive"
-        >
-          <IconTrash />
-          Supprimer
-        </Button>
-      </div>
-      <Button size="sm" variant="ghost" onClick={onClear} disabled={busy} className="ml-auto">
+      <Button size="sm" variant="ghost" onClick={onDownload} disabled={busy || downloadCount === 0}>
+        Télécharger
+        {downloadCount > 0 ? (
+          <span className="text-muted-foreground">({downloadCount})</span>
+        ) : null}
+      </Button>
+      <Button size="sm" variant="ghost" onClick={onMove} disabled={busy}>
+        Déplacer
+      </Button>
+      <Button
+        size="sm"
+        variant="ghost"
+        onClick={onDelete}
+        disabled={busy}
+        className="text-destructive"
+      >
+        <IconTrash />
+        Supprimer
+      </Button>
+      <Button size="sm" variant="ghost" onClick={onClear} disabled={busy}>
         Tout désélectionner
       </Button>
-      {downloadCount === 0 ? (
-        <p className="w-full text-xs text-muted-foreground">
-          Les dossiers et les fichiers ouverts par une autre application (Documents, Feuilles,
-          Présentations, Formulaires) ne se téléchargent pas depuis le Drive.
-        </p>
-      ) : null}
     </div>
   );
 }

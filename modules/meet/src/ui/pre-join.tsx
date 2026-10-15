@@ -1,5 +1,5 @@
-import { Alert, Badge, Button, cn, IconVideo, Label } from "@workspace/ui";
-import { useEffect, useRef } from "react";
+import { Alert, Button, cn, Dialog, IconVideo, Label } from "@workspace/ui";
+import { useEffect, useRef, useState } from "react";
 import {
   type LobbyStateView,
   lobbyActionIsJoin,
@@ -162,6 +162,7 @@ export function PreJoinScreen({
   onWithdraw,
 }: PreJoinScreenProps) {
   const preview = useMediaPreview();
+  const [devicesOpen, setDevicesOpen] = useState(false);
   const { preferences } = preview;
   const state = lobby.state;
   const direct = !lobby.required || lobby.host;
@@ -170,13 +171,13 @@ export function PreJoinScreen({
   const pending = lobbyActionIsPending(state);
 
   return (
-    <div className="mx-auto flex max-w-4xl flex-col gap-4">
-      <a href="/" className="text-sm text-muted-foreground hover:text-foreground">
+    <div className="mx-auto flex min-h-full w-full max-w-3xl flex-col gap-4">
+      <a href="/" className="self-start text-sm text-muted-foreground hover:text-foreground">
         ← Retour aux salles
       </a>
 
-      <div className="grid gap-4 rounded-xl border border-border bg-card p-4 md:grid-cols-[1.4fr_1fr]">
-        <div className="flex flex-col gap-3">
+      <div className="my-auto flex flex-col gap-4">
+        <div className="flex flex-col gap-3 rounded-xl border border-border bg-card p-4">
           <header className="flex flex-col gap-1">
             <h1 className="font-display text-xl font-semibold tracking-tight">{roomName}</h1>
             <p className="text-sm text-muted-foreground">Salle /room/{slug}</p>
@@ -184,25 +185,17 @@ export function PreJoinScreen({
 
           <PreviewSurface stream={preview.stream} cameraOn={preferences.cameraOn} />
 
-          <div className="flex flex-wrap items-center gap-2">
-            <Badge variant={preferences.microphoneOn ? "outline" : "destructive"}>
-              {microphoneLabel(preferences.microphoneOn)}
-            </Badge>
-            <Badge variant={preferences.cameraOn ? "outline" : "destructive"}>
-              {cameraLabel(preferences.cameraOn)}
-            </Badge>
-          </div>
-
           <MicMeterView
             bars={preview.meter.bars}
             speaking={preview.meter.speaking}
             muted={!preferences.microphoneOn}
           />
 
-          <div className="flex flex-wrap items-center gap-2">
+          {/* Contrôles d'entrée : une seule rangée compacte, les réglages en dialogue. */}
+          <div className="flex flex-nowrap items-center gap-2 overflow-x-auto [&>*]:shrink-0">
             <Button
               size="sm"
-              variant={preferences.microphoneOn ? "outline" : "secondary"}
+              variant={preferences.microphoneOn ? "ghost" : "secondary"}
               aria-pressed={!preferences.microphoneOn}
               onClick={() => preview.toggle("microphone")}
             >
@@ -214,7 +207,7 @@ export function PreJoinScreen({
             </Button>
             <Button
               size="sm"
-              variant={preferences.cameraOn ? "outline" : "secondary"}
+              variant={preferences.cameraOn ? "ghost" : "secondary"}
               aria-pressed={!preferences.cameraOn}
               onClick={() => preview.toggle("camera")}
             >
@@ -224,11 +217,62 @@ export function PreJoinScreen({
                 — caméra {preferences.cameraOn ? "activée" : "coupée"}
               </span>
             </Button>
+            <Button size="sm" variant="ghost" onClick={() => setDevicesOpen(true)}>
+              Périphériques
+            </Button>
           </div>
+
+          {preview.error ? (
+            <Alert tone="danger" title={preview.error.title}>
+              <p>{preview.error.action}</p>
+              <Button size="sm" variant="outline" className="mt-2" onClick={preview.retry}>
+                Réessayer
+              </Button>
+            </Alert>
+          ) : null}
+
+          {mediaUnconfiguredNote ? (
+            <Alert tone="info" title="Serveur média non configuré">
+              <p>{mediaUnconfiguredNote}</p>
+            </Alert>
+          ) : null}
         </div>
 
+        {state === "waiting" || state === "denied" ? (
+          <Alert tone={lobbyTone(state)} title={lobbyTitle(state)}>
+            <p>{lobbyMessage(state)}</p>
+          </Alert>
+        ) : null}
+
+        {notice ? (
+          <Alert tone="info">
+            <p>{notice}</p>
+          </Alert>
+        ) : null}
+
+        {mediaUnconfiguredNote ? null : (
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              loading={busy || pending}
+              onClick={() => (actionIsJoin ? onJoin() : onRequest())}
+            >
+              {actionLabel}
+            </Button>
+            {pending ? (
+              <Button variant="ghost" onClick={onWithdraw}>
+                Annuler ma demande
+              </Button>
+            ) : null}
+          </div>
+        )}
+      </div>
+
+      <p className="sr-only" role="status">
+        {`${microphoneLabel(preferences.microphoneOn)}, ${cameraLabel(preferences.cameraOn)}.`}
+      </p>
+
+      <Dialog open={devicesOpen} onClose={() => setDevicesOpen(false)} title="Périphériques">
         <div className="flex flex-col gap-3">
-          <h2 className="font-display text-sm font-semibold">Périphériques</h2>
           <DeviceSelect
             kind="camera"
             devices={preview.devices}
@@ -250,52 +294,8 @@ export function PreJoinScreen({
           <p className="text-xs text-muted-foreground">
             Ces réglages sont conservés pour vos prochaines réunions sur ce navigateur.
           </p>
-
-          {preview.error ? (
-            <Alert tone="danger" title={preview.error.title}>
-              <p>{preview.error.action}</p>
-              <Button size="sm" variant="outline" className="mt-2" onClick={preview.retry}>
-                Réessayer
-              </Button>
-            </Alert>
-          ) : null}
-
-          {mediaUnconfiguredNote ? (
-            <Alert tone="info" title="Serveur média non configuré">
-              <p>{mediaUnconfiguredNote}</p>
-            </Alert>
-          ) : null}
         </div>
-      </div>
-
-      {state === "waiting" || state === "denied" ? (
-        <Alert tone={lobbyTone(state)} title={lobbyTitle(state)}>
-          <p>{lobbyMessage(state)}</p>
-        </Alert>
-      ) : null}
-
-      {notice ? (
-        <Alert tone="info">
-          <p>{notice}</p>
-        </Alert>
-      ) : null}
-
-      {mediaUnconfiguredNote ? null : (
-        <div className="flex flex-wrap items-center gap-2">
-          <Button loading={busy || pending} onClick={() => (actionIsJoin ? onJoin() : onRequest())}>
-            {actionLabel}
-          </Button>
-          {pending ? (
-            <Button variant="ghost" onClick={onWithdraw}>
-              Annuler ma demande
-            </Button>
-          ) : null}
-        </div>
-      )}
-
-      <p className="sr-only" role="status">
-        {`${microphoneLabel(preferences.microphoneOn)}, ${cameraLabel(preferences.cameraOn)}.`}
-      </p>
+      </Dialog>
     </div>
   );
 }

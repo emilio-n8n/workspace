@@ -10,11 +10,10 @@ import {
 import type { TaskView } from "../server.ts";
 
 /**
- * Contrôles de tri et de regroupement.
- *
- * Ce sont des `<select>` natifs accompagnés d'un `<label>` : étiquetés,
- * annoncés correctement par les lecteurs d'écran et utilisables au clavier
- * sans primitive supplémentaire.
+ * Contrôles de tri et de regroupement — groupe compact de la barre d'outils
+ * (une seule rangée). Ce sont des `<select>` natifs accompagnés d'un
+ * `<label>` caché : étiquetés, annoncés correctement par les lecteurs d'écran
+ * et utilisables au clavier sans primitive supplémentaire.
  */
 export function SortBar({
   sort,
@@ -30,41 +29,37 @@ export function SortBar({
   onGroupChange: (group: TaskGroupId) => void;
 }) {
   return (
-    <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-border px-3 py-2">
-      <div className="flex items-center gap-2">
-        <Label htmlFor="task-sort" className="text-xs">
-          Trier par
-        </Label>
-        <select
-          id="task-sort"
-          value={sort}
-          onChange={(event) => onSortChange(event.target.value as TaskSortId)}
-          className="h-9 rounded-md border border-input bg-background px-3 text-sm"
-        >
-          {TASK_SORTS.map((option) => (
-            <option key={option.id} value={option.id}>
-              {option.label}
-            </option>
-          ))}
-        </select>
-      </div>
-      <div className="flex items-center gap-2">
-        <Label htmlFor="task-group" className="text-xs">
-          Regrouper par
-        </Label>
-        <select
-          id="task-group"
-          value={group}
-          onChange={(event) => onGroupChange(event.target.value as TaskGroupId)}
-          className="h-9 rounded-md border border-input bg-background px-3 text-sm"
-        >
-          {TASK_GROUPS.filter((option) => groupOptions.includes(option.id)).map((option) => (
-            <option key={option.id} value={option.id}>
-              {option.label}
-            </option>
-          ))}
-        </select>
-      </div>
+    <div className="flex items-center gap-1">
+      <Label htmlFor="task-sort" className="sr-only">
+        Trier par
+      </Label>
+      <select
+        id="task-sort"
+        value={sort}
+        onChange={(event) => onSortChange(event.target.value as TaskSortId)}
+        className="h-8 rounded-md border border-input bg-background px-2 text-xs"
+      >
+        {TASK_SORTS.map((option) => (
+          <option key={option.id} value={option.id}>
+            {option.label}
+          </option>
+        ))}
+      </select>
+      <Label htmlFor="task-group" className="sr-only">
+        Regrouper par
+      </Label>
+      <select
+        id="task-group"
+        value={group}
+        onChange={(event) => onGroupChange(event.target.value as TaskGroupId)}
+        className="h-8 rounded-md border border-input bg-background px-2 text-xs"
+      >
+        {TASK_GROUPS.filter((option) => groupOptions.includes(option.id)).map((option) => (
+          <option key={option.id} value={option.id}>
+            {option.label}
+          </option>
+        ))}
+      </select>
     </div>
   );
 }

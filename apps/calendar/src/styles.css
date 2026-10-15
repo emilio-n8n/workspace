@@ -21,3 +21,10 @@ body {
 body {
   margin: 0;
 }
+
+/* La vue Calendar remplit exactement la fenêtre : la zone de contenu de la
+   coque perd son rembourrage et son défilement, la vue gère les siens. */
+main#contenu:has(.calendar-page) {
+  padding: 0;
+  overflow: hidden;
+}

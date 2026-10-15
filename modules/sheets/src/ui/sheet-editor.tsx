@@ -1,4 +1,4 @@
-import { Button, cn, Dialog, Input, Label, LoadingState } from "@workspace/ui";
+import { Button, cn, Dialog, Input, Label, LoadingState, Menu } from "@workspace/ui";
 import {
   type ChangeEvent,
   type CSSProperties,
@@ -76,6 +76,7 @@ import {
   CELL_TEXT_COLORS,
   type CellStyleBackground,
   type CellTextColor,
+  MAX_STYLE_CELLS,
 } from "../style-palette.ts";
 import { toneOf } from "./cell-tone.ts";
 import { FormulaBar } from "./formula-bar.tsx";
@@ -93,6 +94,12 @@ const SAVE_DEBOUNCE_MS = 700;
 const SAVE_RETRY_MS = 3_000;
 /** Les tailles de grille sont enregistrées sans attendre (glisser ponctuel). */
 const SIZE_SAVE_DEBOUNCE_MS = 400;
+/** Fenêtre de fusion des gestes répétés (frappe, collage, tri) dans l'historique. */
+const COALESCE_MS = 600;
+/** Profondeur maximale de la pile d'annulation. */
+const HISTORY_LIMIT = 50;
+/** Plafond d'écritures par appel (contrat de `saveCellsFn`). */
+const SAVE_CELLS_CHUNK = 2_000;
 
 /** Classes Tailwind statiques des fonds de cellule (jetons de palette → teinte). */
 const STYLE_BACKGROUND_CLASSES: Record<CellStyleBackground, string> = {
@@ -160,6 +167,38 @@ function withoutKey(
   const next = { ...style };
   delete next[key];
   return Object.keys(next).length > 0 ? next : null;
+}
+
+/** Instantané de l'historique : contenu et mise en forme, onglet par onglet. */
+type EditorSnapshot = {
+  cells: Map<string, Map<string, string>>;
+  styles: Map<string, Map<string, CellStyle>>;
+};
+
+/** Écriture groupée de styles : un onglet, une valeur cible, ses cellules. */
+type StyleWriteGroup = { tabId: string; style: CellStyle | null; cells: CellAddress[] };
+
+/** Vrai quand l'évènement vient d'un champ de saisie (raccourcis natifs). */
+function isTypingTarget(target: EventTarget | null): boolean {
+  const element = target instanceof HTMLElement ? target : null;
+  if (!element) return false;
+  return (
+    element.tagName === "INPUT" ||
+    element.tagName === "TEXTAREA" ||
+    element.tagName === "SELECT" ||
+    element.isContentEditable
+  );
+}
+
+/** Vrai quand l'évènement vient d'une fenêtre modale (elle garde son clavier). */
+function isInsideDialog(target: EventTarget | null): boolean {
+  return target instanceof Element && target.closest("dialog") !== null;
+}
+
+/** Découpe une clé locale « ligne:colonne » en coordonnées de cellule. */
+function cellOfKey(key: string): CellAddress {
+  const [row, col] = key.split(":").map(Number);
+  return { row: row ?? 0, col: col ?? 0 };
 }
 
 /** Jeu de cartes vide, partagé tant qu'aucune taille n'est choisie. */
@@ -287,8 +326,9 @@ const GridCell = memo(function GridCell({
 });
 
 /**
- * Éditeur de feuille : grille creuse, formules calculées à l'affichage
- * (SUM/AVG/MIN/MAX/COUNT), autosave par lots et onglets.
+ * Éditeur de feuille : grille creuse qui remplit le viewport (elle seule
+ * défile), formules calculées à l'affichage (SUM/AVG/MIN/MAX/COUNT), autosave
+ * par lots, historique annuler/rétablir, barre d'outils unique et onglets.
  */
 export function SheetEditor({ fileId }: { fileId: string }) {
   const [detail, setDetail] = useState<SpreadsheetDetail | null>(null);
@@ -343,6 +383,15 @@ export function SheetEditor({ fileId }: { fileId: string }) {
   const [announcement, setAnnouncement] = useState("");
   const [structureBusy, setStructureBusy] = useState(false);
   const gridRef = useRef<HTMLDivElement>(null);
+  // Historique annuler/rétablir : instantanés empilés et bornés ; les gestes
+  // répétés (frappe, collage, tri) fusionnent dans la même entrée.
+  const pastRef = useRef<EditorSnapshot[]>([]);
+  const futureRef = useRef<EditorSnapshot[]>([]);
+  const lastPushRef = useRef<{ kind: string; at: number } | null>(null);
+  const [historyVersion, setHistoryVersion] = useState(0);
+  // Vues de référence du contenu et des styles, lues par les rappels stables.
+  const cellsRef = useRef(cellsByTab);
+  const stylesRef = useRef(stylesByTab);
 
   // Valeurs dérivées du chargement : déclarées avant les rappels qui s'en
   // servent, pour qu'aucune action ne lise une valeur encore indéfinie.
@@ -375,6 +424,14 @@ export function SheetEditor({ fileId }: { fileId: string }) {
     selectedRef.current = selected;
   }, [selected]);
 
+  useEffect(() => {
+    cellsRef.current = cellsByTab;
+  }, [cellsByTab]);
+
+  useEffect(() => {
+    stylesRef.current = stylesByTab;
+  }, [stylesByTab]);
+
   const load = useCallback(async () => {
     try {
       const data = await getSpreadsheetFn({ data: { fileId } });
@@ -399,6 +456,12 @@ export function SheetEditor({ fileId }: { fileId: string }) {
       setCellsByTab(byTab);
       setStylesByTab(styles);
       setSizesByTab(parseSizes(data.sizes));
+      // Un rechargement (opération structurelle, import) invalide l'historique :
+      // les instantanés pointeraient sur des cellules décalées.
+      pastRef.current = [];
+      futureRef.current = [];
+      lastPushRef.current = null;
+      setHistoryVersion((version) => version + 1);
       setActiveTabId((current) =>
         current && data.tabs.some((tab) => tab.id === current)
           ? current
@@ -413,6 +476,157 @@ export function SheetEditor({ fileId }: { fileId: string }) {
   useEffect(() => {
     void load();
   }, [load]);
+
+  // -------------------------------------------------------------------------
+  // Historique annuler / rétablir (Ctrl+Z, Ctrl+Maj+Z, Ctrl+Y)
+  // -------------------------------------------------------------------------
+
+  /** Instantané de l'état courant (références partagées : copies immuables). */
+  const captureSnapshot = useCallback(
+    (): EditorSnapshot => ({ cells: cellsRef.current, styles: stylesRef.current }),
+    [],
+  );
+
+  /** Empile l'état courant avant une action ; les gestes répétés fusionnent. */
+  const pushHistory = useCallback(
+    (kind: string) => {
+      const now = Date.now();
+      const last = lastPushRef.current;
+      if (last && last.kind === kind && now - last.at < COALESCE_MS) {
+        last.at = now;
+        return;
+      }
+      pastRef.current = [...pastRef.current, captureSnapshot()].slice(-HISTORY_LIMIT);
+      futureRef.current = [];
+      lastPushRef.current = { kind, at: now };
+      setHistoryVersion((version) => version + 1);
+    },
+    [captureSnapshot],
+  );
+
+  /**
+   * Rejoue sur le serveur le différentiel entre deux instantanés : les cellules
+   * effacées partent en chaîne vide (suppression côté service), les styles
+   * changés sont regroupés par onglet et par valeur cible.
+   */
+  const persistSnapshotDiff = useCallback(
+    async (before: EditorSnapshot, after: EditorSnapshot) => {
+      setStatus("saving");
+      try {
+        const tabIds = new Set([...before.cells.keys(), ...after.cells.keys()]);
+        for (const tabId of tabIds) {
+          const previous = before.cells.get(tabId) ?? new Map<string, string>();
+          const next = after.cells.get(tabId) ?? new Map<string, string>();
+          const updates: { row: number; col: number; value: string }[] = [];
+          for (const [key, value] of next) {
+            if (previous.get(key) === value) continue;
+            updates.push({ ...cellOfKey(key), value });
+          }
+          for (const key of previous.keys()) {
+            if (!next.has(key)) updates.push({ ...cellOfKey(key), value: "" });
+          }
+          for (let offset = 0; offset < updates.length; offset += SAVE_CELLS_CHUNK) {
+            await saveCellsFn({
+              data: {
+                fileId,
+                tabId,
+                updates: updates.slice(offset, offset + SAVE_CELLS_CHUNK),
+              },
+            });
+          }
+        }
+        // Styles : une écriture par onglet et par style cible.
+        const groups = new Map<string, StyleWriteGroup>();
+        const styleTabIds = new Set([...before.styles.keys(), ...after.styles.keys()]);
+        for (const tabId of styleTabIds) {
+          const previous = before.styles.get(tabId) ?? new Map<string, CellStyle>();
+          const next = after.styles.get(tabId) ?? new Map<string, CellStyle>();
+          const changed: { key: string; style: CellStyle | null }[] = [];
+          for (const [key, style] of next) {
+            if (JSON.stringify(previous.get(key) ?? null) === JSON.stringify(style)) continue;
+            changed.push({ key, style });
+          }
+          for (const key of previous.keys()) {
+            if (!next.has(key)) changed.push({ key, style: null });
+          }
+          for (const entry of changed) {
+            const groupKey = `${tabId}|${JSON.stringify(entry.style)}`;
+            const group: StyleWriteGroup = groups.get(groupKey) ?? {
+              tabId,
+              style: entry.style,
+              cells: [],
+            };
+            group.cells.push(cellOfKey(entry.key));
+            groups.set(groupKey, group);
+          }
+        }
+        for (const group of groups.values()) {
+          for (let offset = 0; offset < group.cells.length; offset += MAX_STYLE_CELLS) {
+            await setCellStyleFn({
+              data: {
+                fileId,
+                tabId: group.tabId,
+                cells: group.cells.slice(offset, offset + MAX_STYLE_CELLS),
+                style: group.style,
+              },
+            });
+          }
+        }
+        setStatus("saved");
+        setError(null);
+      } catch (caught) {
+        setStatus("error");
+        setError(caught instanceof Error ? caught.message : "Restauration impossible.");
+      }
+    },
+    [fileId],
+  );
+
+  /** Remet un instantané en place et rejoue son différentiel sur le serveur. */
+  const restoreSnapshot = useCallback(
+    (snapshot: EditorSnapshot) => {
+      const before = captureSnapshot();
+      cellsRef.current = snapshot.cells;
+      stylesRef.current = snapshot.styles;
+      setCellsByTab(snapshot.cells);
+      setStylesByTab(snapshot.styles);
+      setEditing(null);
+      setBarDraft(null);
+      setMenu(null);
+      // Les écritures en attente rejoueraient la valeur annulée : le
+      // différentiel restauré les remplace.
+      if (timerRef.current) {
+        clearTimeout(timerRef.current);
+        timerRef.current = null;
+      }
+      pendingRef.current = new Map();
+      void persistSnapshotDiff(before, snapshot);
+    },
+    [captureSnapshot, persistSnapshotDiff],
+  );
+
+  const doUndo = useCallback(() => {
+    const previous = pastRef.current[pastRef.current.length - 1];
+    if (!previous) return;
+    pastRef.current = pastRef.current.slice(0, -1);
+    futureRef.current = [captureSnapshot(), ...futureRef.current].slice(0, HISTORY_LIMIT);
+    restoreSnapshot(previous);
+    setHistoryVersion((version) => version + 1);
+    setAnnouncement("Modification annulée.");
+  }, [captureSnapshot, restoreSnapshot]);
+
+  const doRedo = useCallback(() => {
+    const [next, ...rest] = futureRef.current;
+    if (!next) return;
+    futureRef.current = rest;
+    pastRef.current = [...pastRef.current, captureSnapshot()].slice(-HISTORY_LIMIT);
+    restoreSnapshot(next);
+    setHistoryVersion((version) => version + 1);
+    setAnnouncement("Modification rétablie.");
+  }, [captureSnapshot, restoreSnapshot]);
+
+  const canUndo = historyVersion >= 0 && pastRef.current.length > 0;
+  const canRedo = historyVersion >= 0 && futureRef.current.length > 0;
 
   const activeMap = useMemo(
     () =>
@@ -613,10 +827,14 @@ export function SheetEditor({ fileId }: { fileId: string }) {
     (row: number, col: number, value: string) => {
       const tabId = activeTabIdRef.current;
       if (!tabId || !canEditRef.current) return;
+      const key = `${row}:${col}`;
+      // Une validation sans changement n'écrit rien et n'entre pas dans
+      // l'historique.
+      if ((cellsRef.current.get(tabId)?.get(key) ?? "") === value) return;
+      pushHistory("cell");
       setCellsByTab((current) => {
         const next = new Map(current);
         const map = new Map(next.get(tabId) ?? []);
-        const key = `${row}:${col}`;
         if (value === "") map.delete(key);
         else map.set(key, value);
         next.set(tabId, map);
@@ -625,7 +843,7 @@ export function SheetEditor({ fileId }: { fileId: string }) {
       setStatus("idle");
       queueSave(tabId, { row, col, value });
     },
-    [queueSave],
+    [pushHistory, queueSave],
   );
 
   /**
@@ -691,6 +909,7 @@ export function SheetEditor({ fileId }: { fileId: string }) {
       const key = `${target.row}:${target.col}`;
       const previous = stylesByTab.get(tabId)?.get(key) ?? null;
       const next = mutate(previous);
+      pushHistory("style");
       setStyleBusy(true);
       setError(null);
       setCellStyleLocally(tabId, key, next);
@@ -705,7 +924,16 @@ export function SheetEditor({ fileId }: { fileId: string }) {
         setStyleBusy(false);
       }
     },
-    [activeTabId, canEdit, fileId, selected, setCellStyleLocally, styleBusy, stylesByTab],
+    [
+      activeTabId,
+      canEdit,
+      fileId,
+      pushHistory,
+      selected,
+      setCellStyleLocally,
+      styleBusy,
+      stylesByTab,
+    ],
   );
 
   const toggleFlag = useCallback(
@@ -1323,12 +1551,38 @@ export function SheetEditor({ fileId }: { fileId: string }) {
     [copySelection, editing, moveSelection, pasteSelection, selected],
   );
 
+  // Raccourcis d'historique, partout dans l'éditeur : Ctrl+Z annule,
+  // Ctrl+Maj+Z et Ctrl+Y rétablissent. Les champs de saisie (édition de
+  // cellule, barre de formule) et les dialogues gardent leur clavier natif.
+  useEffect(() => {
+    if (!canEdit) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
+      const target = event.target as Element | null;
+      if (isTypingTarget(target) || isInsideDialog(target)) return;
+      const key = event.key.toLowerCase();
+      if (key === "z") {
+        event.preventDefault();
+        if (event.shiftKey) doRedo();
+        else doUndo();
+      } else if (key === "y") {
+        event.preventDefault();
+        doRedo();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [canEdit, doRedo, doUndo]);
+
   const freezeClass = freezeClasses(freeze);
 
   return (
-    <div className="flex flex-col gap-3">
-      <header className="flex flex-wrap items-center gap-2">
-        <a href="/" className="text-sm text-muted-foreground hover:text-foreground">
+    <div className="sheet-editor flex h-full min-h-0 flex-1 flex-col">
+      <header className="flex flex-wrap items-center gap-2 border-b border-border bg-card px-3 py-2">
+        <a
+          href="/"
+          className="rounded-md px-1.5 py-1 text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
           ← Feuilles
         </a>
         <input
@@ -1340,7 +1594,7 @@ export function SheetEditor({ fileId }: { fileId: string }) {
             if (event.key === "Enter") event.currentTarget.blur();
           }}
           disabled={!canEdit}
-          className="min-w-40 border-none bg-transparent font-display text-lg font-semibold tracking-tight outline-none"
+          className="min-w-40 flex-1 border-none bg-transparent px-1 font-display text-base font-medium tracking-tight outline-none"
         />
         <span
           role="status"
@@ -1380,16 +1634,313 @@ export function SheetEditor({ fileId }: { fileId: string }) {
       </header>
 
       {error ? (
-        <p
-          role="alert"
-          className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive"
-        >
-          {error}
-        </p>
+        <div className="px-3 pt-3">
+          <p
+            role="alert"
+            className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive"
+          >
+            {error}
+          </p>
+        </div>
       ) : null}
 
       {detail ? (
         <>
+          {/* Barre d'outils unique : historique, figement, mise en forme
+              contextuelle — une rangée compacte, défilante si nécessaire. */}
+          <div
+            role="toolbar"
+            aria-label="Outils de la feuille"
+            className="flex flex-nowrap items-center gap-0.5 border-b border-border bg-card px-2 py-1"
+          >
+            <div className="flex min-w-0 flex-1 flex-nowrap items-center gap-0.5 overflow-x-auto [&>*]:shrink-0">
+              <Button
+                size="sm"
+                variant="ghost"
+                aria-label="Annuler"
+                title="Annuler (Ctrl+Z)"
+                disabled={!canEdit || !canUndo}
+                onClick={doUndo}
+              >
+                ↺
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                aria-label="Rétablir"
+                title="Rétablir (Ctrl+Maj+Z)"
+                disabled={!canEdit || !canRedo}
+                onClick={doRedo}
+              >
+                ↻
+              </Button>
+              <span aria-hidden className="mx-1 h-4 w-px shrink-0 bg-border" />
+
+              {/* Repères figés : préférence d'affichage, toujours à portée. */}
+              <Button
+                size="sm"
+                variant={freeze.header ? "secondary" : "ghost"}
+                aria-pressed={freeze.header}
+                title={freezeHint(freeze)}
+                onClick={() => changeFreeze("header")}
+              >
+                {freezeButtonLabel("header")}
+              </Button>
+              <Button
+                size="sm"
+                variant={freeze.firstColumn ? "secondary" : "ghost"}
+                aria-pressed={freeze.firstColumn}
+                title={freezeHint(freeze)}
+                onClick={() => changeFreeze("firstColumn")}
+              >
+                {freezeButtonLabel("firstColumn")}
+              </Button>
+              <span aria-hidden className="mx-1 h-4 w-px shrink-0 bg-border" />
+
+              {/* Mise en forme contextuelle : elle suit la cellule active. */}
+              {!canEdit ? (
+                <span className="px-1 text-xs text-muted-foreground">
+                  Feuille en lecture seule.
+                </span>
+              ) : selected ? (
+                <>
+                  <span className="px-1 text-xs font-medium tabular-nums text-muted-foreground">
+                    {selectionRange && !isSingleCell(selectionRange)
+                      ? rangeLabel(selectionRange, (col) => COL_LETTERS[col] ?? "")
+                      : cellKey(selected.row, selected.col)}
+                  </span>
+                  <Button
+                    size="sm"
+                    variant={selectedStyle?.bold ? "secondary" : "ghost"}
+                    aria-pressed={selectedStyle?.bold === true}
+                    aria-label="Gras"
+                    title="Gras"
+                    disabled={styleBusy}
+                    onClick={() => toggleFlag("bold")}
+                  >
+                    <strong>B</strong>
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant={selectedStyle?.italic ? "secondary" : "ghost"}
+                    aria-pressed={selectedStyle?.italic === true}
+                    aria-label="Italique"
+                    title="Italique"
+                    disabled={styleBusy}
+                    onClick={() => toggleFlag("italic")}
+                  >
+                    <em>I</em>
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant={selectedStyle?.underline ? "secondary" : "ghost"}
+                    aria-pressed={selectedStyle?.underline === true}
+                    aria-label="Souligné"
+                    title="Souligné"
+                    disabled={styleBusy}
+                    onClick={() => toggleFlag("underline")}
+                  >
+                    <span className="underline">U</span>
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant={selectedStyle?.strike ? "secondary" : "ghost"}
+                    aria-pressed={selectedStyle?.strike === true}
+                    aria-label="Barré"
+                    title="Barré"
+                    disabled={styleBusy}
+                    onClick={() => toggleFlag("strike")}
+                  >
+                    <span className="line-through">S</span>
+                  </Button>
+                  <span aria-hidden className="mx-1 h-4 w-px shrink-0 bg-border" />
+                  <Button
+                    size="sm"
+                    variant={selectedStyle?.align === "left" ? "secondary" : "ghost"}
+                    aria-pressed={selectedStyle?.align === "left"}
+                    aria-label="Aligner à gauche"
+                    title="Aligner à gauche"
+                    disabled={styleBusy}
+                    onClick={() => toggleAlign("left")}
+                  >
+                    Gauche
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant={selectedStyle?.align === "center" ? "secondary" : "ghost"}
+                    aria-pressed={selectedStyle?.align === "center"}
+                    aria-label="Centrer"
+                    title="Centrer"
+                    disabled={styleBusy}
+                    onClick={() => toggleAlign("center")}
+                  >
+                    Centre
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant={selectedStyle?.align === "right" ? "secondary" : "ghost"}
+                    aria-pressed={selectedStyle?.align === "right"}
+                    aria-label="Aligner à droite"
+                    title="Aligner à droite"
+                    disabled={styleBusy}
+                    onClick={() => toggleAlign("right")}
+                  >
+                    Droite
+                  </Button>
+                  <span aria-hidden className="mx-1 h-4 w-px shrink-0 bg-border" />
+                  {CELL_STYLE_BACKGROUNDS.map((background) => (
+                    <button
+                      key={background}
+                      type="button"
+                      aria-label={`Fond ${STYLE_SWATCH_LABELS[background]}`}
+                      aria-pressed={selectedStyle?.background === background}
+                      title={`Fond ${STYLE_SWATCH_LABELS[background]}`}
+                      disabled={styleBusy}
+                      onClick={() => toggleBackground(background)}
+                      className={cn(
+                        "size-5 rounded-sm border border-border disabled:opacity-50",
+                        STYLE_SWATCH_CLASSES[background],
+                        selectedStyle?.background === background && "ring-2 ring-ring",
+                      )}
+                    />
+                  ))}
+                  <span aria-hidden className="mx-1 h-4 w-px shrink-0 bg-border" />
+                  {/* Couleur de texte : la pastille « A » remet le défaut (jeton absent). */}
+                  <button
+                    type="button"
+                    aria-label="Couleur par défaut"
+                    aria-pressed={selectedStyle?.color === undefined}
+                    title="Couleur par défaut"
+                    disabled={styleBusy}
+                    onClick={() =>
+                      void applyCellStyle((current) => withoutKey(current ?? {}, "color"))
+                    }
+                    className={cn(
+                      "size-5 rounded-sm border border-border text-[10px] font-bold leading-none disabled:opacity-50",
+                      selectedStyle?.color === undefined && "ring-2 ring-ring",
+                    )}
+                  >
+                    A
+                  </button>
+                  {CELL_TEXT_COLORS.map((color) => (
+                    <button
+                      key={color}
+                      type="button"
+                      aria-label={`Couleur ${STYLE_TEXT_LABELS[color]}`}
+                      aria-pressed={selectedStyle?.color === color}
+                      title={`Couleur ${STYLE_TEXT_LABELS[color]}`}
+                      disabled={styleBusy}
+                      onClick={() => toggleColor(color)}
+                      className={cn(
+                        "size-5 rounded-sm border border-border disabled:opacity-50",
+                        STYLE_TEXT_SWATCH_CLASSES[color],
+                        selectedStyle?.color === color && "ring-2 ring-ring",
+                      )}
+                    />
+                  ))}
+                  <span aria-hidden className="mx-1 h-4 w-px shrink-0 bg-border" />
+                  {/* Formats d'affichage : le nombre stocké ne change jamais. */}
+                  {CELL_FORMATS.map((format) => (
+                    <Button
+                      key={format.id}
+                      size="sm"
+                      variant={
+                        (selectedStyle?.format ?? "auto") === format.id ? "secondary" : "ghost"
+                      }
+                      aria-pressed={(selectedStyle?.format ?? "auto") === format.id}
+                      aria-label={format.label}
+                      title={format.label}
+                      disabled={styleBusy}
+                      onClick={() => toggleFormat(format.id)}
+                    >
+                      <span className="tabular-nums">{format.glyph}</span>
+                    </Button>
+                  ))}
+                </>
+              ) : (
+                <span className="px-1 text-xs text-muted-foreground">
+                  Sélectionnez une cellule pour la mettre en forme.
+                </span>
+              )}
+            </div>
+
+            {/* Actions rares de la sélection : structure et format, au menu. */}
+            {canEdit && selected ? (
+              <Menu
+                label="Autres actions"
+                align="end"
+                triggerIcon={<span aria-hidden>⋯</span>}
+                triggerClassName="h-8 w-8 shrink-0 border-transparent bg-transparent px-0 hover:bg-muted focus-visible:ring-offset-0"
+                items={[
+                  {
+                    id: "inserer-ligne-dessus",
+                    label: "Insérer une ligne au-dessus",
+                    disabled: structureBusy,
+                    onSelect: () => void runStructure("row", "insert", selected.row),
+                  },
+                  {
+                    id: "inserer-ligne-dessous",
+                    label: "Insérer une ligne en dessous",
+                    disabled: structureBusy,
+                    onSelect: () => void runStructure("row", "insert", selected.row + 1),
+                  },
+                  {
+                    id: "inserer-colonne-gauche",
+                    label: "Insérer une colonne à gauche",
+                    separated: true,
+                    disabled: structureBusy,
+                    onSelect: () => void runStructure("col", "insert", selected.col),
+                  },
+                  {
+                    id: "inserer-colonne-droite",
+                    label: "Insérer une colonne à droite",
+                    disabled: structureBusy,
+                    onSelect: () => void runStructure("col", "insert", selected.col + 1),
+                  },
+                  {
+                    id: "supprimer-ligne",
+                    label: "Supprimer la ligne",
+                    separated: true,
+                    destructive: true,
+                    disabled: structureBusy,
+                    onSelect: () => void runStructure("row", "delete", selected.row),
+                  },
+                  {
+                    id: "supprimer-colonne",
+                    label: "Supprimer la colonne",
+                    destructive: true,
+                    disabled: structureBusy,
+                    onSelect: () => void runStructure("col", "delete", selected.col),
+                  },
+                  ...(selectionRange && !isSingleCell(selectionRange)
+                    ? [
+                        {
+                          id: "trier-croissant",
+                          label: `Trier ${rangeLabel(selectionRange, (col) => COL_LETTERS[col] ?? "")} (croissant)`,
+                          separated: true,
+                          disabled: structureBusy,
+                          onSelect: () => runSort("asc"),
+                        },
+                        {
+                          id: "trier-decroissant",
+                          label: `Trier ${rangeLabel(selectionRange, (col) => COL_LETTERS[col] ?? "")} (décroissant)`,
+                          disabled: structureBusy,
+                          onSelect: () => runSort("desc"),
+                        },
+                      ]
+                    : []),
+                  {
+                    id: "effacer-format",
+                    label: "Effacer le format",
+                    separated: true,
+                    disabled: styleBusy || !selectedStyle,
+                    onSelect: () => void applyCellStyle(() => null),
+                  },
+                ]}
+              />
+            ) : null}
+          </div>
+
           <FormulaBar
             reference={selected ? cellKey(selected.row, selected.col) : ""}
             value={selectedKey ? (activeMap.get(selectedKey) ?? "") : ""}
@@ -1403,41 +1954,197 @@ export function SheetEditor({ fileId }: { fileId: string }) {
             }
           />
 
-          <div className="flex flex-wrap items-center gap-2">
-            {detail.tabs.map((tab) => (
-              <button
-                key={tab.id}
-                type="button"
-                onClick={() => {
-                  void flush(activeTabId);
-                  setActiveTabId(tab.id);
-                  setEditing(null);
-                  setSelected(null);
-                  setRangeAnchor(null);
-                }}
-                className={cn(
-                  "rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors",
-                  tab.id === activeTabId
-                    ? "border-primary bg-accent text-accent-foreground"
-                    : "border-border bg-card text-muted-foreground hover:bg-muted",
-                )}
-              >
-                {tab.name}
-              </button>
-            ))}
-            {activeTabId ? (
-              <a
-                href={`/api/sheets/export/${fileId}?tab=${activeTabId}`}
-                download
-                className="rounded-lg border border-border bg-card px-3 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted"
-              >
-                Exporter CSV
-              </a>
-            ) : null}
+          {/* La grille remplit la hauteur restante ; elle seule défile. */}
+          <div className="min-h-0 flex-1 overflow-auto">
+            {/*
+              Tableau natif (en-têtes de colonne et de ligne, cellules) disposé
+              en grille CSS : `display: contents` sur les enveloppes fait des
+              cellules les éléments de la grille, donc la mise en page reste
+              celle d'une grille et la sémantique celle d'un tableau.
+            */}
+            <table
+              // biome-ignore lint/a11y/noNoninteractiveElementToInteractiveRole: rôle « grid » du motif ARIA, posé sur le tableau natif pour que les lecteurs d'écran annoncent une grille navigable.
+              role="grid"
+              aria-label="Grille de la feuille"
+              aria-rowcount={ROWS + 1}
+              aria-colcount={COLS + 1}
+              aria-readonly={!canEdit}
+              className="grid"
+              onKeyDown={onGridKeyDown}
+              style={
+                {
+                  "--sheet-gutter": "44px",
+                  "--sheet-col-min": "96px",
+                  gridTemplateColumns: `var(--sheet-gutter) ${columnTracks}`,
+                  gridTemplateRows: `auto ${rowTracks}`,
+                  width: "max-content",
+                  minWidth: "100%",
+                } as CSSProperties
+              }
+            >
+              <caption className="sr-only">
+                Grille de la feuille — flèches pour parcourir les cellules, Entrée pour modifier,
+                Maj + flèche pour étendre la sélection, Ctrl+C et Ctrl+V pour copier et coller,
+                touche Menu pour les actions de la cellule.
+              </caption>
+              <thead className="contents">
+                <tr className="contents">
+                  <td
+                    className={cn(freezeClass.corner, "border-b border-r border-border bg-muted")}
+                  />
+                  {COL_LETTERS.map((letter, col) => (
+                    <th
+                      key={letter}
+                      scope="col"
+                      data-col-index={col}
+                      onContextMenu={(event) => {
+                        event.preventDefault();
+                        openMenu(
+                          { kind: "col", index: col },
+                          { left: event.clientX, top: event.clientY },
+                        );
+                      }}
+                      className={cn(
+                        freezeClass.header,
+                        "border-b border-border bg-muted px-2 py-1 text-center text-[11px] font-medium text-muted-foreground",
+                        col < COLS - 1 && "border-r",
+                      )}
+                    >
+                      {letter}
+                      <ResizeHandle
+                        axis="col"
+                        index={col}
+                        label={`Redimensionner la colonne ${letter}`}
+                        current={sizeOf(colSizes, col, "col")}
+                        preview={
+                          preview?.axis === "col" && preview.index === col ? preview.size : null
+                        }
+                        disabled={!canEdit}
+                        onPreview={onPreviewSize}
+                        onCommit={commitSize}
+                        onSettle={onSettlePreview}
+                        onReset={resetSize}
+                      />
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody className="contents">
+                {ROW_KEYS.map((rowKey, row) => (
+                  <tr key={rowKey} className="contents">
+                    <th
+                      scope="row"
+                      data-row-index={row}
+                      onContextMenu={(event) => {
+                        event.preventDefault();
+                        openMenu(
+                          { kind: "row", index: row },
+                          { left: event.clientX, top: event.clientY },
+                        );
+                      }}
+                      className={cn(
+                        freezeClass.firstColumn,
+                        "border-r border-border bg-muted px-2 py-1 text-right text-[11px] font-normal tabular-nums text-muted-foreground",
+                        row < ROWS - 1 && "border-b",
+                      )}
+                    >
+                      {row + 1}
+                      <ResizeHandle
+                        axis="row"
+                        index={row}
+                        label={`Redimensionner la ligne ${row + 1}`}
+                        current={sizeOf(rowSizes, row, "row")}
+                        preview={
+                          preview?.axis === "row" && preview.index === row ? preview.size : null
+                        }
+                        disabled={!canEdit}
+                        onPreview={onPreviewSize}
+                        onCommit={commitSize}
+                        onSettle={onSettlePreview}
+                        onReset={resetSize}
+                      />
+                    </th>
+                    {Array.from({ length: COLS }, (_, col) => {
+                      const key = cellKey(row, col);
+                      const raw = activeMap.get(`${row}:${col}`) ?? "";
+                      const value = evaluated.get(key);
+                      const isEditing = editing?.row === row && editing?.col === col;
+                      const isSelected = selected?.row === row && selected?.col === col;
+                      const cellStyle = activeStyles.get(`${row}:${col}`) ?? null;
+                      return (
+                        <td
+                          key={isEditing ? `${key}:edition` : key}
+                          className={cn(
+                            "min-w-0 overflow-hidden p-0",
+                            !isEditing && row !== ROWS - 1 && "border-b border-border",
+                            !isEditing && col !== COLS - 1 && "border-r border-border",
+                            !isEditing && cellStyle?.background
+                              ? STYLE_BACKGROUND_CLASSES[cellStyle.background]
+                              : undefined,
+                          )}
+                        >
+                          <GridCell
+                            row={row}
+                            col={col}
+                            raw={raw}
+                            display={
+                              value
+                                ? formatCellDisplay(formatValue(value), cellStyle?.format ?? "auto")
+                                : ""
+                            }
+                            tone={toneOf(value)}
+                            cellStyle={cellStyle}
+                            selected={isSelected}
+                            inRange={selectionRange !== null && inRange(selectionRange, row, col)}
+                            canEdit={canEdit}
+                            editing={isEditing}
+                            onStart={startEditing}
+                            onCommit={commitEditing}
+                            onCancel={cancelEditing}
+                            onRequestMenu={requestCellMenu}
+                            data-cell-row={row}
+                            data-cell-col={col}
+                          />
+                        </td>
+                      );
+                    })}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Onglets de la feuille : bande basse ; les actions rares (renommer,
+              supprimer) vivent dans son menu, jamais en pavés de boutons. */}
+          <div className="flex flex-nowrap items-center gap-1 border-t border-border bg-card px-2 py-1">
+            <div className="flex min-w-0 flex-1 flex-nowrap items-center gap-1 overflow-x-auto py-0.5">
+              {detail.tabs.map((tab) => (
+                <button
+                  key={tab.id}
+                  type="button"
+                  onClick={() => {
+                    void flush(activeTabId);
+                    setActiveTabId(tab.id);
+                    setEditing(null);
+                    setSelected(null);
+                    setRangeAnchor(null);
+                  }}
+                  className={cn(
+                    "shrink-0 rounded-md border px-3 py-1 text-xs font-medium transition-colors",
+                    tab.id === activeTabId
+                      ? "border-primary bg-accent text-accent-foreground"
+                      : "border-border bg-card text-muted-foreground hover:bg-muted",
+                  )}
+                >
+                  {tab.name}
+                </button>
+              ))}
+            </div>
             {canEdit ? (
               <Button
                 size="sm"
-                variant="outline"
+                variant="ghost"
+                className="shrink-0"
                 onClick={() => {
                   setTabName("");
                   setTabDialog("add");
@@ -1447,379 +2154,35 @@ export function SheetEditor({ fileId }: { fileId: string }) {
               </Button>
             ) : null}
             {canEdit && activeTab ? (
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={() => {
-                  setTabName(activeTab.name);
-                  setTabDialog("rename");
-                }}
-              >
-                Renommer
-              </Button>
+              <Menu
+                label="Actions de l'onglet"
+                align="end"
+                // Le panneau s'ouvre vers le haut : la bande d'onglets est en
+                // bas de fenêtre, un menu vers le bas serait hors écran.
+                className="[&>[role=menu]]:top-auto [&>[role=menu]]:bottom-full [&>[role=menu]]:mt-0 [&>[role=menu]]:mb-1"
+                triggerIcon={<span aria-hidden>⋯</span>}
+                triggerClassName="h-8 w-8 shrink-0 border-transparent bg-transparent px-0 hover:bg-muted focus-visible:ring-offset-0"
+                items={[
+                  {
+                    id: "renommer-onglet",
+                    label: "Renommer l'onglet",
+                    onSelect: () => {
+                      setTabName(activeTab.name);
+                      setTabDialog("rename");
+                    },
+                  },
+                  {
+                    id: "supprimer-onglet",
+                    label: "Supprimer l'onglet",
+                    separated: true,
+                    destructive: true,
+                    disabled: detail.tabs.length <= 1,
+                    onSelect: () => void onDeleteTab(activeTab.id),
+                  },
+                ]}
+              />
             ) : null}
-            {canEdit && activeTab && detail.tabs.length > 1 ? (
-              <Button
-                size="sm"
-                variant="ghost"
-                className="text-destructive"
-                loading={busy}
-                onClick={() => void onDeleteTab(activeTab.id)}
-              >
-                Supprimer l'onglet
-              </Button>
-            ) : null}
-            <span className="ml-auto text-xs text-muted-foreground">
-              Formules : =SUM(A1:A5), =AVG(B1:B3), + − × ÷, références A1
-            </span>
           </div>
-
-          <div
-            role="toolbar"
-            aria-label="Repères figés"
-            className="flex flex-wrap items-center gap-1"
-          >
-            <span className="px-1 text-xs text-muted-foreground">{freezeHint(freeze)}</span>
-            <Button
-              size="sm"
-              variant={freeze.header ? "secondary" : "ghost"}
-              aria-pressed={freeze.header}
-              onClick={() => changeFreeze("header")}
-            >
-              {freezeButtonLabel("header")}
-            </Button>
-            <Button
-              size="sm"
-              variant={freeze.firstColumn ? "secondary" : "ghost"}
-              aria-pressed={freeze.firstColumn}
-              onClick={() => changeFreeze("firstColumn")}
-            >
-              {freezeButtonLabel("firstColumn")}
-            </Button>
-          </div>
-
-          {canEdit && selected ? (
-            <div
-              role="toolbar"
-              aria-label="Mise en forme de la cellule"
-              className="flex flex-wrap items-center gap-1 rounded-xl border border-border bg-card px-2 py-1.5"
-            >
-              <span className="px-1 text-xs font-medium tabular-nums text-muted-foreground">
-                {selectionRange && !isSingleCell(selectionRange)
-                  ? rangeLabel(selectionRange, (col) => COL_LETTERS[col] ?? "")
-                  : cellKey(selected.row, selected.col)}
-              </span>
-              <Button
-                size="sm"
-                variant={selectedStyle?.bold ? "secondary" : "ghost"}
-                aria-pressed={selectedStyle?.bold === true}
-                aria-label="Gras"
-                title="Gras"
-                disabled={styleBusy}
-                onClick={() => toggleFlag("bold")}
-              >
-                <strong>B</strong>
-              </Button>
-              <Button
-                size="sm"
-                variant={selectedStyle?.italic ? "secondary" : "ghost"}
-                aria-pressed={selectedStyle?.italic === true}
-                aria-label="Italique"
-                title="Italique"
-                disabled={styleBusy}
-                onClick={() => toggleFlag("italic")}
-              >
-                <em>I</em>
-              </Button>
-              <Button
-                size="sm"
-                variant={selectedStyle?.underline ? "secondary" : "ghost"}
-                aria-pressed={selectedStyle?.underline === true}
-                aria-label="Souligné"
-                title="Souligné"
-                disabled={styleBusy}
-                onClick={() => toggleFlag("underline")}
-              >
-                <span className="underline">U</span>
-              </Button>
-              <Button
-                size="sm"
-                variant={selectedStyle?.strike ? "secondary" : "ghost"}
-                aria-pressed={selectedStyle?.strike === true}
-                aria-label="Barré"
-                title="Barré"
-                disabled={styleBusy}
-                onClick={() => toggleFlag("strike")}
-              >
-                <span className="line-through">S</span>
-              </Button>
-              <span aria-hidden className="mx-1 h-5 w-px bg-border" />
-              <Button
-                size="sm"
-                variant={selectedStyle?.align === "left" ? "secondary" : "ghost"}
-                aria-pressed={selectedStyle?.align === "left"}
-                aria-label="Aligner à gauche"
-                title="Aligner à gauche"
-                disabled={styleBusy}
-                onClick={() => toggleAlign("left")}
-              >
-                Gauche
-              </Button>
-              <Button
-                size="sm"
-                variant={selectedStyle?.align === "center" ? "secondary" : "ghost"}
-                aria-pressed={selectedStyle?.align === "center"}
-                aria-label="Centrer"
-                title="Centrer"
-                disabled={styleBusy}
-                onClick={() => toggleAlign("center")}
-              >
-                Centre
-              </Button>
-              <Button
-                size="sm"
-                variant={selectedStyle?.align === "right" ? "secondary" : "ghost"}
-                aria-pressed={selectedStyle?.align === "right"}
-                aria-label="Aligner à droite"
-                title="Aligner à droite"
-                disabled={styleBusy}
-                onClick={() => toggleAlign("right")}
-              >
-                Droite
-              </Button>
-              <span aria-hidden className="mx-1 h-5 w-px bg-border" />
-              {CELL_STYLE_BACKGROUNDS.map((background) => (
-                <button
-                  key={background}
-                  type="button"
-                  aria-label={`Fond ${STYLE_SWATCH_LABELS[background]}`}
-                  aria-pressed={selectedStyle?.background === background}
-                  title={`Fond ${STYLE_SWATCH_LABELS[background]}`}
-                  disabled={styleBusy}
-                  onClick={() => toggleBackground(background)}
-                  className={cn(
-                    "size-5 rounded-sm border border-border disabled:opacity-50",
-                    STYLE_SWATCH_CLASSES[background],
-                    selectedStyle?.background === background && "ring-2 ring-ring",
-                  )}
-                />
-              ))}
-              <span aria-hidden className="mx-1 h-5 w-px bg-border" />
-              {/* Couleur de texte : la pastille « A » remet le défaut (jeton absent). */}
-              <button
-                type="button"
-                aria-label="Couleur par défaut"
-                aria-pressed={selectedStyle?.color === undefined}
-                title="Couleur par défaut"
-                disabled={styleBusy}
-                onClick={() => void applyCellStyle((current) => withoutKey(current ?? {}, "color"))}
-                className={cn(
-                  "size-5 rounded-sm border border-border text-[10px] font-bold leading-none disabled:opacity-50",
-                  selectedStyle?.color === undefined && "ring-2 ring-ring",
-                )}
-              >
-                A
-              </button>
-              {CELL_TEXT_COLORS.map((color) => (
-                <button
-                  key={color}
-                  type="button"
-                  aria-label={`Couleur ${STYLE_TEXT_LABELS[color]}`}
-                  aria-pressed={selectedStyle?.color === color}
-                  title={`Couleur ${STYLE_TEXT_LABELS[color]}`}
-                  disabled={styleBusy}
-                  onClick={() => toggleColor(color)}
-                  className={cn(
-                    "size-5 rounded-sm border border-border disabled:opacity-50",
-                    STYLE_TEXT_SWATCH_CLASSES[color],
-                    selectedStyle?.color === color && "ring-2 ring-ring",
-                  )}
-                />
-              ))}
-              <span aria-hidden className="mx-1 h-5 w-px bg-border" />
-              {/* Formats d'affichage : le nombre stocké ne change jamais. */}
-              {CELL_FORMATS.map((format) => (
-                <Button
-                  key={format.id}
-                  size="sm"
-                  variant={(selectedStyle?.format ?? "auto") === format.id ? "secondary" : "ghost"}
-                  aria-pressed={(selectedStyle?.format ?? "auto") === format.id}
-                  aria-label={format.label}
-                  title={format.label}
-                  disabled={styleBusy}
-                  onClick={() => toggleFormat(format.id)}
-                >
-                  <span className="tabular-nums">{format.glyph}</span>
-                </Button>
-              ))}
-              <Button
-                size="sm"
-                variant="ghost"
-                className="ml-auto"
-                disabled={styleBusy || !selectedStyle}
-                onClick={() => void applyCellStyle(() => null)}
-              >
-                Effacer le format
-              </Button>
-            </div>
-          ) : null}
-
-          {/*
-              Tableau natif (en-têtes de colonne et de ligne, cellules) disposé
-              en grille CSS : `display: contents` sur les enveloppes fait des
-              cellules les éléments de la grille, donc la mise en page reste
-              celle d'une grille et la sémantique celle d'un tableau.
-            */}
-          <table
-            // biome-ignore lint/a11y/noNoninteractiveElementToInteractiveRole: rôle « grid » du motif ARIA, posé sur le tableau natif pour que les lecteurs d'écran annoncent une grille navigable.
-            role="grid"
-            aria-label="Grille de la feuille"
-            aria-rowcount={ROWS + 1}
-            aria-colcount={COLS + 1}
-            aria-readonly={!canEdit}
-            className="grid"
-            onKeyDown={onGridKeyDown}
-            style={
-              {
-                "--sheet-gutter": "44px",
-                "--sheet-col-min": "96px",
-                gridTemplateColumns: `var(--sheet-gutter) ${columnTracks}`,
-                gridTemplateRows: `auto ${rowTracks}`,
-                width: "max-content",
-                minWidth: "100%",
-              } as CSSProperties
-            }
-          >
-            <caption className="sr-only">
-              Grille de la feuille — flèches pour parcourir les cellules, Entrée pour modifier, Maj
-              + flèche pour étendre la sélection, Ctrl+C et Ctrl+V pour copier et coller, touche
-              Menu pour les actions de la cellule.
-            </caption>
-            <thead className="contents">
-              <tr className="contents">
-                <td
-                  className={cn(freezeClass.corner, "border-b border-r border-border bg-muted")}
-                />
-                {COL_LETTERS.map((letter, col) => (
-                  <th
-                    key={letter}
-                    scope="col"
-                    data-col-index={col}
-                    onContextMenu={(event) => {
-                      event.preventDefault();
-                      openMenu(
-                        { kind: "col", index: col },
-                        { left: event.clientX, top: event.clientY },
-                      );
-                    }}
-                    className={cn(
-                      freezeClass.header,
-                      "border-b border-border bg-muted px-2 py-1 text-center text-[11px] font-medium text-muted-foreground",
-                      col < COLS - 1 && "border-r",
-                    )}
-                  >
-                    {letter}
-                    <ResizeHandle
-                      axis="col"
-                      index={col}
-                      label={`Redimensionner la colonne ${letter}`}
-                      current={sizeOf(colSizes, col, "col")}
-                      preview={
-                        preview?.axis === "col" && preview.index === col ? preview.size : null
-                      }
-                      disabled={!canEdit}
-                      onPreview={onPreviewSize}
-                      onCommit={commitSize}
-                      onSettle={onSettlePreview}
-                      onReset={resetSize}
-                    />
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody className="contents">
-              {ROW_KEYS.map((rowKey, row) => (
-                <tr key={rowKey} className="contents">
-                  <th
-                    scope="row"
-                    data-row-index={row}
-                    onContextMenu={(event) => {
-                      event.preventDefault();
-                      openMenu(
-                        { kind: "row", index: row },
-                        { left: event.clientX, top: event.clientY },
-                      );
-                    }}
-                    className={cn(
-                      freezeClass.firstColumn,
-                      "border-r border-border bg-muted px-2 py-1 text-right text-[11px] font-normal tabular-nums text-muted-foreground",
-                      row < ROWS - 1 && "border-b",
-                    )}
-                  >
-                    {row + 1}
-                    <ResizeHandle
-                      axis="row"
-                      index={row}
-                      label={`Redimensionner la ligne ${row + 1}`}
-                      current={sizeOf(rowSizes, row, "row")}
-                      preview={
-                        preview?.axis === "row" && preview.index === row ? preview.size : null
-                      }
-                      disabled={!canEdit}
-                      onPreview={onPreviewSize}
-                      onCommit={commitSize}
-                      onSettle={onSettlePreview}
-                      onReset={resetSize}
-                    />
-                  </th>
-                  {Array.from({ length: COLS }, (_, col) => {
-                    const key = cellKey(row, col);
-                    const raw = activeMap.get(`${row}:${col}`) ?? "";
-                    const value = evaluated.get(key);
-                    const isEditing = editing?.row === row && editing?.col === col;
-                    const isSelected = selected?.row === row && selected?.col === col;
-                    const cellStyle = activeStyles.get(`${row}:${col}`) ?? null;
-                    return (
-                      <td
-                        key={isEditing ? `${key}:edition` : key}
-                        className={cn(
-                          "min-w-0 overflow-hidden p-0",
-                          !isEditing && row !== ROWS - 1 && "border-b border-border",
-                          !isEditing && col !== COLS - 1 && "border-r border-border",
-                          !isEditing && cellStyle?.background
-                            ? STYLE_BACKGROUND_CLASSES[cellStyle.background]
-                            : undefined,
-                        )}
-                      >
-                        <GridCell
-                          row={row}
-                          col={col}
-                          raw={raw}
-                          display={
-                            value
-                              ? formatCellDisplay(formatValue(value), cellStyle?.format ?? "auto")
-                              : ""
-                          }
-                          tone={toneOf(value)}
-                          cellStyle={cellStyle}
-                          selected={isSelected}
-                          inRange={selectionRange !== null && inRange(selectionRange, row, col)}
-                          canEdit={canEdit}
-                          editing={isEditing}
-                          onStart={startEditing}
-                          onCommit={commitEditing}
-                          onCancel={cancelEditing}
-                          onRequestMenu={requestCellMenu}
-                          data-cell-row={row}
-                          data-cell-col={col}
-                        />
-                      </td>
-                    );
-                  })}
-                </tr>
-              ))}
-            </tbody>
-          </table>
 
           <SheetContextMenu
             open={menu !== null}
@@ -1839,7 +2202,7 @@ export function SheetEditor({ fileId }: { fileId: string }) {
           </p>
         </>
       ) : !error ? (
-        <LoadingState label="Chargement de la feuille…" />
+        <LoadingState className="py-12" label="Chargement de la feuille…" />
       ) : null}
 
       <Dialog open={importOpen} onClose={() => setImportOpen(false)} title="Importer un CSV">

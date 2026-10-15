@@ -2,20 +2,20 @@ import {
   Alert,
   Button,
   ConfirmDialog,
-  Dialog,
   EmptyState,
   IconCheckSquare,
   IconGrid,
   Input,
   Label,
   LoadingState,
+  Menu,
   PageHeader,
   SegmentedTabs,
   Toasts,
   useToasts,
 } from "@workspace/ui";
 import type { DragEvent, FormEvent, KeyboardEvent, ReactNode } from "react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   canDragReorder,
   type DropEdge,
@@ -26,13 +26,7 @@ import {
   nudgeIds,
   targetIndexFromHover,
 } from "../dnd.ts";
-import {
-  DEFAULT_CRITERIA,
-  filterTasks,
-  isFiltering,
-  TASK_STATUS_FILTERS,
-  type TaskFilterCriteria,
-} from "../filters.ts";
+import { DEFAULT_CRITERIA, filterTasks, isFiltering, type TaskFilterCriteria } from "../filters.ts";
 import {
   describeView,
   groupTasks,
@@ -86,18 +80,12 @@ const MY_TASKS_WINDOWS: { id: MyTasksWindow; label: string }[] = [
   { id: "all", label: "Tout" },
 ];
 
-/** Priorités proposées dans le dialogue d'édition (texte = information principale). */
+/** Priorités proposées dans l'éditeur en place (texte = information principale). */
 const PRIORITY_OPTIONS: { value: "low" | "medium" | "high"; label: string }[] = [
   { value: "low", label: "Basse" },
   { value: "medium", label: "Moyenne" },
   { value: "high", label: "Haute" },
 ];
-
-const STATUS_LABELS: Record<string, string> = {
-  todo: "À faire",
-  in_progress: "En cours",
-  done: "Terminée",
-};
 
 export function TasksView() {
   const [lists, setLists] = useState<TaskListView[] | null>(null);
@@ -117,12 +105,14 @@ export function TasksView() {
   // regroupement ni filtre : ailleurs, la position n'a pas de sens visible.
   const [dragTaskId, setDragTaskId] = useState<string | null>(null);
   const [dropTarget, setDropTarget] = useState<{ id: string; edge: DropEdge } | null>(null);
-  // Une sous-tâche touchée dans le dialogue impose de relire la liste à la
+  // Une sous-tâche touchée dans l'éditeur impose de relire la liste à la
   // fermeture : son statut peut avoir basculé (parente terminée ou rouverte).
   const subtasksDirtyRef = useRef(false);
 
   // Vue agrégée « Mes tâches » — simple bascule d'affichage, pas de route.
   const [showMyTasks, setShowMyTasks] = useState(false);
+  /** Panneau des listes : ouvert par défaut, refermable, réouvert depuis l'en-tête. */
+  const [sidebarOpen, setSidebarOpen] = useState(true);
   const [myTasksWindow, setMyTasksWindow] = useState<MyTasksWindow>("today");
   const [myTasks, setMyTasks] = useState<MyTaskView[] | null>(null);
   const [myTasksError, setMyTasksError] = useState<string | null>(null);
@@ -362,8 +352,21 @@ export function TasksView() {
     }
   }
 
-  async function onSaveEdit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  /** Ouvre l'édition en place d'une tâche (clic, Entrée ou frappe directe). */
+  function startEditing(task: TaskView, initialTitle?: string) {
+    setEditTarget(initialTitle === undefined ? { ...task } : { ...task, title: initialTitle });
+  }
+
+  /** Referme l'éditeur en place ; un changement de sous-tâche impose une relecture. */
+  function closeEditor() {
+    setEditTarget(null);
+    if (subtasksDirtyRef.current) {
+      subtasksDirtyRef.current = false;
+      void refreshActiveView();
+    }
+  }
+
+  async function saveEdit() {
     if (!editTarget) return;
 
     setSavingEdit(true);
@@ -542,7 +545,7 @@ export function TasksView() {
   }
 
   /**
-   * Après une modification d'étiquette, le dialogue d'édition encore ouvert est
+   * Après une modification d'étiquette, l'éditeur en place encore ouvert est
    * réaligné : sans cela, sa liste de cases étiquetées afficherait un nom ou une
    * couleur périmée, et l'enregistrement enverrait un identifiant disparu.
    */
@@ -626,35 +629,113 @@ export function TasksView() {
     );
   }, [showMyTasks, orderedMyTasks, mySort, myGroup, myTasks]);
 
+  /**
+   * Édition en place : le descripteur pilote le titre DANS la ligne, l'éditeur
+   * se déploie juste en dessous — jamais dans un panneau ni une fenêtre.
+   */
+  const editing: TaskAreaEditing | null = editTarget
+    ? {
+        id: editTarget.id,
+        title: editTarget.title,
+        onTitleChange: (title) =>
+          setEditTarget((current) => (current ? { ...current, title } : current)),
+        onCommit: () => void saveEdit(),
+        onCancel: closeEditor,
+      }
+    : null;
+
+  const taskEditor = editTarget ? (
+    <TaskEditorInline
+      key={editTarget.id}
+      task={editTarget}
+      labels={labels}
+      members={members}
+      saving={savingEdit}
+      onPatch={(patch) =>
+        setEditTarget((current) => (current ? { ...current, ...patch } : current))
+      }
+      onCancel={closeEditor}
+      onSubmit={() => void saveEdit()}
+      onRequestDelete={() => setConfirmDeleteTask(true)}
+      onToggleLabel={(labelId, checked) =>
+        setEditTarget((current) => {
+          if (!current) return current;
+          const kept = current.labels.filter((label) => label.id !== labelId);
+          if (!checked) return { ...current, labels: kept };
+          const added = labels.find((label) => label.id === labelId);
+          // L'étiquette peut avoir été supprimée entre-temps : on ignore.
+          return added ? { ...current, labels: [...kept, added] } : current;
+        })
+      }
+      onCreateLabel={onCreateLabel}
+      onError={(message) => push("danger", message)}
+      onSubtaskProgress={(progress) => {
+        subtasksDirtyRef.current = true;
+        setEditTarget((current) => {
+          if (!current) return current;
+          const status =
+            progress.complete && current.status !== "done"
+              ? "done"
+              : !progress.complete && current.status === "done"
+                ? "todo"
+                : current.status;
+          return {
+            ...current,
+            subtaskDone: progress.done,
+            subtaskTotal: progress.total,
+            status,
+          };
+        });
+      }}
+    />
+  ) : null;
+
   return (
-    <div className="flex h-full min-h-0 flex-col gap-4">
-      <PageHeader title="Tâches" />
+    <div className="tasks-view flex h-full min-h-0 flex-col gap-4 p-4 md:p-6">
+      <PageHeader
+        title="Tâches"
+        actions={
+          <Button
+            variant="ghost"
+            size="sm"
+            aria-expanded={sidebarOpen}
+            aria-controls={sidebarOpen ? "lists-sidebar" : undefined}
+            title={sidebarOpen ? "Masquer les listes" : "Afficher les listes"}
+            onClick={() => setSidebarOpen((open) => !open)}
+          >
+            Listes
+          </Button>
+        }
+      />
 
       <div className="flex min-h-0 flex-1 gap-4">
-        <ListsSidebar
-          lists={lists}
-          error={listsError}
-          activeListId={activeListId}
-          showMyTasks={showMyTasks}
-          onSelectList={(listId) => {
-            setActiveListId(listId);
-            setCriteria(DEFAULT_CRITERIA);
-            setShowMyTasks(false);
-            setDragTaskId(null);
-            setDropTarget(null);
-            setAnnouncement(
-              `Liste « ${lists?.find((list) => list.id === listId)?.name ?? ""} » ouverte.`,
-            );
-          }}
-          onShowMyTasks={() => {
-            setShowMyTasks(true);
-            setAnnouncement("Vue Mes tâches ouverte.");
-          }}
-          onCreateList={(name) => onCreateList(name)}
-          onRenameList={(listId, name) => onRenameList(listId, name)}
-          onReorderLists={(listIds) => onReorderLists(listIds)}
-          onRetry={() => loadWorkspace()}
-        />
+        {sidebarOpen ? (
+          <ListsSidebar
+            lists={lists}
+            error={listsError}
+            activeListId={activeListId}
+            showMyTasks={showMyTasks}
+            onSelectList={(listId) => {
+              setActiveListId(listId);
+              setCriteria(DEFAULT_CRITERIA);
+              setShowMyTasks(false);
+              setDragTaskId(null);
+              setDropTarget(null);
+              setAnnouncement(
+                `Liste « ${lists?.find((list) => list.id === listId)?.name ?? ""} » ouverte.`,
+              );
+            }}
+            onShowMyTasks={() => {
+              setShowMyTasks(true);
+              setAnnouncement("Vue Mes tâches ouverte.");
+            }}
+            onClose={() => setSidebarOpen(false)}
+            onCreateList={(name) => onCreateList(name)}
+            onRenameList={(listId, name) => onRenameList(listId, name)}
+            onReorderLists={(listIds) => onReorderLists(listIds)}
+            onRetry={() => loadWorkspace()}
+          />
+        ) : null}
 
         <section className="flex min-w-0 flex-1 flex-col rounded-lg border border-border bg-card">
           {showMyTasks ? (
@@ -672,7 +753,10 @@ export function TasksView() {
               busyTaskIds={busyTaskIds}
               assigneeNameOf={(userId) => memberOf(userId)?.name}
               onToggle={(task) => void onToggleMyTask(task)}
-              onOpen={(task) => setEditTarget({ ...task })}
+              onOpen={(task) => startEditing(task)}
+              onStartTyping={(task, initial) => startEditing(task, initial)}
+              editing={editing}
+              editor={taskEditor}
             />
           ) : activeList === null ? (
             <EmptyState
@@ -683,78 +767,88 @@ export function TasksView() {
             />
           ) : (
             <>
-              <header className="flex flex-wrap items-center gap-2 border-b border-border px-3 py-2">
+              <header className="flex items-center gap-2 border-b border-border px-3 py-2">
                 <h2 className="min-w-0 flex-1 truncate text-sm font-semibold">{activeList.name}</h2>
-                <Button variant="ghost" size="sm" onClick={() => setShareOpen(true)}>
-                  Partager
-                </Button>
-                <Button variant="ghost" size="sm" onClick={() => setLabelsOpen(true)}>
-                  Étiquettes
-                </Button>
-                {activeList.isOwner ? (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="text-destructive"
-                    onClick={() => setConfirmDeleteList(true)}
-                  >
-                    Supprimer la liste
-                  </Button>
-                ) : null}
+                <Menu
+                  label="Actions de la liste"
+                  align="end"
+                  triggerClassName="h-8 w-8 border-transparent bg-transparent px-0 hover:bg-muted focus-visible:ring-offset-0"
+                  triggerIcon={<span aria-hidden>⋯</span>}
+                  items={[
+                    {
+                      id: "share",
+                      label: "Partager",
+                      onSelect: () => setShareOpen(true),
+                    },
+                    {
+                      id: "labels",
+                      label: "Étiquettes",
+                      onSelect: () => setLabelsOpen(true),
+                    },
+                    ...(activeList.isOwner
+                      ? [
+                          {
+                            id: "delete-list",
+                            label: "Supprimer la liste",
+                            destructive: true,
+                            separated: true,
+                            onSelect: () => setConfirmDeleteList(true),
+                          },
+                        ]
+                      : []),
+                  ]}
+                />
               </header>
 
-              <div className="flex flex-wrap items-center gap-1 border-b border-border px-3 py-2">
-                {TASK_STATUS_FILTERS.map((item) => (
-                  <Button
-                    key={item.id}
-                    variant={criteria.status === item.id ? "secondary" : "ghost"}
-                    size="sm"
-                    aria-pressed={criteria.status === item.id}
-                    onClick={() => setCriteria((current) => ({ ...current, status: item.id }))}
-                  >
-                    {item.label}
-                  </Button>
-                ))}
-              </div>
-
-              <form
-                onSubmit={onQuickAdd}
-                method="post"
-                aria-busy={creatingTask || undefined}
-                className="flex items-center gap-2 border-b border-border px-3 py-2"
+              {/* Barre d'outils unique : ajout rapide, filtres et tri en une rangée. */}
+              <div
+                role="toolbar"
+                aria-label="Filtres et tri des tâches"
+                className="flex flex-nowrap items-center gap-1 overflow-x-auto border-b border-border px-2 py-1 [&>*]:shrink-0"
               >
-                <Input
-                  aria-label="Ajouter une tâche"
-                  placeholder="Ajouter une tâche puis Entrée…"
-                  value={quickTitle}
-                  onChange={(event) => setQuickTitle(event.target.value)}
-                  disabled={creatingTask}
-                  className={creatingTask ? "opacity-60" : undefined}
-                />
-                {creatingTask ? (
-                  <span
-                    aria-hidden
-                    className="size-4 shrink-0 animate-spin rounded-full border-2 border-primary border-t-transparent"
+                <form
+                  onSubmit={onQuickAdd}
+                  method="post"
+                  aria-busy={creatingTask || undefined}
+                  className="flex w-64 items-center gap-1.5 lg:w-80"
+                >
+                  <Input
+                    aria-label="Ajouter une tâche"
+                    placeholder="Ajouter une tâche puis Entrée…"
+                    value={quickTitle}
+                    onChange={(event) => setQuickTitle(event.target.value)}
+                    disabled={creatingTask}
+                    className={creatingTask ? "h-8 text-sm opacity-60" : "h-8 text-sm"}
                   />
-                ) : null}
-              </form>
+                  {creatingTask ? (
+                    <span
+                      aria-hidden
+                      className="size-4 shrink-0 animate-spin rounded-full border-2 border-primary border-t-transparent"
+                    />
+                  ) : null}
+                </form>
 
-              <SortBar
-                sort={sort}
-                group={group}
-                groupOptions={LIST_GROUP_OPTIONS}
-                onSortChange={setSort}
-                onGroupChange={setGroup}
-              />
+                <span aria-hidden className="mx-1 h-4 w-px shrink-0 bg-border" />
 
-              <FilterBar
-                criteria={criteria}
-                labels={labels}
-                shown={orderedTasks?.length ?? 0}
-                total={tasks?.length ?? 0}
-                onChange={(patch) => setCriteria((current) => ({ ...current, ...patch }))}
-                onReset={() => setCriteria(DEFAULT_CRITERIA)}
-              />
+                <FilterBar
+                  criteria={criteria}
+                  labels={labels}
+                  shown={orderedTasks?.length ?? 0}
+                  total={tasks?.length ?? 0}
+                  onChange={(patch) => setCriteria((current) => ({ ...current, ...patch }))}
+                  onReset={() => setCriteria(DEFAULT_CRITERIA)}
+                />
+
+                <span aria-hidden className="mx-1 h-4 w-px shrink-0 bg-border" />
+
+                <SortBar
+                  sort={sort}
+                  group={group}
+                  groupOptions={LIST_GROUP_OPTIONS}
+                  onSortChange={setSort}
+                  onGroupChange={setGroup}
+                />
+              </div>
 
               <TaskArea
                 tasks={orderedTasks}
@@ -765,7 +859,10 @@ export function TasksView() {
                 busyTaskIds={busyTaskIds}
                 assigneeNameOf={(userId) => memberOf(userId)?.name}
                 onToggle={(task) => void onToggleDone(task)}
-                onOpen={(task) => setEditTarget({ ...task })}
+                onOpen={(task) => startEditing(task)}
+                onStartTyping={(task, initial) => startEditing(task, initial)}
+                editing={editing}
+                editor={taskEditor}
                 emptyState={{
                   title:
                     tasks?.length === 0
@@ -805,190 +902,6 @@ export function TasksView() {
       <p aria-live="polite" className="sr-only">
         {announcement}
       </p>
-
-      <Dialog
-        open={editTarget !== null}
-        onClose={() => {
-          setEditTarget(null);
-          if (subtasksDirtyRef.current) {
-            subtasksDirtyRef.current = false;
-            void refreshActiveView();
-          }
-        }}
-        title="Modifier la tâche"
-        className="max-w-lg"
-      >
-        {editTarget ? (
-          <form onSubmit={onSaveEdit} method="post" className="flex flex-col gap-4">
-            <div className="flex flex-col gap-2">
-              <Label htmlFor="task-title">Titre</Label>
-              <Input
-                id="task-title"
-                value={editTarget.title}
-                onChange={(event) => setEditTarget({ ...editTarget, title: event.target.value })}
-                maxLength={500}
-              />
-            </div>
-            <div className="flex flex-col gap-2">
-              <Label htmlFor="task-notes">Notes</Label>
-              <textarea
-                id="task-notes"
-                value={editTarget.notes ?? ""}
-                onChange={(event) =>
-                  setEditTarget({
-                    ...editTarget,
-                    notes: event.target.value.length === 0 ? null : event.target.value,
-                  })
-                }
-                rows={4}
-                maxLength={5000}
-                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              />
-            </div>
-            <div className="grid gap-4 sm:grid-cols-2">
-              <div className="flex flex-col gap-2">
-                <Label htmlFor="task-status">Statut</Label>
-                <select
-                  id="task-status"
-                  value={editTarget.status}
-                  onChange={(event) => setEditTarget({ ...editTarget, status: event.target.value })}
-                  className="h-9 rounded-md border border-input bg-background px-3 text-sm"
-                >
-                  <option value="todo">À faire</option>
-                  <option value="in_progress">En cours</option>
-                  <option value="done">Terminée</option>
-                </select>
-              </div>
-              <div className="flex flex-col gap-2">
-                <Label htmlFor="task-priority">Priorité</Label>
-                <select
-                  id="task-priority"
-                  value={editTarget.priority}
-                  onChange={(event) =>
-                    setEditTarget({ ...editTarget, priority: event.target.value })
-                  }
-                  className="h-9 rounded-md border border-input bg-background px-3 text-sm"
-                >
-                  {PRIORITY_OPTIONS.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div className="flex flex-col gap-2">
-                <Label htmlFor="task-due">Échéance</Label>
-                <Input
-                  id="task-due"
-                  type="date"
-                  value={toDateInputValue(editTarget.dueAt)}
-                  onChange={(event) =>
-                    setEditTarget({
-                      ...editTarget,
-                      dueAt: fromDateInputValue(event.target.value),
-                    })
-                  }
-                />
-              </div>
-              <div className="flex flex-col gap-2">
-                <Label htmlFor="task-assignee">Assigné à</Label>
-                <select
-                  id="task-assignee"
-                  value={editTarget.assigneeId ?? ""}
-                  onChange={(event) =>
-                    setEditTarget({
-                      ...editTarget,
-                      assigneeId: event.target.value === "" ? null : event.target.value,
-                    })
-                  }
-                  className="h-9 rounded-md border border-input bg-background px-3 text-sm"
-                >
-                  <option value="">Personne</option>
-                  {members.map((member) => (
-                    <option key={member.userId} value={member.userId}>
-                      {member.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            </div>
-
-            <TaskLabelsEditor
-              labels={labels}
-              selectedIds={editTarget.labels.map((label) => label.id)}
-              busy={savingEdit}
-              onToggle={(labelId, checked) =>
-                setEditTarget((current) => {
-                  if (!current) return current;
-                  const kept = current.labels.filter((label) => label.id !== labelId);
-                  if (!checked) return { ...current, labels: kept };
-                  const added = labels.find((label) => label.id === labelId);
-                  // L'étiquette peut avoir été supprimée entre-temps : on ignore.
-                  return added ? { ...current, labels: [...kept, added] } : current;
-                })
-              }
-              onCreate={onCreateLabel}
-            />
-
-            <SubtasksEditor
-              taskId={editTarget.id}
-              onError={(message) => push("danger", message)}
-              onProgress={(progress: SubtaskProgress) => {
-                subtasksDirtyRef.current = true;
-                setEditTarget((current) => {
-                  if (!current) return current;
-                  const status =
-                    progress.complete && current.status !== "done"
-                      ? "done"
-                      : !progress.complete && current.status === "done"
-                        ? "todo"
-                        : current.status;
-                  return {
-                    ...current,
-                    subtaskDone: progress.done,
-                    subtaskTotal: progress.total,
-                    status,
-                  };
-                });
-              }}
-            />
-
-            <div className="flex items-center justify-between">
-              <Button
-                type="button"
-                variant="destructive"
-                size="sm"
-                onClick={() => setConfirmDeleteTask(true)}
-              >
-                Supprimer
-              </Button>
-              <div className="flex gap-2">
-                <Button
-                  type="button"
-                  variant="ghost"
-                  onClick={() => {
-                    setEditTarget(null);
-                    if (subtasksDirtyRef.current) {
-                      subtasksDirtyRef.current = false;
-                      void refreshActiveView();
-                    }
-                  }}
-                >
-                  Annuler
-                </Button>
-                <Button type="submit" loading={savingEdit}>
-                  Enregistrer
-                </Button>
-              </div>
-            </div>
-            <p className="text-xs text-muted-foreground">
-              {editTarget.status === "done"
-                ? "Terminée"
-                : `Statut : ${STATUS_LABELS[editTarget.status] ?? editTarget.status}`}
-            </p>
-          </form>
-        ) : null}
-      </Dialog>
 
       <ConfirmDialog
         open={confirmDeleteTask}
@@ -1056,6 +969,18 @@ type TaskAreaDrag = {
 };
 
 /**
+ * Édition en place : un seul éditeur ouvert, rattaché à une tâche. Le titre
+ * vit DANS la ligne ; ce descripteur ne porte que son état.
+ */
+type TaskAreaEditing = {
+  id: string;
+  title: string;
+  onTitleChange: (title: string) => void;
+  onCommit: () => void;
+  onCancel: () => void;
+};
+
+/**
  * Zone de tâches : chargement, erreur, vide, liste à plat ou sections de
  * regroupement. Partagée par la liste active et par l'agrégat « Mes tâches »,
  * pour que les deux écrans vieillissent ensemble.
@@ -1071,6 +996,9 @@ function TaskArea<T extends TaskView>({
   subtitleOf,
   onToggle,
   onOpen,
+  onStartTyping,
+  editing,
+  editor,
   emptyState,
   drag,
 }: {
@@ -1085,6 +1013,11 @@ function TaskArea<T extends TaskView>({
   subtitleOf?: (task: T) => string | undefined;
   onToggle: (task: T) => void;
   onOpen: (task: T) => void;
+  /** Frappe directe : ouvre l'éditeur avec la lettre tapée comme titre. */
+  onStartTyping?: (task: T, initial: string) => void;
+  /** Édition en place : descripteur du titre et éditeur déployé sous la ligne. */
+  editing?: TaskAreaEditing | null;
+  editor?: ReactNode;
   emptyState: { title: string; hint?: string };
   /** Glisser-déposer (ordre manuel) ; absent, les lignes sont statiques. */
   drag?: TaskAreaDrag;
@@ -1095,31 +1028,47 @@ function TaskArea<T extends TaskView>({
     return groupTasks(tasks, group);
   }, [tasks, group]);
 
-  const renderRow = (task: T): ReactNode => (
-    <TaskRow
-      key={task.id}
-      task={task}
-      subtitle={subtitleOf?.(task)}
-      busy={busyTaskIds.has(task.id)}
-      assigneeName={assigneeNameOf(task.assigneeId)}
-      onToggle={() => onToggle(task)}
-      onOpen={() => onOpen(task)}
-      drag={
-        drag?.enabled
-          ? {
-              enabled: true,
-              dragging: drag.draggingId === task.id,
-              dropEdge: drag.dropTarget?.id === task.id ? drag.dropTarget.edge : null,
-              onDragStart: (event) => drag.onDragStart(task, event),
-              onDragOver: (event) => drag.onDragOver(task, event),
-              onDrop: (event) => drag.onDrop(event),
-              onDragEnd: drag.onDragEnd,
-              onHandleKeyDown: (event) => drag.onHandleKeyDown(task, event),
-            }
-          : undefined
-      }
-    />
-  );
+  const renderRow = (task: T): ReactNode => {
+    const isEditing = editing?.id === task.id;
+    return (
+      <Fragment key={task.id}>
+        <TaskRow
+          task={task}
+          subtitle={subtitleOf?.(task)}
+          busy={busyTaskIds.has(task.id)}
+          assigneeName={assigneeNameOf(task.assigneeId)}
+          onToggle={() => onToggle(task)}
+          onOpen={() => onOpen(task)}
+          onStartTyping={onStartTyping ? (initial) => onStartTyping(task, initial) : undefined}
+          editing={
+            isEditing && editing
+              ? {
+                  title: editing.title,
+                  onChange: editing.onTitleChange,
+                  onCommit: editing.onCommit,
+                  onCancel: editing.onCancel,
+                }
+              : undefined
+          }
+          drag={
+            drag?.enabled && !isEditing
+              ? {
+                  enabled: true,
+                  dragging: drag.draggingId === task.id,
+                  dropEdge: drag.dropTarget?.id === task.id ? drag.dropTarget.edge : null,
+                  onDragStart: (event) => drag.onDragStart(task, event),
+                  onDragOver: (event) => drag.onDragOver(task, event),
+                  onDrop: (event) => drag.onDrop(event),
+                  onDragEnd: drag.onDragEnd,
+                  onHandleKeyDown: (event) => drag.onHandleKeyDown(task, event),
+                }
+              : undefined
+          }
+        />
+        {isEditing ? editor : null}
+      </Fragment>
+    );
+  };
 
   return (
     <div className="min-h-0 flex-1 overflow-y-auto">
@@ -1174,6 +1123,9 @@ function MyTasksPanel({
   assigneeNameOf,
   onToggle,
   onOpen,
+  onStartTyping,
+  editing,
+  editor,
 }: {
   tasks: MyTaskView[] | null;
   total: number;
@@ -1189,10 +1141,13 @@ function MyTasksPanel({
   assigneeNameOf: (userId: string | null) => string | undefined;
   onToggle: (task: TaskView) => void;
   onOpen: (task: TaskView) => void;
+  onStartTyping: (task: TaskView, initial: string) => void;
+  editing: TaskAreaEditing | null;
+  editor: ReactNode;
 }) {
   return (
     <>
-      <header className="flex flex-wrap items-center gap-2 border-b border-border px-3 py-2">
+      <header className="flex items-center gap-2 border-b border-border px-3 py-2">
         <h2 className="min-w-0 flex-1 truncate text-sm font-semibold">Mes tâches</h2>
         {tasks ? (
           <span className="text-xs text-muted-foreground">
@@ -1201,22 +1156,24 @@ function MyTasksPanel({
         ) : null}
       </header>
 
-      <div className="flex flex-wrap items-center gap-2 border-b border-border px-3 py-2">
+      <div className="flex flex-nowrap items-center gap-1 overflow-x-auto border-b border-border px-2 py-1 [&>*]:shrink-0">
         <SegmentedTabs
           items={MY_TASKS_WINDOWS}
           value={selectedWindow}
           onChange={onWindowChange}
           ariaLabel="Fenêtre"
         />
-      </div>
 
-      <SortBar
-        sort={sort}
-        group={group}
-        groupOptions={MY_TASKS_GROUP_OPTIONS}
-        onSortChange={onSortChange}
-        onGroupChange={onGroupChange}
-      />
+        <span aria-hidden className="mx-1 h-4 w-px shrink-0 bg-border" />
+
+        <SortBar
+          sort={sort}
+          group={group}
+          groupOptions={MY_TASKS_GROUP_OPTIONS}
+          onSortChange={onSortChange}
+          onGroupChange={onGroupChange}
+        />
+      </div>
 
       <TaskArea
         tasks={tasks}
@@ -1229,6 +1186,9 @@ function MyTasksPanel({
         subtitleOf={(task) => task.listName}
         onToggle={onToggle}
         onOpen={onOpen}
+        onStartTyping={onStartTyping}
+        editing={editing}
+        editor={editor}
         emptyState={{
           title: "Rien à faire — profitez-en.",
           hint:
@@ -1240,6 +1200,170 @@ function MyTasksPanel({
         }}
       />
     </>
+  );
+}
+
+/**
+ * Éditeur en place d'une tâche : déployé sous sa propre ligne (jamais un
+ * panneau ni une fenêtre), il porte les réglages — notes, statut, priorité,
+ * échéance, assignation, étiquettes, sous-tâches — et enregistre en un geste.
+ * Le titre, lui, se modifie directement dans la ligne (`TaskRow`).
+ */
+function TaskEditorInline({
+  task,
+  labels,
+  members,
+  saving,
+  onPatch,
+  onSubmit,
+  onCancel,
+  onRequestDelete,
+  onToggleLabel,
+  onCreateLabel,
+  onError,
+  onSubtaskProgress,
+}: {
+  task: TaskView;
+  labels: TaskLabelView[];
+  members: MemberView[];
+  saving: boolean;
+  onPatch: (patch: Partial<TaskView>) => void;
+  onSubmit: () => void;
+  onCancel: () => void;
+  onRequestDelete: () => void;
+  onToggleLabel: (labelId: string, checked: boolean) => void;
+  onCreateLabel: (name: string, color: TaskLabelColor) => Promise<string | null>;
+  onError: (message: string) => void;
+  onSubtaskProgress: (progress: SubtaskProgress) => void;
+}) {
+  const rootRef = useRef<HTMLLIElement>(null);
+
+  // L'éditeur est déjà visible d'un clic : au besoin, on amène sa fin à l'écran.
+  useEffect(() => {
+    rootRef.current?.scrollIntoView({ block: "nearest" });
+  }, []);
+
+  return (
+    <li
+      ref={rootRef}
+      id={`task-editor-${task.id}`}
+      className="border-b border-border/60 bg-muted/20 px-3 py-3"
+    >
+      <form
+        onSubmit={(event) => {
+          event.preventDefault();
+          onSubmit();
+        }}
+        method="post"
+        aria-label="Modifier la tâche"
+        className="flex flex-col gap-3"
+        onKeyDown={(event) => {
+          // Échap sort de l'éditeur, quel que soit le champ (Échap dans un
+          // select natif referme son menu ET annule : acceptable, la saisie
+          // n'est jamais perdue par surprise).
+          if (event.key === "Escape") {
+            event.preventDefault();
+            onCancel();
+          }
+        }}
+      >
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="task-status">Statut</Label>
+            <select
+              id="task-status"
+              value={task.status}
+              onChange={(event) => onPatch({ status: event.target.value })}
+              className="h-9 rounded-md border border-input bg-background px-3 text-sm"
+            >
+              <option value="todo">À faire</option>
+              <option value="in_progress">En cours</option>
+              <option value="done">Terminée</option>
+            </select>
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="task-priority">Priorité</Label>
+            <select
+              id="task-priority"
+              value={task.priority}
+              onChange={(event) => onPatch({ priority: event.target.value })}
+              className="h-9 rounded-md border border-input bg-background px-3 text-sm"
+            >
+              {PRIORITY_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="task-due">Échéance</Label>
+            <Input
+              id="task-due"
+              type="date"
+              value={toDateInputValue(task.dueAt)}
+              onChange={(event) => onPatch({ dueAt: fromDateInputValue(event.target.value) })}
+            />
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="task-assignee">Assigné à</Label>
+            <select
+              id="task-assignee"
+              value={task.assigneeId ?? ""}
+              onChange={(event) =>
+                onPatch({ assigneeId: event.target.value === "" ? null : event.target.value })
+              }
+              className="h-9 rounded-md border border-input bg-background px-3 text-sm"
+            >
+              <option value="">Personne</option>
+              {members.map((member) => (
+                <option key={member.userId} value={member.userId}>
+                  {member.name}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+
+        <div className="flex flex-col gap-1.5">
+          <Label htmlFor="task-notes">Notes</Label>
+          <textarea
+            id="task-notes"
+            value={task.notes ?? ""}
+            onChange={(event) =>
+              onPatch({ notes: event.target.value.length === 0 ? null : event.target.value })
+            }
+            rows={3}
+            maxLength={5000}
+            className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          />
+        </div>
+
+        <TaskLabelsEditor
+          labels={labels}
+          selectedIds={task.labels.map((label) => label.id)}
+          busy={saving}
+          onToggle={onToggleLabel}
+          onCreate={onCreateLabel}
+        />
+
+        <SubtasksEditor taskId={task.id} onError={onError} onProgress={onSubtaskProgress} />
+
+        <div className="flex items-center justify-between">
+          <Button type="button" variant="destructive" size="sm" onClick={onRequestDelete}>
+            Supprimer
+          </Button>
+          <div className="flex gap-2">
+            <Button type="button" variant="ghost" onClick={onCancel}>
+              Annuler
+            </Button>
+            <Button type="submit" loading={saving}>
+              Enregistrer
+            </Button>
+          </div>
+        </div>
+      </form>
+    </li>
   );
 }
 

@@ -1,6 +1,6 @@
 import { createServerFn } from "@tanstack/react-start";
 import { getRequest } from "@tanstack/react-start/server";
-import { requireActor } from "@workspace/auth";
+import { auth, requireActor } from "@workspace/auth";
 import { z } from "zod";
 import {
   addMemberByEmail,
@@ -45,6 +45,35 @@ export const listMembersFn = createServerFn({ method: "GET" }).handler(async () 
   const { actor } = await requireActor(getRequest().headers);
   return listMembers(actor);
 });
+
+/**
+ * Compte géré : crée le compte (mot de passe temporaire haché par better-auth,
+ * même politique qu'à l'inscription) puis l'ajoute à l'organisation active.
+ * Le mot de passe temporaire n'est renvoyé qu'une fois — il est affiché à
+ * l'administrateur pour transmission, jamais stocké en clair.
+ */
+export const createManagedAccountFn = createServerFn({ method: "POST" })
+  .validator((input: unknown) =>
+    z
+      .object({
+        name: z.string().min(2).max(120),
+        email: z.string().email(),
+      })
+      .parse(input),
+  )
+  .handler(async ({ data }) => {
+    const { actor } = await requireActor(getRequest().headers);
+    const email = data.email.trim();
+    // 14 caractères aléatoires, assez longs pour la politique de mots de passe.
+    const temporaryPassword = crypto.randomUUID().replace(/-/g, "").slice(0, 14);
+
+    const created = await auth.api.signUpEmail({
+      body: { name: data.name.trim(), email, password: temporaryPassword },
+    });
+    const member = await addMemberByEmail(actor, email);
+
+    return { userId: created.user.id, temporaryPassword, member };
+  });
 
 export const addMemberFn = createServerFn({ method: "POST" })
   .validator((input: unknown) =>

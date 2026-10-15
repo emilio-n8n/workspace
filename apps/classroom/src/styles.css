@@ -21,3 +21,10 @@ body {
 body {
   margin: 0;
 }
+
+/* La page d'un cours Classroom remplit la fenêtre : la zone de contenu de la
+   coque perd son rembourrage et son défilement, la page gère les siens. */
+main#contenu:has(.classroom-course) {
+  padding: 0;
+  overflow: hidden;
+}

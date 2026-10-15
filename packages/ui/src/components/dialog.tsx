@@ -34,7 +34,12 @@ export function Dialog({ open, onClose, title, children, footer, className, bare
       onClose={onClose}
       aria-labelledby={titleId}
       className={cn(
-        "w-full max-w-md rounded-xl border border-border bg-card p-0 text-card-foreground shadow-lift backdrop:bg-overlay",
+        // Le reset Tailwind (`margin: 0` global) écrase le centrage natif du
+        // <dialog> (marges automatiques) : on le rétablit explicitement, avec
+        // une hauteur « au contenu » (nécessaire aux marges auto verticales)
+        // et un plafond de hauteur qui fait défiler le contenu au lieu de
+        // dépasser l'écran.
+        "fixed inset-0 m-auto h-fit max-h-[calc(100dvh-2rem)] w-[calc(100%-2rem)] max-w-md overflow-y-auto rounded-xl border border-border bg-card p-0 text-card-foreground shadow-lift backdrop:bg-overlay",
         className,
       )}
     >

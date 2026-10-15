@@ -73,7 +73,7 @@ export function SearchBar({
             else onNext();
           }
         }}
-        className="h-8 min-w-56 flex-1 text-sm"
+        className="h-8 min-w-40 flex-1 text-sm"
       />
       <div className="w-44">
         <Select

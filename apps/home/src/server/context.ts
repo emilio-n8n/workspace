@@ -1,10 +1,12 @@
 import { createServerFn } from "@tanstack/react-start";
 import { getRequest } from "@tanstack/react-start/server";
 import {
+  type AccountKind,
   auth,
   ensurePersonalOrganization,
   getSession,
   listMyOrganizations,
+  parseAccountKind,
   requireActor,
 } from "@workspace/auth";
 import { getAppUrls } from "@workspace/config";
@@ -28,7 +30,7 @@ export type SessionInfo = {
 export type WorkspaceInfo = {
   user: { id: string; name: string; email: string };
   organizations: { id: string; name: string }[];
-  activeOrganization: { id: string; name: string; slug: string } | null;
+  activeOrganization: { id: string; name: string; slug: string; kind?: AccountKind } | null;
 } | null;
 
 /** Session courante (null si non connecté). */
@@ -56,10 +58,25 @@ export const getWorkspaceFn = createServerFn({ method: "GET" }).handler(
     const activeId = session.session.activeOrganizationId ?? orgs[0]?.id ?? null;
     const active = orgs.find((org) => org.id === activeId) ?? null;
 
+    // Type de compte de l'espace actif, lu dans la méta d'organisation. Absent
+    // sur les espaces créés avant le choix du type : la suite complète reste
+    // visible (parité ascendante).
+    let activeKind: AccountKind | undefined;
+    if (active) {
+      const row = await getDb()
+        .select({ metadata: coreSchema.organization.metadata })
+        .from(coreSchema.organization)
+        .where(eq(coreSchema.organization.id, active.id))
+        .limit(1);
+      activeKind = parseAccountKind(row[0]?.metadata);
+    }
+
     return {
       user: { id: session.user.id, name: session.user.name, email: session.user.email },
       organizations: orgs.map((org) => ({ id: org.id, name: org.name })),
-      activeOrganization: active ? { id: active.id, name: active.name, slug: active.slug } : null,
+      activeOrganization: active
+        ? { id: active.id, name: active.name, slug: active.slug, kind: activeKind }
+        : null,
     };
   },
 );
@@ -67,12 +84,19 @@ export const getWorkspaceFn = createServerFn({ method: "GET" }).handler(
 /** URLs publiques des applications de la suite (calculées côté serveur). */
 export const getAppUrlsFn = createServerFn({ method: "GET" }).handler(async () => getAppUrls());
 
-/** Crée l'espace personnel si nécessaire (appelé après l'inscription). */
-export const provisionWorkspaceFn = createServerFn({ method: "POST" }).handler(async () => {
-  const request = getRequest();
-  const result = await ensurePersonalOrganization(request.headers);
-  return { organizationId: result.organizationId };
-});
+/**
+ * Crée l'espace au type choisi à l'inscription (appelé après l'inscription).
+ * Sans type (anciens appelants), l'espace reste personnel.
+ */
+export const provisionWorkspaceFn = createServerFn({ method: "POST" })
+  .validator((input: unknown) =>
+    z.object({ kind: z.enum(["personal", "business", "education"]).optional() }).parse(input ?? {}),
+  )
+  .handler(async ({ data }) => {
+    const request = getRequest();
+    const result = await ensurePersonalOrganization(request.headers, data.kind);
+    return { organizationId: result.organizationId };
+  });
 
 /**
  * Bascule l'organisation active — côté serveur, après vérification que

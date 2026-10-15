@@ -1,36 +1,62 @@
-import { Button, cn, IconChevronDown, IconTrash } from "@workspace/ui";
-import { type KeyboardEvent, type ReactNode, useState } from "react";
-import { blockLabel, renderBlock, type SiteBlock, type SiteBlockKind } from "../blocks.ts";
+// biome-ignore-all lint/a11y/noAutofocus: focus attendu — l'édition démarre sur place, comme dans un vrai outil.
+import { Button, cn } from "@workspace/ui";
+import { type KeyboardEvent, useState } from "react";
+import {
+  BLOCKS_LIMITS,
+  blockLabel,
+  renderBlock,
+  type SiteBlock,
+  type SiteBlockKind,
+} from "../blocks.ts";
 import { BlockGlyph } from "./block-icon.tsx";
 
 export type BlocksCanvasProps = {
   blocks: SiteBlock[];
   /** Identifiant du bloc sélectionné. */
   selectedId: string | null;
+  /** Bloc dont le texte est modifié en place, `null` sinon. */
+  editingId: string | null;
   canEdit: boolean;
-  onSelect: (id: string) => void;
-  /** Déplace un bloc d'un cran (monter / descendre). */
+  /** `null` désélectionne (Échap sur le bloc sélectionné). */
+  onSelect: (id: string | null) => void;
+  /**
+   * Entre en édition en place (2-clic, Entrée, frappe directe) ; `seed` est le
+   * premier caractère frappé, ajouté au texte existant. Pour un bloc sans
+   * texte (image, bouton, colonnes), l'éditeur ouvre ses propriétés.
+   */
+  onStartEdit: (id: string, seed?: string) => void;
+  /** Frappe dans l'éditeur en place. */
+  onTextChange: (id: string, text: string) => void;
+  /** Sort de l'édition en place (Entrée, Échap, perte du focus). */
+  onEndEdit: () => void;
+  /** Déplace le bloc sélectionné d'un cran (Alt + ↑/↓). */
   onMove: (id: string, direction: "up" | "down") => void;
   onRemove: (id: string) => void;
 };
 
 /**
  * Canevas d'édition (TASK-002) : rend chaque bloc, permet de le
- * **sélectionner** (souris ou clavier) et de le **déplacer** vers le haut ou
- * le bas.
+ * **sélectionner** (souris ou clavier) et de le **modifier en place**
+ * (2-clic, Entrée ou frappe directe sur un titre ou un texte). Les actions de
+ * structure (déplacer, supprimer, propriétés) vivent dans la barre d'outils,
+ * pas sur le bloc.
  *
  * Accessibilité : chaque bloc est une entrée de liste et la sélection passe
  * par un bouton qui le recouvre — une seule cible de tabulation par bloc,
  * jamais de `<button>` qui engloberait du contenu non interactif. Les
  * raccourcis `Alt` + `↑`/`↓` déplacent le bloc sélectionné et sont annoncés
- * par `aria-keyshortcuts`. Les bordures de liste désactivent les commandes
- * impossibles plutôt que de les masquer.
+ * par `aria-keyshortcuts` ; Échap désélectionne, Suppr supprime, Entrée
+ * modifie en place.
  */
 export function BlocksCanvas({
   blocks,
   selectedId,
+  editingId,
   canEdit,
   onSelect,
+  onStartEdit,
+  onTextChange,
+  onEndEdit,
   onMove,
   onRemove,
 }: BlocksCanvasProps) {
@@ -48,67 +74,71 @@ export function BlocksCanvas({
       onKeyDown={onKeyDown}
       className="flex flex-col gap-2"
     >
-      {blocks.map((block, index) => {
+      {blocks.map((block) => {
         const label = blockLabel(block.kind);
         const selected = block.id === selectedId;
+        const editing = block.id === editingId;
         return (
-          // `group` pilote l'apparition de la barre d'outils au survol et au
-          // focus clavier ; le bloc sélectionné la garde toujours visible.
           <li
             key={block.id}
-            className="group relative"
+            className="relative"
             data-block-kind={block.kind}
             data-selected={selected || undefined}
           >
-            <div
-              className={cn(
-                "rounded-xl border bg-card p-4 transition-colors",
-                selected
-                  ? "border-primary ring-2 ring-ring ring-offset-1 ring-offset-background"
-                  : "border-border",
-              )}
-              // biome-ignore lint/security/noDangerouslySetInnerHtml: HTML produit par `renderBlock` (échappement systématique, URL assainies).
-              dangerouslySetInnerHTML={{ __html: renderBlock(block) }}
-            />
-            <button
-              type="button"
-              aria-pressed={selected}
-              aria-label={`${label} — sélectionner le bloc`}
-              className="absolute inset-0 rounded-xl focus-visible:outline-none"
-              onClick={() => onSelect(block.id)}
-            />
-            <div
-              className={cn(
-                "absolute right-2 top-2 flex gap-1 rounded-lg border border-border bg-popover/95 p-1 shadow-soft transition-opacity",
-                canEdit
-                  ? "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"
-                  : "hidden",
-                selected && "opacity-100",
-              )}
-            >
-              <ToolbarAction
-                label={`Monter le bloc ${label}`}
-                disabled={!canEdit || index === 0}
-                onClick={() => onMove(block.id, "up")}
-              >
-                <IconChevronDown className="rotate-180" />
-              </ToolbarAction>
-              <ToolbarAction
-                label={`Descendre le bloc ${label}`}
-                disabled={!canEdit || index === blocks.length - 1}
-                onClick={() => onMove(block.id, "down")}
-              >
-                <IconChevronDown />
-              </ToolbarAction>
-              <ToolbarAction
-                label={`Supprimer le bloc ${label}`}
-                disabled={!canEdit}
-                destructive
-                onClick={() => onRemove(block.id)}
-              >
-                <IconTrash />
-              </ToolbarAction>
-            </div>
+            {editing ? (
+              <BlockInlineEditor block={block} onTextChange={onTextChange} onEndEdit={onEndEdit} />
+            ) : (
+              <>
+                <div
+                  className={cn(
+                    "rounded-xl border bg-card p-4 transition-colors",
+                    selected
+                      ? "border-primary ring-2 ring-ring ring-offset-1 ring-offset-background"
+                      : "border-border",
+                  )}
+                  // biome-ignore lint/security/noDangerouslySetInnerHtml: HTML produit par `renderBlock` (échappement systématique, URL assainies).
+                  dangerouslySetInnerHTML={{ __html: renderBlock(block) }}
+                />
+                <button
+                  type="button"
+                  aria-pressed={selected}
+                  aria-label={`${label} — sélectionner le bloc`}
+                  className="absolute inset-0 rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  onClick={() => onSelect(block.id)}
+                  onDoubleClick={() => onStartEdit(block.id)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Escape") {
+                      event.preventDefault();
+                      onSelect(null);
+                      return;
+                    }
+                    if (!canEdit || !selected) return;
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      onStartEdit(block.id);
+                      return;
+                    }
+                    if (event.key === "Delete" || event.key === "Backspace") {
+                      event.preventDefault();
+                      onRemove(block.id);
+                      return;
+                    }
+                    // Frappe directe : une lettre sur un bloc sélectionné ouvre
+                    // l'édition en place et commence le mot.
+                    if (
+                      event.key.length === 1 &&
+                      event.key !== " " &&
+                      !event.ctrlKey &&
+                      !event.metaKey &&
+                      !event.altKey
+                    ) {
+                      event.preventDefault();
+                      onStartEdit(block.id, event.key);
+                    }
+                  }}
+                />
+              </>
+            )}
           </li>
         );
       })}
@@ -116,36 +146,67 @@ export function BlocksCanvas({
   );
 }
 
-function ToolbarAction({
-  label,
-  destructive = false,
-  disabled = false,
-  onClick,
-  children,
+/** Édition en place du contenu d'un bloc titre ou texte. */
+function BlockInlineEditor({
+  block,
+  onTextChange,
+  onEndEdit,
 }: {
-  label: string;
-  destructive?: boolean;
-  disabled?: boolean;
-  onClick: () => void;
-  children: ReactNode;
+  block: SiteBlock;
+  onTextChange: (id: string, text: string) => void;
+  onEndEdit: () => void;
 }) {
-  return (
-    <Button
-      type="button"
-      variant="ghost"
-      size="sm"
-      aria-label={label}
-      title={label}
-      disabled={disabled}
-      onClick={onClick}
-      className={cn(
-        "size-7 justify-center p-0",
-        destructive && "text-destructive hover:bg-destructive/10 hover:text-destructive",
-      )}
-    >
-      {children}
-    </Button>
-  );
+  const fieldClass =
+    "w-full border-none bg-transparent text-foreground outline-none placeholder:text-muted-foreground";
+  const frameClass =
+    "rounded-xl border border-primary bg-card p-4 ring-2 ring-ring ring-offset-1 ring-offset-background";
+
+  if (block.kind === "heading") {
+    return (
+      <div className={frameClass}>
+        <input
+          aria-label="Texte du titre"
+          value={block.text}
+          maxLength={BLOCKS_LIMITS.heading}
+          autoFocus
+          onChange={(event) => onTextChange(block.id, event.target.value)}
+          onBlur={onEndEdit}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" || event.key === "Escape") {
+              event.preventDefault();
+              onEndEdit();
+            }
+          }}
+          className={cn(fieldClass, "font-display text-2xl font-semibold tracking-tight")}
+        />
+      </div>
+    );
+  }
+
+  if (block.kind === "text") {
+    return (
+      <div className={frameClass}>
+        <textarea
+          aria-label="Texte"
+          value={block.text}
+          maxLength={BLOCKS_LIMITS.text}
+          rows={Math.min(12, Math.max(2, block.text.split("\n").length))}
+          autoFocus
+          onChange={(event) => onTextChange(block.id, event.target.value)}
+          onBlur={onEndEdit}
+          onKeyDown={(event) => {
+            if (event.key === "Escape") {
+              event.preventDefault();
+              onEndEdit();
+            }
+          }}
+          className={cn(fieldClass, "min-h-16 resize-y text-sm leading-relaxed")}
+        />
+      </div>
+    );
+  }
+
+  return null;
 }
 
 /**
@@ -167,7 +228,7 @@ export function BlocksEmptyState({
       </span>
       <p className="font-medium">Page vide</p>
       <p className="max-w-sm text-sm text-muted-foreground">
-        Ajoutez un bloc depuis la bibliothèque ci-dessus : titre, texte, image, bouton ou colonnes.
+        Ajoutez un bloc depuis le menu « Insérer » : titre, texte, image, bouton ou colonnes.
       </p>
       {canEdit ? (
         <Button

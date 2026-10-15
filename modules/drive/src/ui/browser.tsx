@@ -85,7 +85,7 @@ import {
   uploadPercentLabel,
   uploadSummary,
 } from "./upload-queue.ts";
-import { SortableColumn, ViewControls, ViewControlsHint } from "./view-controls.tsx";
+import { SortableColumn, ViewControls } from "./view-controls.tsx";
 import {
   DEFAULT_VIEW_PREFS,
   parseViewPrefs,
@@ -996,7 +996,7 @@ export function DriveBrowser({
   return (
     // biome-ignore lint/a11y/noStaticElementInteractions: la zone de dépôt est une amélioration souris ; le chemin clavier reste le bouton « Téléverser ».
     <div
-      className="relative flex flex-col gap-4"
+      className="drive-shell relative flex h-full min-h-0 flex-col gap-3 p-4 md:p-6"
       onDragEnter={onDragEnter}
       onDragOver={(event) => {
         // Sans `preventDefault`, le navigateur refuse le dépôt.
@@ -1007,7 +1007,10 @@ export function DriveBrowser({
       onDrop={onDrop}
     >
       {/* Onglets de vues */}
-      <nav aria-label="Vues du Drive" className="flex items-center gap-1 border-b border-border">
+      <nav
+        aria-label="Vues du Drive"
+        className="flex shrink-0 items-center gap-1 overflow-x-auto border-b border-border [&>a]:shrink-0"
+      >
         {TABS.map((tab) => (
           <Link
             key={tab.id}
@@ -1024,15 +1027,20 @@ export function DriveBrowser({
         ))}
       </nav>
 
-      <header className="flex flex-wrap items-center gap-3">
+      {/* En-tête : contexte (fil d'Ariane ou titre), compte, action principale. */}
+      <header className="flex min-w-0 shrink-0 items-center gap-3">
         {view === "drive" ? (
           <Breadcrumbs crumbs={crumbs} />
         ) : (
           <h1 className="min-w-0 flex-1 truncate text-lg font-semibold tracking-tight">{title}</h1>
         )}
 
+        <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
+          {visibleEntries ? counted(visibleEntries.length, "élément", "éléments") : ""}
+        </span>
+
         {view === "drive" ? (
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="flex shrink-0 items-center gap-2">
             <NewMenu
               onFolder={startInlineCreate}
               onDoc={createDocument && docsUrl ? () => setCreateKind("doc") : undefined}
@@ -1058,7 +1066,7 @@ export function DriveBrowser({
       {error ? (
         <p
           role="alert"
-          className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive"
+          className="shrink-0 rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive"
         >
           {error}
         </p>
@@ -1068,7 +1076,7 @@ export function DriveBrowser({
       {uploads.length > 0 ? (
         <section
           aria-label="Téléversements en cours"
-          className="flex flex-col gap-2 rounded-lg border border-border bg-muted/30 px-3 py-2"
+          className="flex shrink-0 flex-col gap-2 rounded-lg border border-border bg-muted/30 px-3 py-2"
         >
           <div className="flex flex-wrap items-center gap-2">
             <p aria-live="polite" className="text-sm font-medium">
@@ -1097,7 +1105,7 @@ export function DriveBrowser({
               Effacer la liste
             </Button>
           </div>
-          <ul className="flex flex-col divide-y divide-border/60 text-sm">
+          <ul className="flex max-h-40 flex-col divide-y divide-border/60 overflow-y-auto text-sm">
             {uploads.map((item) => (
               <li key={item.id} className="flex flex-col gap-1 py-1">
                 <div className="flex flex-wrap items-center gap-2">
@@ -1151,91 +1159,118 @@ export function DriveBrowser({
         </section>
       ) : null}
 
-      {selection.ids.size > 0 ? (
-        <SelectionActionBar
-          count={selection.ids.size}
-          downloadCount={downloadableEntries(selectedEntries).length}
-          busy={bulkBusy}
-          onClear={clearSelection}
-          onDownload={onDownloadSelected}
-          onMove={() => setMoveOpen(true)}
-          onDelete={() => setDeleteOpen(true)}
-        />
-      ) : null}
+      {/* Barre d'outils unique : contexte (sélection), recherche et filtre, puis
+          réglages d'affichage. À l'étroit, la partie gauche défile au lieu de
+          casser la mise en page ; les menus restent hors de la zone défilante
+          pour que leur panneau ne soit jamais rogné. */}
+      <div
+        role="toolbar"
+        aria-label="Outils du Drive"
+        className="flex h-10 shrink-0 items-center gap-0.5 border-b border-border"
+      >
+        <div className="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto [&>*]:shrink-0">
+          {selection.ids.size > 0 ? (
+            <>
+              <SelectionActionBar
+                count={selection.ids.size}
+                downloadCount={downloadableEntries(selectedEntries).length}
+                busy={bulkBusy}
+                onClear={clearSelection}
+                onDownload={onDownloadSelected}
+                onMove={() => setMoveOpen(true)}
+                onDelete={() => setDeleteOpen(true)}
+              />
+              <span aria-hidden className="mx-1 h-4 w-px shrink-0 bg-border" />
+            </>
+          ) : null}
 
-      {/* Recherche locale + filtres + réglages d'affichage */}
-      <div className="flex flex-wrap items-center gap-2">
-        <Input
-          aria-label="Rechercher dans cette vue"
-          placeholder="Rechercher dans cette vue…"
-          value={query}
-          onChange={(event) => setQuery(event.target.value)}
-          className="h-8 max-w-xs"
-        />
-        <select
-          aria-label="Filtrer par type"
-          value={typeFilter}
-          onChange={(event) => setTypeFilter(event.target.value as TypeFilter)}
-          className="h-8 rounded-md border border-input bg-background px-2 text-sm"
-        >
-          <option value="all">Tous les types</option>
-          <option value="folders">Dossiers</option>
-          <option value="files">Fichiers</option>
-        </select>
-        <ViewControls prefs={prefs} onChange={setPrefs} />
-        <span className="ml-auto text-xs text-muted-foreground">
-          {visibleEntries ? counted(visibleEntries.length, "élément", "éléments") : ""}
-        </span>
+          <Input
+            aria-label="Rechercher dans cette vue"
+            placeholder="Rechercher dans cette vue…"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            className="h-8 w-44 md:w-56"
+          />
+          <span aria-hidden className="mx-1 h-4 w-px shrink-0 bg-border" />
+          <select
+            aria-label="Filtrer par type"
+            value={typeFilter}
+            onChange={(event) => setTypeFilter(event.target.value as TypeFilter)}
+            className="h-8 rounded-md border border-input bg-background px-1.5 text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            <option value="all">Tous les types</option>
+            <option value="folders">Dossiers</option>
+            <option value="files">Fichiers</option>
+          </select>
+        </div>
+        <span aria-hidden className="mx-1 h-4 w-px shrink-0 bg-border" />
+        <div className="flex shrink-0 items-center">
+          <ViewControls prefs={prefs} onChange={setPrefs} />
+        </div>
       </div>
 
-      <ViewControlsHint prefs={prefs} />
+      {selection.ids.size > 0 && downloadableEntries(selectedEntries).length === 0 ? (
+        <p className="shrink-0 text-xs text-muted-foreground">
+          Les dossiers et les fichiers ouverts par une autre application (Documents, Feuilles,
+          Présentations, Formulaires) ne se téléchargent pas depuis le Drive.
+        </p>
+      ) : null}
 
       {loadError ? (
-        <Card>
-          <div className="flex flex-col items-center gap-3 px-6 py-14 text-center">
-            <p role="alert" className="font-medium text-destructive">
-              {loadError}
-            </p>
-            <Button size="sm" variant="outline" onClick={() => void refresh()}>
-              Réessayer
-            </Button>
-          </div>
-        </Card>
+        <div className="grid min-h-0 flex-1 place-items-center overflow-y-auto">
+          <Card className="w-full max-w-xl">
+            <div className="flex flex-col items-center gap-3 px-6 py-14 text-center">
+              <p role="alert" className="font-medium text-destructive">
+                {loadError}
+              </p>
+              <Button size="sm" variant="outline" onClick={() => void refresh()}>
+                Réessayer
+              </Button>
+            </div>
+          </Card>
+        </div>
       ) : visibleEntries === null ? (
-        <LoadingState label="Chargement du Drive…" />
+        <div className="grid min-h-0 flex-1 place-items-center">
+          <LoadingState label="Chargement du Drive…" />
+        </div>
       ) : visibleEntries.length === 0 && !inlineNew ? (
-        <Card>
-          <div className="flex flex-col items-center gap-3 px-6 py-14 text-center">
-            <IconFolder />
-            <p className="font-medium">
-              {view === "recent"
-                ? "Aucun élément récent"
-                : view === "shared"
-                  ? "Rien ne vous a été partagé pour le moment"
-                  : query.trim().length > 0 || typeFilter !== "all"
-                    ? "Aucun résultat pour ces critères"
-                    : "Ce dossier est vide"}
-            </p>
-            <p className="max-w-sm text-sm text-muted-foreground">
-              {view === "drive"
-                ? "Créez un dossier, un document, ou glissez des fichiers ici pour les téléverser."
-                : "Les éléments apparaîtront ici automatiquement."}
-            </p>
-            {view === "drive" ? (
-              <div className="flex gap-2">
-                <Button size="sm" variant="outline" onClick={startInlineCreate}>
-                  Nouveau dossier
-                </Button>
-                <Button size="sm" onClick={() => fileInputRef.current?.click()}>
-                  Téléverser un fichier
-                </Button>
-              </div>
-            ) : null}
-          </div>
-        </Card>
+        <div className="grid min-h-0 flex-1 place-items-center overflow-y-auto">
+          <Card className="w-full max-w-xl">
+            <div className="flex flex-col items-center gap-3 px-6 py-14 text-center">
+              <IconFolder />
+              <p className="font-medium">
+                {view === "recent"
+                  ? "Aucun élément récent"
+                  : view === "shared"
+                    ? "Rien ne vous a été partagé pour le moment"
+                    : query.trim().length > 0 || typeFilter !== "all"
+                      ? "Aucun résultat pour ces critères"
+                      : "Ce dossier est vide"}
+              </p>
+              <p className="max-w-sm text-sm text-muted-foreground">
+                {view === "drive"
+                  ? "Créez un dossier, un document, ou glissez des fichiers ici pour les téléverser."
+                  : "Les éléments apparaîtront ici automatiquement."}
+              </p>
+              {view === "drive" ? (
+                <div className="flex flex-wrap justify-center gap-2">
+                  <Button size="sm" variant="outline" onClick={startInlineCreate}>
+                    Nouveau dossier
+                  </Button>
+                  <Button size="sm" onClick={() => fileInputRef.current?.click()}>
+                    Téléverser un fichier
+                  </Button>
+                </div>
+              ) : null}
+            </div>
+          </Card>
+        </div>
       ) : (
-        <div id="drive-list" className="rounded-xl border border-border">
-          <div className="overflow-x-auto">
+        <div
+          id="drive-list"
+          className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-border"
+        >
+          <div className="min-h-0 flex-1 overflow-auto">
             {/* biome-ignore lint/a11y/noNoninteractiveElementToInteractiveRole: rôle « grid » du motif ARIA, posé sur le tableau natif pour que les lecteurs d'écran annoncent une grille navigable. */}
             <table role="grid" aria-multiselectable="true" className="w-full text-sm">
               <caption className="sr-only">
@@ -1468,7 +1503,7 @@ export function DriveBrowser({
               </tbody>
             </table>
           </div>
-          <p className="border-t border-border px-4 py-2 text-xs text-muted-foreground">
+          <p className="shrink-0 border-t border-border px-4 py-2 text-xs text-muted-foreground">
             Cliquez sur une ligne pour la sélectionner · Maj + clic pour une plage · Ctrl/⌘ + A pour
             tout sélectionner · Échap pour annuler. Au clavier : les flèches parcourent la liste,
             Entrée ouvre l'élément, la flèche gauche remonte au dossier parent, Espace sélectionne,

@@ -17,7 +17,7 @@ export type ToolbarButtonProps = {
 
 /** Filet de séparation entre groupes d'outils — hors arbre d'accessibilité. */
 export function ToolbarSeparator() {
-  return <span aria-hidden className="mx-1 h-5 w-px bg-border" />;
+  return <span aria-hidden className="mx-1 h-4 w-px shrink-0 bg-border" />;
 }
 
 /**
@@ -41,12 +41,9 @@ export function useFormatModifier(): string {
 /**
  * Navigation horizontale dans la barre (`←` / `→`) : les flèches déplacent le
  * focus d'un outil à l'autre, `Tab` continue de parcourir toute la barre puis
- * de sortir vers la suite de la page — aucun piège au clavier.
- */
-/** Navigation horizontale dans la barre (`←` / `→`) : les flèches déplacent le
- * focus d'un outil à l'autre, `Tab` continue de parcourir toute la barre puis
  * de sortir vers la suite de la page — aucun piège au clavier. Les champs de
- * saisie et sélecteurs gardent leurs propres flèches. */
+ * saisie et sélecteurs gardent leurs propres flèches.
+ */
 export function onToolbarArrowKeys(event: KeyboardEvent<HTMLDivElement>) {
   if (
     event.target instanceof HTMLSelectElement ||
@@ -58,9 +55,12 @@ export function onToolbarArrowKeys(event: KeyboardEvent<HTMLDivElement>) {
   const step = event.key === "ArrowRight" ? 1 : event.key === "ArrowLeft" ? -1 : 0;
   if (step === 0) return;
 
-  // Les outils désactivés ne reçoivent pas le focus : on les saute.
+  // Les outils désactivés ne reçoivent pas le focus : on les saute. Les entrées
+  // d'un menu ouvert gardent leurs propres flèches (haut/bas) : exclues.
   const buttons = Array.from(
-    event.currentTarget.querySelectorAll<HTMLElement>("button:not(:disabled)"),
+    event.currentTarget.querySelectorAll<HTMLElement>(
+      "button:not(:disabled):not([role='menuitem']):not([role='menuitemradio'])",
+    ),
   );
   if (buttons.length === 0) return;
 
@@ -85,7 +85,8 @@ export function onToolbarArrowKeys(event: KeyboardEvent<HTMLDivElement>) {
  *   n'annonce jamais un état enfoncé qui n'existe pas ;
  * - nom accessible explicite (un glyphe seul n'en est pas un) et raccourci
  *   exposé aux lecteurs d'écran ;
- * - position relative : l'info-bulle s'ancre au bouton, pas à la page.
+ * - info-bulle en position fixe, mesurée à l'ouverture : jamais rognée par le
+ *   défilement horizontal de la barre.
  */
 export function ToolbarButton({
   label,

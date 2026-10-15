@@ -21,3 +21,10 @@ body {
 body {
   margin: 0;
 }
+
+/* L'éditeur Forms remplit exactement la fenêtre : la zone de contenu de la
+   coque perd son rembourrage et son défilement, l'éditeur gère les siens. */
+main#contenu:has(.forms-builder) {
+  padding: 0;
+  overflow: hidden;
+}

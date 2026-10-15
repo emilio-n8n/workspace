@@ -101,8 +101,8 @@ function TrashPage() {
   const count = entries?.length ?? 0;
 
   return (
-    <div className="mx-auto flex max-w-3xl flex-col gap-4">
-      <header className="flex flex-wrap items-center gap-3">
+    <div className="drive-shell flex h-full min-h-0 flex-col gap-4 p-4 md:p-6">
+      <header className="flex shrink-0 flex-wrap items-center gap-3">
         <IconTrash />
         <h1 className="flex-1 text-xl font-semibold tracking-tight">Corbeille</h1>
         <Link to="/" className="text-sm text-muted-foreground hover:text-foreground">
@@ -110,7 +110,7 @@ function TrashPage() {
         </Link>
       </header>
 
-      <div className="flex flex-wrap items-center gap-3">
+      <div className="flex shrink-0 flex-wrap items-center gap-3">
         <p className="min-w-0 flex-1 text-sm text-muted-foreground">
           Les éléments de la corbeille restent stockés jusqu'à leur suppression définitive. La
           restauration les replace à leur emplacement d'origine.
@@ -126,46 +126,49 @@ function TrashPage() {
         </Button>
       </div>
 
-      {entries === null ? (
-        <p className="text-sm text-muted-foreground">Chargement…</p>
-      ) : entries.length === 0 ? (
-        <Card>
-          <div className="px-6 py-10 text-center text-sm text-muted-foreground">
-            La corbeille est vide.
-          </div>
-        </Card>
-      ) : (
-        <ul className="flex flex-col divide-y divide-border rounded-lg border border-border">
-          {entries.map((entry) => (
-            <li key={entry.id} className="flex flex-wrap items-center gap-2 px-4 py-3">
-              <span className="text-muted-foreground">
-                {entry.kind === "folder" ? <IconFolder /> : <IconFileText />}
-              </span>
-              <span className="min-w-0 flex-1 truncate text-sm font-medium">{entry.name}</span>
-              <Badge variant="default">{entry.kind === "folder" ? "Dossier" : "Fichier"}</Badge>
-              <span className="text-xs text-muted-foreground">{formatDate(entry.updatedAt)}</span>
-              <div className="flex items-center gap-1">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={busy}
-                  onClick={() => void onRestore(entry)}
-                >
-                  Restaurer
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  disabled={busy}
-                  onClick={() => setPurgeTarget(entry)}
-                >
-                  Supprimer
-                </Button>
-              </div>
-            </li>
-          ))}
-        </ul>
-      )}
+      {/* Seule la liste défile : l'en-tête et les commandes restent en place. */}
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        {entries === null ? (
+          <p className="text-sm text-muted-foreground">Chargement…</p>
+        ) : entries.length === 0 ? (
+          <Card>
+            <div className="px-6 py-10 text-center text-sm text-muted-foreground">
+              La corbeille est vide.
+            </div>
+          </Card>
+        ) : (
+          <ul className="flex flex-col divide-y divide-border rounded-lg border border-border">
+            {entries.map((entry) => (
+              <li key={entry.id} className="flex flex-wrap items-center gap-2 px-4 py-3">
+                <span className="text-muted-foreground">
+                  {entry.kind === "folder" ? <IconFolder /> : <IconFileText />}
+                </span>
+                <span className="min-w-0 flex-1 truncate text-sm font-medium">{entry.name}</span>
+                <Badge variant="default">{entry.kind === "folder" ? "Dossier" : "Fichier"}</Badge>
+                <span className="text-xs text-muted-foreground">{formatDate(entry.updatedAt)}</span>
+                <div className="flex items-center gap-1">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={busy}
+                    onClick={() => void onRestore(entry)}
+                  >
+                    Restaurer
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    disabled={busy}
+                    onClick={() => setPurgeTarget(entry)}
+                  >
+                    Supprimer
+                  </Button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
 
       {/* Vidage : la confirmation nomme le nombre d'éléments et l'irréversibilité. */}
       <ConfirmDialog

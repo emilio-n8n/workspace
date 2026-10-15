@@ -1,3 +1,4 @@
+// biome-ignore-all lint/a11y/noAutofocus: focus attendu — l'édition démarre sur place, comme dans un vrai outil.
 import { Badge, cn } from "@workspace/ui";
 import type { DragEvent, KeyboardEvent } from "react";
 import type { DropEdge } from "../dnd.ts";
@@ -28,6 +29,16 @@ export type TaskRowDrag = {
   onHandleKeyDown: (event: KeyboardEvent<HTMLButtonElement>) => void;
 };
 
+/** Édition en place du titre : l'entrée remplace le bouton, au même endroit. */
+export type TaskRowEditing = {
+  title: string;
+  onChange: (title: string) => void;
+  /** Entrée : enregistre la tâche. */
+  onCommit: () => void;
+  /** Échap : quitte l'édition sans enregistrer. */
+  onCancel: () => void;
+};
+
 /** Ligne de tâche partagée entre une liste et l'agrégat « Mes tâches ». */
 export function TaskRow({
   task,
@@ -36,6 +47,8 @@ export function TaskRow({
   assigneeName,
   onToggle,
   onOpen,
+  onStartTyping,
+  editing,
   drag,
 }: {
   task: TaskView;
@@ -44,6 +57,9 @@ export function TaskRow({
   assigneeName?: string;
   onToggle: () => void;
   onOpen: () => void;
+  /** Frappe directe sur une ligne fermée : ouvre l'édition avec la lettre. */
+  onStartTyping?: (initial: string) => void;
+  editing?: TaskRowEditing;
   drag?: TaskRowDrag;
 }) {
   const overdue = isOverdue(task);
@@ -101,19 +117,55 @@ export function TaskRow({
         }
         onChange={onToggle}
       />
-      <button type="button" onClick={onOpen} className="min-w-0 flex-1 text-left">
-        <span
-          className={cn(
-            "block truncate text-sm",
-            task.status === "done" && "text-muted-foreground line-through",
-          )}
+      {editing ? (
+        <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+          <input
+            autoFocus
+            value={editing.title}
+            aria-label="Titre de la tâche"
+            onChange={(event) => editing.onChange(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                editing.onCommit();
+              } else if (event.key === "Escape") {
+                event.preventDefault();
+                editing.onCancel();
+              }
+            }}
+            className="h-8 w-full rounded-md border border-input bg-background px-2 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          />
+          {subtitle ? (
+            <span className="truncate text-xs text-muted-foreground">{subtitle}</span>
+          ) : null}
+        </div>
+      ) : (
+        <button
+          type="button"
+          onClick={onOpen}
+          onKeyDown={(event) => {
+            // Frappe directe (hors Espace et modificateurs) : édition immédiate.
+            if (!onStartTyping || event.ctrlKey || event.metaKey || event.altKey) return;
+            if (event.key.length === 1 && event.key !== " ") {
+              event.preventDefault();
+              onStartTyping(event.key);
+            }
+          }}
+          className="min-w-0 flex-1 text-left"
         >
-          {task.title}
-        </span>
-        {subtitle ? (
-          <span className="block truncate text-xs text-muted-foreground">{subtitle}</span>
-        ) : null}
-      </button>
+          <span
+            className={cn(
+              "block truncate text-sm",
+              task.status === "done" && "text-muted-foreground line-through",
+            )}
+          >
+            {task.title}
+          </span>
+          {subtitle ? (
+            <span className="block truncate text-xs text-muted-foreground">{subtitle}</span>
+          ) : null}
+        </button>
+      )}
 
       {task.status === "in_progress" ? <Badge variant="accent">En cours</Badge> : null}
 

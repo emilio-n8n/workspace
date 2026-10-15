@@ -1,12 +1,16 @@
 import { createFileRoute, Link, useRouter } from "@tanstack/react-router";
 import { authClient } from "@workspace/auth/client";
 import {
+  type AccountKind,
   Button,
   Card,
   CardContent,
   CardDescription,
   CardHeader,
   CardTitle,
+  IconApps,
+  IconGraduation,
+  IconHome,
   Input,
   Label,
 } from "@workspace/ui";
@@ -41,12 +45,35 @@ type FieldName = "name" | "email" | "password";
 /** Ordre de parcours du formulaire : le premier champ en erreur reçoit le focus. */
 const FIELD_ORDER: FieldName[] = ["name", "email", "password"];
 
+/** Type d'espace choisi à l'inscription — il décide des applications visibles. */
+const ACCOUNT_KINDS: { id: AccountKind; label: string; hint: string; Icon: typeof IconHome }[] = [
+  {
+    id: "personal",
+    label: "Personnel",
+    hint: "Pour vous seul : documents, fichiers et agenda.",
+    Icon: IconHome,
+  },
+  {
+    id: "business",
+    label: "Entreprise",
+    hint: "Pour une équipe : membres et administration.",
+    Icon: IconApps,
+  },
+  {
+    id: "education",
+    label: "Éducation",
+    hint: "Pour un établissement : Classroom et équipe pédagogique.",
+    Icon: IconGraduation,
+  },
+];
+
 function SignupPage() {
   const router = useRouter();
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [passwordVisible, setPasswordVisible] = useState(false);
+  const [kind, setKind] = useState<AccountKind>("personal");
   /** Un champ n'affiche son erreur qu'après avoir été quitt (ou à l'envoi). */
   const [touched, setTouched] = useState<Partial<Record<FieldName, boolean>>>({});
   const [errors, setErrors] = useState<Partial<Record<FieldName, string>>>({});
@@ -101,10 +128,11 @@ function SignupPage() {
       return;
     }
 
-    // Espace personnel créé côté serveur (mêmes services, autorisation incluse).
-    // Un échec ici n'annule pas le compte : il faut le dire, avec la marche à suivre.
+    // Espace au type choisi, créé côté serveur (mêmes services, autorisation
+    // incluse). Un échec ici n'annule pas le compte : il faut le dire, avec la
+    // marche à suivre.
     try {
-      await provisionWorkspaceFn();
+      await provisionWorkspaceFn({ data: { kind } });
     } catch {
       setLoading(false);
       setFormError(
@@ -119,17 +147,43 @@ function SignupPage() {
   }
 
   return (
-    <main className="flex min-h-screen items-center justify-center bg-background px-4 text-foreground">
+    <main className="flex min-h-dvh items-center justify-center bg-background px-4 text-foreground">
       <Card className="w-full max-w-sm">
         <CardHeader>
           <CardTitle>Créer un compte</CardTitle>
           <CardDescription>
-            Votre espace personnel sera créé automatiquement. Vous pourrez ajouter des organisations
-            d'équipe ensuite.
+            Choisissez votre type d'espace : il détermine les applications disponibles. Vous pourrez
+            en ouvrir d'autres plus tard.
           </CardDescription>
         </CardHeader>
         <CardContent>
           <form onSubmit={onSubmit} method="post" className="flex flex-col gap-4" noValidate>
+            <fieldset className="flex flex-col gap-2">
+              <legend className="text-sm font-medium">Type d'espace</legend>
+              <div className="grid grid-cols-3 gap-2">
+                {ACCOUNT_KINDS.map((option) => (
+                  <label key={option.id} className="cursor-pointer">
+                    <input
+                      type="radio"
+                      name="kind"
+                      value={option.id}
+                      checked={kind === option.id}
+                      onChange={() => setKind(option.id)}
+                      className="peer sr-only"
+                    />
+                    <span className="flex h-full flex-col gap-1 rounded-lg border border-border bg-background p-3 text-left transition-colors peer-checked:border-primary peer-checked:bg-primary/5 peer-focus-visible:ring-2 peer-focus-visible:ring-ring peer-focus-visible:ring-offset-1 peer-focus-visible:ring-offset-background">
+                      <span className="flex items-center gap-1.5 text-sm font-medium">
+                        <option.Icon className="size-4" />
+                        {option.label}
+                      </span>
+                      <span className="text-xs leading-snug text-muted-foreground">
+                        {option.hint}
+                      </span>
+                    </span>
+                  </label>
+                ))}
+              </div>
+            </fieldset>
             <div className="flex flex-col gap-2">
               <Label htmlFor="name">Nom complet</Label>
               <Input

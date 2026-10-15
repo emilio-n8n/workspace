@@ -1,4 +1,4 @@
-import { Alert, Badge, Button, ConfirmDialog, cn, Label } from "@workspace/ui";
+import { Alert, Badge, Button, ConfirmDialog, cn, Menu } from "@workspace/ui";
 import type { Participant } from "livekit-client";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { CHAT_POLL_MS, messageAnnouncement } from "../chat.ts";
@@ -120,6 +120,7 @@ export function MeetingRoom({
   const [rosterError, setRosterError] = useState<string | null>(null);
   const [moderationBusy, setModerationBusy] = useState(false);
   const [peopleOpen, setPeopleOpen] = useState(false);
+  const [lobbyOpen, setLobbyOpen] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
   const [chat, setChat] = useState<ChatHistoryView>({ messages: [], unread: 0 });
   const [chatError, setChatError] = useState<string | null>(null);
@@ -509,6 +510,16 @@ export function MeetingRoom({
     onLeave();
   }, [room.slug, onLeave]);
 
+  /** Copie le lien d'invitation — action rare, rangée dans le menu « ⋯ ». */
+  const copyRoomLink = useCallback(async () => {
+    try {
+      await navigator.clipboard?.writeText(`${window.location.origin}/room/${room.slug}`);
+      setAnnouncement("Lien de la salle copié.");
+    } catch {
+      setAnnouncement("Copie impossible : sélectionnez l'adresse de la page.");
+    }
+  }, [room.slug]);
+
   const micOn = media.micOn;
   const camOn = media.camOn;
   const handRaised = roster?.self?.handRaised ?? false;
@@ -546,34 +557,72 @@ export function MeetingRoom({
   }
 
   return (
-    <div className="flex flex-col gap-3">
-      <header className="flex flex-wrap items-center gap-2">
-        <h1 className="font-display text-lg font-semibold">{room.name}</h1>
-        <span className="text-xs text-muted-foreground">{participantsCountLabel(count)}</span>
+    <div className="meet-room flex h-full min-h-0 flex-col gap-3 p-3">
+      <header className="flex flex-nowrap items-center gap-1 rounded-xl border border-border bg-card px-2 py-1">
+        <a
+          href="/"
+          className="shrink-0 rounded-md px-1.5 py-1 text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          ← Salles
+        </a>
+        <h1 className="min-w-0 flex-1 truncate px-1 font-display text-base font-semibold tracking-tight">
+          {room.name}
+        </h1>
+        <span className="shrink-0 text-xs text-muted-foreground">
+          {participantsCountLabel(count)}
+        </span>
         {hands.length > 0 ? (
-          <Badge variant="outline">{raisedHandsCountLabel(hands.length)}</Badge>
+          <Badge variant="outline" className="shrink-0">
+            {raisedHandsCountLabel(hands.length)}
+          </Badge>
         ) : null}
-        <div className="ml-auto flex flex-wrap items-center gap-2">
-          <Button size="sm" variant="outline" onClick={() => setPeopleOpen(true)}>
+
+        {/* Contrôles de la salle : une rangée compacte, défilement si la place manque. */}
+        <div className="ml-1 flex min-w-0 items-center gap-1 overflow-x-auto [&>*]:shrink-0">
+          <Button
+            size="sm"
+            variant="ghost"
+            aria-expanded={peopleOpen}
+            onClick={() => setPeopleOpen((open) => !open)}
+          >
             Participants
             {hands.length > 0 ? <span className="tabular-nums"> ({hands.length})</span> : null}
           </Button>
+          {room.mine && (entries.length > 0 || lobbyOpen) ? (
+            <Button
+              size="sm"
+              variant="ghost"
+              aria-expanded={lobbyOpen}
+              onClick={() => setLobbyOpen((open) => !open)}
+            >
+              Salle d'attente
+              {entries.length > 0 ? (
+                <span className="tabular-nums"> ({entries.length})</span>
+              ) : null}
+            </Button>
+          ) : null}
           <Button
             size="sm"
-            variant={handRaised ? "secondary" : "outline"}
+            variant={handRaised ? "secondary" : "ghost"}
             aria-pressed={handRaised}
             onClick={toggleHand}
           >
             {raiseHandLabel(handRaised)}
           </Button>
-          <Button size="sm" variant="outline" onClick={openChat}>
+          <Button
+            size="sm"
+            variant="ghost"
+            aria-expanded={chatOpen}
+            onClick={() => (chatOpen ? setChatOpen(false) : openChat())}
+          >
             Chat
             {chat.unread > 0 ? <span className="tabular-nums"> ({chat.unread})</span> : null}
             {chat.unread > 0 ? <span className="sr-only">, messages non lus</span> : null}
           </Button>
+          <span aria-hidden className="mx-1 h-4 w-px shrink-0 bg-border" />
           <Button
             size="sm"
-            variant={micOn ? "outline" : "secondary"}
+            variant={micOn ? "ghost" : "secondary"}
             aria-pressed={!micOn}
             disabled={mutedByHost}
             onClick={() => void toggleMedia("microphone")}
@@ -587,22 +636,52 @@ export function MeetingRoom({
           </Button>
           <Button
             size="sm"
-            variant={camOn ? "outline" : "secondary"}
+            variant={camOn ? "ghost" : "secondary"}
             aria-pressed={!camOn}
             onClick={() => void toggleMedia("camera")}
           >
             {camOn ? "Couper la caméra" : "Activer la caméra"}
             <span className="sr-only"> — caméra {camOn ? "activée" : "coupée"}</span>
           </Button>
-          <Button
-            size="sm"
-            variant="outline"
-            className="text-destructive"
-            onClick={() => void handleLeave()}
-          >
-            Quitter
-          </Button>
         </div>
+
+        <span aria-hidden className="mx-1 h-4 w-px shrink-0 bg-border" />
+        <Menu
+          label="Autres actions"
+          align="end"
+          triggerIcon={<span aria-hidden>⋯</span>}
+          triggerClassName="h-8 w-8 border-transparent bg-transparent px-0 hover:bg-muted focus-visible:ring-offset-0"
+          items={[
+            {
+              id: "copy-link",
+              label: "Copier le lien de la salle",
+              onSelect: () => void copyRoomLink(),
+            },
+            ...(room.mine
+              ? [
+                  {
+                    id: "lobby",
+                    label: "Ouvrir la salle d'attente",
+                    separated: true,
+                    onSelect: () => setLobbyOpen(true),
+                  },
+                  {
+                    id: "admission",
+                    label: `Autoriser l'entrée sans admission${admissionRequired ? "" : " ✓"}`,
+                    onSelect: () => void toggleAdmission(!admissionRequired),
+                  },
+                ]
+              : []),
+          ]}
+        />
+        <Button
+          size="sm"
+          variant="outline"
+          className="shrink-0 text-destructive"
+          onClick={() => void handleLeave()}
+        >
+          Quitter
+        </Button>
       </header>
 
       <p className="sr-only" role="status" aria-live="polite">
@@ -625,43 +704,29 @@ export function MeetingRoom({
         <p className="text-sm text-muted-foreground">Connexion à la salle…</p>
       ) : null}
 
-      <div
-        className={cn(
-          "grid gap-3",
-          tiles.length <= 1 ? "grid-cols-1" : "sm:grid-cols-2 lg:grid-cols-3",
-        )}
-      >
-        {tiles.map((tile) => (
-          <MeetingTile key={tile.id} tile={tile} handRaised={handByUser.get(tile.id) ?? false} />
-        ))}
+      {/* Galerie : seule zone défilante de la salle (la page ne scrolle pas). */}
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        <div
+          className={cn(
+            "grid content-start gap-3",
+            tiles.length <= 1 ? "grid-cols-1" : "sm:grid-cols-2 lg:grid-cols-3",
+          )}
+        >
+          {tiles.map((tile) => (
+            <MeetingTile key={tile.id} tile={tile} handRaised={handByUser.get(tile.id) ?? false} />
+          ))}
+        </div>
       </div>
 
-      {room.mine ? (
-        <section className="flex flex-col gap-2 rounded-xl border border-border bg-card p-3">
-          <div className="flex items-center gap-2">
-            <input
-              id="meet-admission"
-              type="checkbox"
-              className="size-4 rounded border-input"
-              checked={!admissionRequired}
-              onChange={(event) => void toggleAdmission(!event.target.checked)}
-            />
-            <Label htmlFor="meet-admission">Autoriser l'entrée sans admission</Label>
-          </div>
-          <p className="text-xs text-muted-foreground">
-            {admissionRequired
-              ? "Les personnes doivent être admises depuis la file ci-dessous."
-              : "Toute personne de l'organisation qui ouvre le lien entre directement."}
-          </p>
-          <LobbyPanel
-            entries={entries}
-            busy={lobbyBusy}
-            error={lobbyError}
-            onAdmit={(userId) => void resolveEntry(userId, "admit")}
-            onDeny={(userId) => void resolveEntry(userId, "deny")}
-          />
-        </section>
-      ) : null}
+      <LobbyPanel
+        open={lobbyOpen}
+        onClose={() => setLobbyOpen(false)}
+        entries={entries}
+        busy={lobbyBusy}
+        error={lobbyError}
+        onAdmit={(userId) => void resolveEntry(userId, "admit")}
+        onDeny={(userId) => void resolveEntry(userId, "deny")}
+      />
 
       <ParticipantsPanel
         open={peopleOpen}

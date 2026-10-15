@@ -21,3 +21,10 @@ body {
 body {
   margin: 0;
 }
+
+/* La salle de réunion remplit la fenêtre : la zone de contenu de la coque perd
+   son rembourrage et son défilement, la salle gère les siens (galerie). */
+main#contenu:has(.meet-room) {
+  padding: 0;
+  overflow: hidden;
+}

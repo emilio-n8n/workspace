@@ -30,6 +30,8 @@ export type MenuProps = {
   onOpenChange?: (open: boolean) => void;
   /** Déclencheur réduit à une icône (le libellé reste le nom accessible). */
   triggerIcon?: ReactNode;
+  /** Classes supplémentaires du déclencheur (barres d'outils compactes). */
+  triggerClassName?: string;
   /** Alignement du panneau (défaut : à droite du déclencheur). */
   align?: "start" | "end";
   className?: string;
@@ -47,6 +49,7 @@ export function Menu({
   open: controlledOpen,
   onOpenChange,
   triggerIcon,
+  triggerClassName,
   align = "end",
   className,
 }: MenuProps) {
@@ -196,6 +199,7 @@ export function Menu({
         className={cn(
           "inline-flex h-9 items-center justify-center gap-2 whitespace-nowrap rounded-md border border-border bg-background px-3 text-sm font-medium transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
           triggerIcon ? "w-9 px-0" : undefined,
+          triggerClassName,
         )}
       >
         {triggerIcon ? (

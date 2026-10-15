@@ -80,6 +80,8 @@ export function CalendarView() {
   const [agendaShared, setAgendaShared] = useState(true);
   /** Jour dont la case affiche le formulaire de création rapide. */
   const [inlineDay, setInlineDay] = useState<Date | null>(null);
+  /** Barre latérale de navigation : repliable, réouverte depuis la barre d'outils. */
+  const [sidebarOpen, setSidebarOpen] = useState(true);
 
   const range = useMemo(() => rangeFor(mode, cursor), [mode, cursor]);
 
@@ -352,56 +354,68 @@ export function CalendarView() {
 
   return (
     <CalendarTimeZoneProvider>
-      <div className="mx-auto flex max-w-7xl flex-col gap-4">
-        <header className="flex flex-wrap items-center gap-2">
-          <h1 className="font-display text-xl font-semibold tracking-tight">{heading}</h1>
-          <div className="flex items-center gap-1">
-            <Button
-              variant="outline"
-              size="sm"
-              aria-label="Période précédente"
-              onClick={() => shift(-1)}
-            >
-              ‹
-            </Button>
-            <Button variant="outline" size="sm" onClick={() => goToDay(new Date())}>
-              Aujourd'hui
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              aria-label="Période suivante"
-              onClick={() => shift(1)}
-            >
-              ›
-            </Button>
-          </div>
-          <div className="ml-auto flex items-center gap-2">
+      <div className="calendar-page flex h-full min-h-0 flex-col">
+        <header className="flex min-h-10 flex-nowrap items-center gap-0.5 overflow-x-auto border-b border-border bg-card px-2 py-1 [&>*]:shrink-0">
+          <Button
+            size="sm"
+            variant="ghost"
+            aria-pressed={sidebarOpen}
+            aria-label={sidebarOpen ? "Masquer la navigation" : "Afficher la navigation"}
+            title={sidebarOpen ? "Masquer la navigation" : "Afficher la navigation"}
+            onClick={() => setSidebarOpen((open) => !open)}
+          >
+            ☰
+          </Button>
+          <span aria-hidden className="mx-1 h-4 w-px bg-border" />
+          <Button
+            variant="ghost"
+            size="sm"
+            aria-label="Période précédente"
+            onClick={() => shift(-1)}
+          >
+            ‹
+          </Button>
+          <Button variant="ghost" size="sm" onClick={() => goToDay(new Date())}>
+            Aujourd'hui
+          </Button>
+          <Button variant="ghost" size="sm" aria-label="Période suivante" onClick={() => shift(1)}>
+            ›
+          </Button>
+          <h1 className="whitespace-nowrap px-2 font-display text-base font-semibold tracking-tight">
+            {heading}
+          </h1>
+          <div className="ml-auto flex items-center gap-1 pl-2">
             <SegmentedTabs
               items={MODE_TABS}
               value={mode}
               onChange={changeMode}
               ariaLabel="Affichage du calendrier"
             />
+            <span aria-hidden className="mx-1 h-4 w-px bg-border" />
+            <Button size="sm" disabled={!defaultCalendarId} onClick={() => openFullEditor(cursor)}>
+              Nouvel événement
+            </Button>
           </div>
         </header>
 
-        <div className="flex flex-col gap-4 lg:flex-row lg:items-start">
-          <CalendarSidebar
-            month={miniMonth}
-            cursor={cursor}
-            today={today}
-            events={events}
-            mode={mode}
-            onModeChange={changeMode}
-            onMonthChange={setMiniMonth}
-            onSelectDay={goToDay}
-            onNewEvent={() => openFullEditor(cursor)}
-            onCreateAgenda={() => setAgendaOpen(true)}
-            calendars={calendars}
-          />
+        <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
+          {sidebarOpen ? (
+            <CalendarSidebar
+              month={miniMonth}
+              cursor={cursor}
+              today={today}
+              events={events}
+              mode={mode}
+              onModeChange={changeMode}
+              onMonthChange={setMiniMonth}
+              onSelectDay={goToDay}
+              onClose={() => setSidebarOpen(false)}
+              onCreateAgenda={() => setAgendaOpen(true)}
+              calendars={calendars}
+            />
+          ) : null}
 
-          <div className="flex min-w-0 flex-1 flex-col gap-3">
+          <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-2 p-3">
             {error ? (
               <Alert tone="danger">
                 <div className="flex flex-wrap items-center justify-between gap-2">
@@ -424,63 +438,70 @@ export function CalendarView() {
               />
             ) : null}
 
-            {loading ? (
-              <div role="status" className="flex flex-col gap-2" aria-live="polite">
-                <LoadingState label="Chargement de l'agenda…" />
-                <div className="h-64 animate-pulse rounded-xl border border-border bg-muted/40" />
-              </div>
-            ) : mode === "month" ? (
-              <MonthGrid
-                days={range.days}
-                month={cursor}
-                today={today}
-                events={events}
-                submitError={error}
-                busy={busy}
-                inlineDay={inlineDay}
-                onInlineOpen={(day) => {
-                  setInlineDay(day);
-                  setCursor(day);
-                }}
-                onInlineCancel={() => setInlineDay(null)}
-                onCreate={(draft) => void createQuick(draft)}
-                onSelectEvent={setSelected}
-                onPage={shift}
-                ariaLabel={gridLabel}
-                move={move}
-              />
-            ) : mode === "agenda" ? (
-              <AgendaView
-                days={range.days}
-                today={today}
-                events={events}
-                onSelectEvent={setSelected}
-                move={move}
-              />
-            ) : (
-              <DayColumns
-                days={range.days}
-                today={today}
-                events={events}
-                submitError={error}
-                busy={busy}
-                inlineDay={inlineDay}
-                onInlineOpen={(day) => {
-                  setInlineDay(day);
-                  setCursor(day);
-                }}
-                onInlineCancel={() => setInlineDay(null)}
-                onCreate={(draft) => void createQuick(draft)}
-                onSelectEvent={setSelected}
-                onPage={shift}
-                ariaLabel={gridLabel}
-                move={move}
-              />
-            )}
-
-            {mode === "month" && events.length === 0 ? (
-              <p className="text-sm text-muted-foreground">Aucun événement sur cette période.</p>
-            ) : null}
+            {/* Seule cette zone défile : la barre d'outils et la colonne
+                latérale restent en place, la grille remplit le viewport. */}
+            <div className="min-h-0 flex-1 overflow-y-auto">
+              {loading ? (
+                <div role="status" className="flex flex-col gap-2" aria-live="polite">
+                  <LoadingState label="Chargement de l'agenda…" />
+                  <div className="h-64 animate-pulse rounded-xl border border-border bg-muted/40" />
+                </div>
+              ) : mode === "month" ? (
+                <>
+                  <MonthGrid
+                    days={range.days}
+                    month={cursor}
+                    today={today}
+                    events={events}
+                    submitError={error}
+                    busy={busy}
+                    inlineDay={inlineDay}
+                    onInlineOpen={(day) => {
+                      setInlineDay(day);
+                      setCursor(day);
+                    }}
+                    onInlineCancel={() => setInlineDay(null)}
+                    onCreate={(draft) => void createQuick(draft)}
+                    onSelectEvent={setSelected}
+                    onPage={shift}
+                    ariaLabel={gridLabel}
+                    move={move}
+                  />
+                  {events.length === 0 ? (
+                    <p className="pt-2 text-sm text-muted-foreground">
+                      Aucun événement sur cette période.
+                    </p>
+                  ) : null}
+                </>
+              ) : mode === "agenda" ? (
+                <AgendaView
+                  days={range.days}
+                  today={today}
+                  events={events}
+                  onSelectEvent={setSelected}
+                  move={move}
+                />
+              ) : (
+                <DayColumns
+                  days={range.days}
+                  today={today}
+                  events={events}
+                  submitError={error}
+                  busy={busy}
+                  inlineDay={inlineDay}
+                  onInlineOpen={(day) => {
+                    setInlineDay(day);
+                    setCursor(day);
+                  }}
+                  onInlineCancel={() => setInlineDay(null)}
+                  onCreate={(draft) => void createQuick(draft)}
+                  onSelectEvent={setSelected}
+                  onPage={shift}
+                  ariaLabel={gridLabel}
+                  move={move}
+                />
+              )}
+            </div>
           </div>
         </div>
 

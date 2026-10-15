@@ -18,7 +18,8 @@ import {
 } from "../subtasks.ts";
 
 /**
- * Sous-tâches d'une tâche — UN niveau, géré depuis le dialogue d'édition.
+ * Sous-tâches d'une tâche — UN niveau, géré depuis l'édition en place de la
+ * tâche.
  *
  * Les modifications sont appliquées tout de suite (pas d'étape « Enregistrer ») :
  * cocher une sous-tâche peut terminer la tâche parente côté serveur, et la

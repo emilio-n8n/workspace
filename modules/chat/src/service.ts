@@ -1082,6 +1082,65 @@ export async function sendMessage(
   };
 }
 
+/**
+ * Modification en place d'un message par son auteur : le corps est remplacé,
+ * les pièces jointes restent attachées. Un canal archivé reste en lecture
+ * seule, et le message d'autrui n'est jamais modifiable. Pas d'audit : même
+ * volume qu'un envoi, le journal se noierait.
+ */
+export async function editMessage(
+  actor: Actor,
+  channelId: string,
+  messageId: string,
+  body: string,
+): Promise<MessageView> {
+  const channel = await requireMembership(actor, channelId);
+  if (channel.archivedAt) {
+    throw new ChatError(
+      "forbidden",
+      "Ce canal est archivé : la modification de messages est désactivée.",
+    );
+  }
+  assertUuid(messageId, "messageId");
+  const clean = body.trim();
+  if (clean.length < 1 || clean.length > 4000) {
+    throw new ChatError("validation", "Le message doit contenir entre 1 et 4000 caractères.");
+  }
+
+  const [existing] = await db()
+    .select({ authorId: chatMessages.authorId, authorName: core.user.name })
+    .from(chatMessages)
+    .innerJoin(core.user, eq(core.user.id, chatMessages.authorId))
+    .where(and(eq(chatMessages.id, messageId), eq(chatMessages.channelId, channelId)))
+    .limit(1);
+  if (!existing) {
+    throw new ChatError("not_found", "Message introuvable.");
+  }
+  if (existing.authorId !== actor.userId) {
+    throw new ChatError("forbidden", "Seul l'auteur peut modifier son message.");
+  }
+
+  const [updated] = await db()
+    .update(chatMessages)
+    .set({ body: clean })
+    .where(eq(chatMessages.id, messageId))
+    .returning({ body: chatMessages.body, createdAt: chatMessages.createdAt });
+  if (!updated) {
+    throw new ChatError("not_found", "Message introuvable.");
+  }
+
+  const attachments = await attachmentsByMessage([messageId]);
+  return {
+    id: messageId,
+    body: updated.body,
+    createdAt: updated.createdAt.toISOString(),
+    authorId: actor.userId,
+    authorName: existing.authorName,
+    mine: true,
+    attachments: attachments.get(messageId) ?? [],
+  };
+}
+
 export async function markRead(actor: Actor, channelId: string): Promise<void> {
   await requireMembership(actor, channelId);
   await touchReadCursor(db(), channelId, actor.userId);

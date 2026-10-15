@@ -1,4 +1,4 @@
-import { Button, cn } from "@workspace/ui";
+import { cn } from "@workspace/ui";
 import type { CalendarOption } from "../server.ts";
 import type { DayEventLike } from "./date-grid.ts";
 import { MiniCalendar } from "./mini-calendar.tsx";
@@ -16,8 +16,8 @@ export type CalendarSidebarProps = {
   onModeChange: (mode: ViewMode) => void;
   onMonthChange: (month: Date) => void;
   onSelectDay: (day: Date) => void;
-  /** Ouvre le dialogue de création complète sur le jour courant. */
-  onNewEvent: () => void;
+  /** Ferme la barre latérale ; réouverture depuis la barre d'outils. */
+  onClose: () => void;
   onCreateAgenda: () => void;
   calendars: CalendarOption[];
 };
@@ -34,7 +34,8 @@ const CALENDAR_DOT_CLASSES = [
 
 /**
  * Barre latérale du calendrier : mini calendrier de navigation, sélecteur de
- * vue, fuseau d'affichage et liste des agendas visibles.
+ * vue, fuseau d'affichage et liste des agendas visibles. Fermable (croix) et
+ * réouverte depuis la barre d'outils ; son contenu défile sur place.
  */
 export function CalendarSidebar({
   month,
@@ -45,7 +46,7 @@ export function CalendarSidebar({
   onModeChange,
   onMonthChange,
   onSelectDay,
-  onNewEvent,
+  onClose,
   onCreateAgenda,
   calendars,
 }: CalendarSidebarProps) {
@@ -54,11 +55,22 @@ export function CalendarSidebar({
   return (
     <aside
       aria-label="Navigation du calendrier"
-      className="flex w-60 shrink-0 flex-col gap-4 rounded-xl border border-border bg-card p-3 shadow-soft"
+      className="flex max-h-[45vh] w-60 shrink-0 flex-col gap-4 overflow-y-auto border-b border-border bg-card p-3 lg:max-h-none lg:min-h-0 lg:border-b-0 lg:border-r"
     >
-      <Button size="sm" onClick={onNewEvent} className="w-full justify-center">
-        Nouvel événement
-      </Button>
+      <div className="flex items-center justify-between gap-1">
+        <h2 className="px-1 text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">
+          Navigation
+        </h2>
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="Fermer la navigation"
+          title="Fermer la navigation"
+          className="grid size-6 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          <span aria-hidden>✕</span>
+        </button>
+      </div>
 
       <MiniCalendar
         month={month}

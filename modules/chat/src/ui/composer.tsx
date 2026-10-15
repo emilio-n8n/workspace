@@ -12,6 +12,7 @@ import {
 import type { AttachmentToken } from "../server.ts";
 import { notifyTypingFn, uploadChatAttachmentFn } from "../server.ts";
 import { fmtSize } from "./format.ts";
+import { IconPaperclip } from "./icons.tsx";
 import {
   applyMention,
   detectMentionToken,
@@ -327,12 +328,13 @@ export function Composer({
           type="button"
           variant="ghost"
           size="sm"
+          className="px-2"
           aria-label="Pièces jointes"
           title={`Pièces jointes (${COMPOSER_MAX_ATTACHMENTS} max, 10 Mo chacune)`}
           disabled={uploading || busy || attachments.length >= COMPOSER_MAX_ATTACHMENTS}
           onClick={() => fileInputRef.current?.click()}
         >
-          📎
+          <IconPaperclip />
         </Button>
         <input
           ref={fileInputRef}

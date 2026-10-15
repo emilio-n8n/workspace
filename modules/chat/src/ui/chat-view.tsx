@@ -3,6 +3,7 @@ import {
   ConfirmDialog,
   Dialog,
   EmptyState,
+  IconChat,
   Input,
   Label,
   LoadingState,
@@ -20,6 +21,7 @@ import type {
 import {
   archiveChannelFn,
   createChannelFn,
+  editMessageFn,
   getUnreadStateFn,
   type JoinableChannelView,
   joinChannelFn,
@@ -128,6 +130,14 @@ export function ChatView() {
   const [useSse, setUseSse] = useState(true);
   const previousChannelRef = useRef<string | null>(null);
   const searchButtonRef = useRef<HTMLButtonElement>(null);
+  /** Liste des conversations affichée ; repliée en rail sur petit écran. */
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+
+  // Petite largeur : la liste des conversations se replie d'elle-même en rail
+  // (réouvrable d'un clic) au lieu d'écraser le fil.
+  useEffect(() => {
+    if (window.matchMedia("(max-width: 767px)").matches) setSidebarOpen(false);
+  }, []);
 
   // --- Séparateur de non-lus -------------------------------------------------
   /** Curseur de lecture au moment de l'ouverture : tout ce qui suit est nouveau. */
@@ -528,6 +538,29 @@ export function ChatView() {
     }
   }
 
+  /**
+   * Édition en place d'un message par son auteur — le serveur renvoie le
+   * message à jour, le fil le remplace sans se recharger. En cas d'échec,
+   * l'erreur est signalée et la promesse rejetée : l'édition reste ouverte
+   * avec le brouillon, rien n'est perdu.
+   */
+  async function onEditMessage(message: MessageView, body: string) {
+    if (!activeId) return;
+    try {
+      const updated = await editMessageFn({
+        data: { channelId: activeId, messageId: message.id, body },
+      });
+      setMessages((current) => current.map((row) => (row.id === updated.id ? updated : row)));
+      // Les épingles gardent le corps du message : un rafraîchissement muet
+      // évite qu'elles affichent l'ancien texte.
+      void loadPins(activeId, true);
+      setAnnouncement("Message modifié.");
+    } catch (caught) {
+      push("danger", caught instanceof Error ? caught.message : "Modification impossible.");
+      throw caught;
+    }
+  }
+
   async function onCreateChannel(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (channelName.trim().length === 0) return;
@@ -678,16 +711,33 @@ export function ChatView() {
   // en-tête de page volerait l'espace vertical de la conversation ; le h1
   // compact de la barre latérale reste le titre de la page.
   return (
-    <div className="mx-auto flex h-full min-h-0 max-w-6xl gap-4">
-      <ChannelSidebar
-        channels={channels}
-        activeId={activeId}
-        loading={loading}
-        onSelect={setActiveId}
-        onCreateChannel={() => setChannelDialog(true)}
-        onStartDm={() => void openDmDialog()}
-        onDiscover={() => void openDiscover()}
-      />
+    <div className="chat-app flex h-full min-h-0 gap-2 p-2">
+      {sidebarOpen ? (
+        <ChannelSidebar
+          channels={channels}
+          activeId={activeId}
+          loading={loading}
+          onSelect={setActiveId}
+          onCreateChannel={() => setChannelDialog(true)}
+          onStartDm={() => void openDmDialog()}
+          onDiscover={() => void openDiscover()}
+          onClose={() => setSidebarOpen(false)}
+        />
+      ) : (
+        <div className="flex w-11 shrink-0 flex-col items-center gap-1 rounded-xl border border-border bg-card py-2">
+          <h1 className="sr-only">Chat</h1>
+          <Button
+            size="sm"
+            variant="ghost"
+            className="size-8 px-0"
+            aria-label="Afficher les conversations"
+            title="Afficher les conversations"
+            onClick={() => setSidebarOpen(true)}
+          >
+            <IconChat />
+          </Button>
+        </div>
+      )}
 
       <section className="flex min-w-0 flex-1 flex-col rounded-xl border border-border bg-card">
         {active ? (
@@ -731,6 +781,7 @@ export function ChatView() {
                 pinnedIds={pinnedIds}
                 pinPendingId={pinPendingId}
                 onTogglePin={(message) => void onTogglePin(message)}
+                onEdit={(message, body) => onEditMessage(message, body)}
                 unreadCutoff={unreadCutoff}
                 announcement={announcement}
                 searchRanges={searchRanges}

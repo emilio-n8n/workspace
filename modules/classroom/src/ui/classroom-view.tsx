@@ -11,6 +11,7 @@ import {
   Input,
   Label,
   LoadingState,
+  Menu,
   PageHeader,
   Toasts,
   useToasts,
@@ -288,19 +289,20 @@ export function CoursePage({ courseId }: { courseId: string }) {
   const edited = assignments.find((assignment) => assignment.id === editing?.id) ?? null;
 
   return (
-    <div className="mx-auto flex max-w-4xl flex-col gap-6">
-      <header className="flex flex-wrap items-center gap-2">
+    <div className="classroom-course flex h-full min-h-0 flex-1 flex-col">
+      {/* Barre du cours : une seule rangée compacte, seule la zone ci-dessous défile. */}
+      <header className="flex flex-wrap items-center gap-2 border-b border-border bg-card px-3 py-2">
         <a
           href="/"
           className="text-sm text-muted-foreground transition-colors hover:text-foreground"
         >
           ← Cours
         </a>
-        <div className="min-w-0">
-          <h1 className="truncate font-display text-xl font-semibold tracking-tight">
+        <div className="flex min-w-0 items-center gap-2">
+          <h1 className="min-w-0 truncate font-display text-base font-medium tracking-tight">
             {course?.name ?? "…"}
           </h1>
-          <p className="text-xs text-muted-foreground">
+          <p className="hidden shrink-0 text-xs text-muted-foreground sm:block">
             {course?.section ? `${course.section} · ` : ""}
             {course ? `${course.members.length} membre(s)` : ""}
           </p>
@@ -337,162 +339,173 @@ export function CoursePage({ courseId }: { courseId: string }) {
         </div>
       </header>
 
-      {error ? <Alert tone="danger">{error}</Alert> : null}
+      {/* Seule cette colonne défile : la barre du cours, elle, reste en place. */}
+      <div className="mx-auto flex min-h-0 max-w-4xl flex-1 flex-col gap-6 overflow-y-auto p-4 md:p-6">
+        {error ? <Alert tone="danger">{error}</Alert> : null}
 
-      {loading ? (
-        <LoadingState label="Chargement du cours…" />
-      ) : course ? (
-        <>
-          <CourseFeed courseId={course.id} role={course.role} notify={push} />
+        {loading ? (
+          <LoadingState label="Chargement du cours…" />
+        ) : course ? (
+          <>
+            <CourseFeed courseId={course.id} role={course.role} notify={push} />
 
-          <section aria-labelledby="assignments-title" className="flex flex-col gap-3">
-            <div className="flex items-center gap-2">
-              <h2 id="assignments-title" className="font-display text-sm font-semibold">
-                Devoirs
-              </h2>
-              <Badge variant="outline">
-                {assignments.length} devoir{assignments.length > 1 ? "s" : ""}
-              </Badge>
-            </div>
+            <section aria-labelledby="assignments-title" className="flex flex-col gap-3">
+              <div className="flex items-center gap-2">
+                <h2 id="assignments-title" className="font-display text-sm font-semibold">
+                  Devoirs
+                </h2>
+                <Badge variant="outline">
+                  {assignments.length} devoir{assignments.length > 1 ? "s" : ""}
+                </Badge>
+              </div>
 
-            {assignments.length === 0 ? (
-              <EmptyState
-                icon={<IconClipboard />}
-                title="Aucun devoir pour le moment"
-                hint={
-                  teacher
-                    ? "Créez un devoir : vos élèves le verront et pourront rendre leur copie."
-                    : "Les devoirs de votre enseignant apparaîtront ici."
-                }
-                action={
-                  teacher ? (
-                    <Button size="sm" onClick={() => setEditing({ id: null })}>
-                      Nouveau devoir
-                    </Button>
-                  ) : undefined
-                }
-              />
-            ) : (
-              <ul className="flex flex-col gap-2">
-                {assignments.map((assignment) => {
-                  // Note déjà posée sur la copie de l'élève connecté, s'il y en a une.
-                  const myGrade = assignment.mySubmission?.grade ?? null;
-                  return (
-                    <li
-                      key={assignment.id}
-                      className="flex flex-col gap-2 rounded-xl border border-border bg-card p-4"
-                    >
-                      <div className="flex flex-wrap items-center gap-2">
-                        <h3 className="font-display text-sm font-semibold">{assignment.title}</h3>
-                        <Badge variant="outline">sur {assignment.points}</Badge>
-                        {/* Le statut ne concerne que l'élève : pour un enseignant,
-                          « non rendu » n'aurait aucun sens. */}
-                        {teacher ? null : <StatusBadge code={assignment.status} />}
-                        {/* La note n'a de sens que pour l'élève qui l'a reçue. */}
-                        {teacher || myGrade === null ? null : (
-                          <Badge variant="accent">
-                            Note : {myGrade}/{assignment.points}
-                          </Badge>
-                        )}
-                        <span className="text-xs text-muted-foreground">
-                          {formatDate(assignment.dueAt) ?? "sans échéance"}
-                        </span>
-                        <div className="ml-auto flex flex-wrap items-center gap-2">
-                          {teacher ? (
-                            <>
-                              <span className="text-xs text-muted-foreground">
-                                {assignment.submissionCount} copie
-                                {assignment.submissionCount > 1 ? "s" : ""}
-                                {assignment.counts && assignment.counts.graded > 0
-                                  ? ` · ${assignment.counts.graded} notée${assignment.counts.graded > 1 ? "s" : ""}`
-                                  : ""}
-                              </span>
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                onClick={() =>
-                                  setSubmissionsFor({
-                                    id: assignment.id,
-                                    title: assignment.title,
-                                    points: assignment.points,
-                                    dueAt: assignment.dueAt,
-                                  })
-                                }
-                              >
-                                Copies ({assignment.submissionCount})
-                              </Button>
-                              <Button
-                                size="sm"
-                                variant="ghost"
-                                onClick={() => setEditing({ id: assignment.id })}
-                              >
-                                Modifier
-                              </Button>
-                              <Button
-                                size="sm"
-                                variant="ghost"
-                                className="text-destructive"
-                                onClick={() =>
-                                  setDeleteTarget({ id: assignment.id, title: assignment.title })
-                                }
-                              >
-                                Supprimer
-                              </Button>
-                            </>
-                          ) : (
-                            <Button
-                              size="sm"
-                              variant={assignment.mySubmission ? "outline" : "primary"}
-                              onClick={() => setSubmitting(assignment.id)}
-                            >
-                              {assignment.mySubmission ? "Modifier ma copie" : "Rendre ma copie"}
-                            </Button>
+              {assignments.length === 0 ? (
+                <EmptyState
+                  icon={<IconClipboard />}
+                  title="Aucun devoir pour le moment"
+                  hint={
+                    teacher
+                      ? "Créez un devoir : vos élèves le verront et pourront rendre leur copie."
+                      : "Les devoirs de votre enseignant apparaîtront ici."
+                  }
+                  action={
+                    teacher ? (
+                      <Button size="sm" onClick={() => setEditing({ id: null })}>
+                        Nouveau devoir
+                      </Button>
+                    ) : undefined
+                  }
+                />
+              ) : (
+                <ul className="flex flex-col gap-2">
+                  {assignments.map((assignment) => {
+                    // Note déjà posée sur la copie de l'élève connecté, s'il y en a une.
+                    const myGrade = assignment.mySubmission?.grade ?? null;
+                    return (
+                      <li
+                        key={assignment.id}
+                        className="flex flex-col gap-2 rounded-xl border border-border bg-card p-4"
+                      >
+                        <div className="flex flex-wrap items-center gap-2">
+                          <h3 className="font-display text-sm font-semibold">{assignment.title}</h3>
+                          <Badge variant="outline">sur {assignment.points}</Badge>
+                          {/* Le statut ne concerne que l'élève : pour un enseignant,
+                            « non rendu » n'aurait aucun sens. */}
+                          {teacher ? null : <StatusBadge code={assignment.status} />}
+                          {/* La note n'a de sens que pour l'élève qui l'a reçue. */}
+                          {teacher || myGrade === null ? null : (
+                            <Badge variant="accent">
+                              Note : {myGrade}/{assignment.points}
+                            </Badge>
                           )}
+                          <span className="text-xs text-muted-foreground">
+                            {formatDate(assignment.dueAt) ?? "sans échéance"}
+                          </span>
+                          <div className="ml-auto flex flex-wrap items-center gap-2">
+                            {teacher ? (
+                              <>
+                                <span className="text-xs text-muted-foreground">
+                                  {assignment.submissionCount} copie
+                                  {assignment.submissionCount > 1 ? "s" : ""}
+                                  {assignment.counts && assignment.counts.graded > 0
+                                    ? ` · ${assignment.counts.graded} notée${assignment.counts.graded > 1 ? "s" : ""}`
+                                    : ""}
+                                </span>
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={() =>
+                                    setSubmissionsFor({
+                                      id: assignment.id,
+                                      title: assignment.title,
+                                      points: assignment.points,
+                                      dueAt: assignment.dueAt,
+                                    })
+                                  }
+                                >
+                                  Copies ({assignment.submissionCount})
+                                </Button>
+                                {/* Actions rares du devoir : regroupées dans « ⋯ ». */}
+                                <Menu
+                                  label="Actions du devoir"
+                                  align="end"
+                                  triggerIcon={<span aria-hidden>⋯</span>}
+                                  triggerClassName="h-8 w-8 border-transparent bg-transparent px-0 hover:bg-muted focus-visible:ring-offset-0"
+                                  items={[
+                                    {
+                                      id: "edit",
+                                      label: "Modifier le devoir",
+                                      onSelect: () => setEditing({ id: assignment.id }),
+                                    },
+                                    {
+                                      id: "delete",
+                                      label: "Supprimer le devoir",
+                                      separated: true,
+                                      destructive: true,
+                                      onSelect: () =>
+                                        setDeleteTarget({
+                                          id: assignment.id,
+                                          title: assignment.title,
+                                        }),
+                                    },
+                                  ]}
+                                />
+                              </>
+                            ) : (
+                              <Button
+                                size="sm"
+                                variant={assignment.mySubmission ? "outline" : "primary"}
+                                onClick={() => setSubmitting(assignment.id)}
+                              >
+                                {assignment.mySubmission ? "Modifier ma copie" : "Rendre ma copie"}
+                              </Button>
+                            )}
+                          </div>
                         </div>
-                      </div>
 
-                      {assignment.instructions ? (
-                        <p className="whitespace-pre-wrap text-sm text-muted-foreground">
-                          {assignment.instructions}
-                        </p>
-                      ) : null}
-
-                      {!teacher && assignment.mySubmission ? (
-                        <div className="flex flex-col gap-2">
-                          <p className="text-xs text-muted-foreground">
-                            Rendue le {formatDateTime(assignment.mySubmission.submittedAt)}
+                        {assignment.instructions ? (
+                          <p className="whitespace-pre-wrap text-sm text-muted-foreground">
+                            {assignment.instructions}
                           </p>
-                          {/* Commentaire privé du professeur : séparé du fil
-                              public, visible par cet élève et son enseignant. */}
-                          {assignment.mySubmission.feedback ? (
-                            <div className="rounded-md border border-border bg-muted/40 px-3 py-2">
-                              <p className="text-xs font-medium text-muted-foreground">
-                                Commentaire privé de votre professeur
-                              </p>
-                              <p className="whitespace-pre-wrap text-sm">
-                                {assignment.mySubmission.feedback}
-                              </p>
-                            </div>
-                          ) : null}
-                          <AttachmentLinks attachments={assignment.mySubmission.attachments} />
-                        </div>
-                      ) : null}
-                    </li>
-                  );
-                })}
-              </ul>
-            )}
-          </section>
+                        ) : null}
 
-          {/* Côté élève : sa moyenne du cours. Côté enseignant : le carnet de
-              la classe. Le panneau choisit sa vue selon ce qui lui est fourni. */}
-          <GradesPanel
-            myGrades={course.myGrades}
-            classGrades={course.classGrades}
-            courseId={course.id}
-          />
-        </>
-      ) : null}
+                        {!teacher && assignment.mySubmission ? (
+                          <div className="flex flex-col gap-2">
+                            <p className="text-xs text-muted-foreground">
+                              Rendue le {formatDateTime(assignment.mySubmission.submittedAt)}
+                            </p>
+                            {/* Commentaire privé du professeur : séparé du fil
+                                public, visible par cet élève et son enseignant. */}
+                            {assignment.mySubmission.feedback ? (
+                              <div className="rounded-md border border-border bg-muted/40 px-3 py-2">
+                                <p className="text-xs font-medium text-muted-foreground">
+                                  Commentaire privé de votre professeur
+                                </p>
+                                <p className="whitespace-pre-wrap text-sm">
+                                  {assignment.mySubmission.feedback}
+                                </p>
+                              </div>
+                            ) : null}
+                            <AttachmentLinks attachments={assignment.mySubmission.attachments} />
+                          </div>
+                        ) : null}
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </section>
+
+            {/* Côté élève : sa moyenne du cours. Côté enseignant : le carnet de
+                la classe. Le panneau choisit sa vue selon ce qui lui est fourni. */}
+            <GradesPanel
+              myGrades={course.myGrades}
+              classGrades={course.classGrades}
+              courseId={course.id}
+            />
+          </>
+        ) : null}
+      </div>
 
       {editing && course ? (
         <AssignmentDialog

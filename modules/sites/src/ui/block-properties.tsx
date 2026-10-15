@@ -15,12 +15,12 @@ import {
 import { BlockGlyph } from "./block-icon.tsx";
 
 export type BlockPropertiesProps = {
-  /** Bloc sélectionné ; `null` = aucun (panneau à l'état vide). */
+  /** Bloc sélectionné ; `null` = aucun (état vide). */
   block: SiteBlock | null;
   canEdit: boolean;
   /**
-   * Modifie une propriété d'un bloc : l'identifiant est fourni par le panneau
-   * (bloc sélectionné ou enfant d'un bloc « colonnes »).
+   * Modifie une propriété d'un bloc : l'identifiant est fourni par le
+   * dialogue (bloc sélectionné ou enfant d'un bloc « colonnes »).
    */
   onPatch: (blockId: string, key: string, value: SiteBlockValue) => void;
   /** Déplace un bloc à l'intérieur de sa colonne. */
@@ -38,10 +38,11 @@ const GROUP_TITLES: Record<BlockFieldGroup, string> = {
 };
 
 /**
- * Panneau de propriétés du bloc sélectionné (TASK-003) : contenu, lien et
- * style. Les champs sont **dérivés** de la description du bloc
- * (`BLOCK_LIBRARY`) : ajouter une propriété à un type de bloc la fait
- * apparaître ici, sans toucher ce fichier.
+ * Propriétés du bloc sélectionné (TASK-003) : contenu, lien et style. Le
+ * composant vit dans un dialogue centré ouvert depuis la barre d'outils — il
+ * n'y a pas de panneau de mise en forme permanent. Les champs sont
+ * **dérivés** de la description du bloc (`BLOCK_LIBRARY`) : ajouter une
+ * propriété à un type de bloc la fait apparaître ici, sans toucher ce fichier.
  */
 export function BlockProperties({
   block,
@@ -63,21 +64,13 @@ export function BlockProperties({
   }
 
   return (
-    <section aria-labelledby="block-properties-title" className="flex flex-col gap-5">
-      <div className="flex flex-col gap-1">
-        <h2
-          id="block-properties-title"
-          className="text-xs font-medium uppercase tracking-widest text-muted-foreground"
-        >
-          Propriétés du bloc
-        </h2>
-        <p className="flex items-center gap-2 text-sm font-medium text-foreground">
-          <span className="text-muted-foreground">
-            <BlockGlyph kind={block.kind} />
-          </span>
-          {blockLabel(block.kind)}
-        </p>
-      </div>
+    <section aria-label="Propriétés du bloc" className="flex flex-col gap-5">
+      <p className="flex items-center gap-2 text-sm font-medium text-foreground">
+        <span className="text-muted-foreground">
+          <BlockGlyph kind={block.kind} />
+        </span>
+        {blockLabel(block.kind)}
+      </p>
 
       {blockGroups(block.kind).map((group) => (
         <fieldset key={group} className="flex flex-col gap-3">

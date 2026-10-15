@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { Card, CardDescription, CardHeader, CardTitle } from "@workspace/ui";
+import { Card, CardDescription, CardHeader, CardTitle, PageHeader } from "@workspace/ui";
 
 export const Route = createFileRoute("/app/notifications")({
   component: NotificationsPage,
@@ -19,12 +19,10 @@ export const Route = createFileRoute("/app/notifications")({
 function NotificationsPage() {
   return (
     <div className="mx-auto flex max-w-3xl flex-col gap-6">
-      <header className="flex flex-col gap-1">
-        <h1 className="font-display text-3xl font-semibold tracking-tight">Notifications</h1>
-        <p className="text-sm text-muted-foreground">
-          Partages, tâches assignées et notes de votre espace de travail.
-        </p>
-      </header>
+      <PageHeader
+        title="Notifications"
+        description="Partages, tâches assignées et notes de votre espace de travail."
+      />
 
       <Card>
         <CardHeader>

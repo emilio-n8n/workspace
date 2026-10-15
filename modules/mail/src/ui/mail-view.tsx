@@ -4,6 +4,8 @@ import {
   ConfirmDialog,
   cn,
   IconMail,
+  Menu,
+  type MenuItem,
   PageHeader,
   SegmentedTabs,
   Toasts,
@@ -27,6 +29,7 @@ import {
   type MessageSummary,
   markThreadReadFn,
   restoreMessageFn,
+  sendMailFn,
   setMessageLabelsFn,
   type ThreadSummary,
   toggleStarFn,
@@ -37,12 +40,13 @@ import { ComposerDialog, type ComposerSeed, EMPTY_SEED } from "./composer.tsx";
 import { FilterBar } from "./filter-bar.tsx";
 import { EMPTY_FILTERS, type MailFilters } from "./filters.ts";
 import { LabelChip } from "./label-chip.tsx";
-import { LabelAssignment, LabelsPanel, ManageLabelsDialog } from "./labels-panel.tsx";
+import { LabelsPanel, ManageLabelsDialog } from "./labels-panel.tsx";
 import {
   type ExpandedMessage,
   MessageList,
   MessageListEmpty,
   type MessageListItem,
+  PaperclipGlyph,
 } from "./message-list.tsx";
 import { quoteOriginal, replyAllCopies, replyAllRecipients, replySubject } from "./reply.ts";
 import { clampIndex, type MailAction, stepIndex, useMailShortcuts } from "./shortcuts.ts";
@@ -87,6 +91,14 @@ const VIEW_TABS: { id: ViewMode; label: string }[] = [
   { id: "conversations", label: "Conversations" },
   { id: "messages", label: "Messages" },
 ];
+
+/** Réponse rédigée en place sous la conversation lue (jamais dans un panneau). */
+type ReplyDraft = {
+  to: string[];
+  cc: string[];
+  subject: string;
+  quote: string;
+};
 
 function threadToItem(thread: ThreadSummary, folder: FolderKey): MessageListItem {
   const latest = thread.latest;
@@ -174,6 +186,10 @@ export function MailView() {
   const [confirmDeleteForever, setConfirmDeleteForever] = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [showLabels, setShowLabels] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [reply, setReply] = useState<ReplyDraft | null>(null);
+  const [replyBody, setReplyBody] = useState("");
+  const [replyBusy, setReplyBusy] = useState(false);
   const [expandedKey, setExpandedKey] = useState<string | null>(null);
   const [expandedMessages, setExpandedMessages] = useState<ExpandedMessage[] | null>(null);
   const { toasts, push, dismiss } = useToasts();
@@ -313,6 +329,8 @@ export function MailView() {
   const selectItem = useCallback(
     (item: MessageListItem, index: number) => {
       setActiveIndex(index);
+      setReply(null);
+      setReplyBody("");
       if (mode === "conversations") {
         const thread = threads.find((entry) => entry.threadKey === item.key);
         if (thread) void openThread(thread);
@@ -345,20 +363,26 @@ export function MailView() {
   );
 
   const openComposer = useCallback((base?: Partial<ComposerSeed>) => {
+    setReply(null);
+    setReplyBody("");
     setComposer({ ...EMPTY_SEED, ...base });
   }, []);
 
+  /** Ouvre la réponse en place, sous la conversation lue. */
   const replyTo = useCallback(
     (message: MessageDetail, mode: "reply" | "replyAll" = "reply") => {
+      setComposer(null);
+      setReplyBody("");
       if (mode === "reply") {
-        openComposer({
+        setReply({
           to: splitAddresses(message.fromAddress),
+          cc: [],
           subject: replySubject(message.subject),
-          body: quoteOriginal(message),
+          quote: quoteOriginal(message),
         });
         return;
       }
-      openComposer({
+      setReply({
         to: replyAllRecipients({
           fromAddress: message.fromAddress,
           toAddresses: message.toAddresses,
@@ -367,11 +391,54 @@ export function MailView() {
         }),
         cc: replyAllCopies({ ccAddresses: message.ccAddresses, responder: address }),
         subject: replySubject(message.subject),
-        body: quoteOriginal(message),
+        quote: quoteOriginal(message),
       });
     },
-    [address, openComposer],
+    [address],
   );
+
+  const closeReply = useCallback(() => {
+    setReply(null);
+    setReplyBody("");
+  }, []);
+
+  /** Envoie la réponse rédigée en place : le fil reste affiché. */
+  const sendReply = useCallback(async () => {
+    if (!reply || replyBusy) return;
+    if (reply.to.length === 0) {
+      push("danger", "Ajoutez au moins un destinataire avant d'envoyer.");
+      return;
+    }
+    setReplyBusy(true);
+    try {
+      const result = await sendMailFn({
+        data: {
+          to: reply.to,
+          cc: reply.cc,
+          subject: reply.subject,
+          body: `${replyBody}${reply.quote}`,
+        },
+      });
+      closeReply();
+      push(result.sendError ? "danger" : "success", result.sendError ?? "Réponse envoyée.");
+      await refreshAll();
+    } catch (caught) {
+      push("danger", caught instanceof Error ? caught.message : "Envoi impossible.");
+    } finally {
+      setReplyBusy(false);
+    }
+  }, [reply, replyBody, replyBusy, closeReply, push, refreshAll]);
+
+  /** Reprend la réponse en cours dans le compositeur complet (Cci, pièces jointes). */
+  const expandReply = useCallback(() => {
+    if (!reply) return;
+    openComposer({
+      to: reply.to,
+      cc: reply.cc,
+      subject: reply.subject,
+      body: `${replyBody}${reply.quote}`,
+    });
+  }, [reply, replyBody, openComposer]);
 
   const onSent = useCallback(
     async (result: { sendError: string | null }) => {
@@ -466,6 +533,17 @@ export function MailView() {
       }
     },
     [push, refreshAll, selected, selectedThread],
+  );
+
+  /** Bascule un libellé depuis le menu de la lecture (application immédiate). */
+  const toggleMessageLabel = useCallback(
+    (messageId: string, currentIds: string[], labelId: string) => {
+      const next = currentIds.includes(labelId)
+        ? currentIds.filter((id) => id !== labelId)
+        : [...currentIds, labelId];
+      void onApplyLabels(messageId, next);
+    },
+    [onApplyLabels],
   );
 
   /** Marque comme lus tous les messages de la conversation affichée. */
@@ -624,6 +702,10 @@ export function MailView() {
           if (activeMessage) void onToggleStar(activeMessage.id);
           return;
         case "close":
+          if (reply) {
+            closeReply();
+            return;
+          }
           setSelected(null);
           setSelectedThread(null);
           return;
@@ -641,11 +723,13 @@ export function MailView() {
     [
       activeIndex,
       activeMessage,
+      closeReply,
       folder,
       onArchive,
       onTrash,
       onToggleStar,
       openComposer,
+      reply,
       replyTo,
       selectItem,
     ],
@@ -669,15 +753,12 @@ export function MailView() {
     [labels, labelCounts],
   );
 
-  const canArchive =
-    activeMessage !== null && folder !== "trash" && folder !== "drafts" && folder !== "archive";
-
   const unreadThread = selectedThread
     ? selectedThread.messages.filter((message) => !message.read).length
     : 0;
 
   return (
-    <div className="mx-auto flex h-[calc(100vh-8.5rem)] max-w-6xl flex-col gap-3">
+    <div className="flex h-full min-h-0 flex-col gap-3">
       <PageHeader
         title="Mail"
         description={address ? `Boîte de ${address}` : undefined}
@@ -686,87 +767,111 @@ export function MailView() {
             <Button
               size="sm"
               variant="ghost"
-              aria-label="Raccourcis clavier"
-              title="Raccourcis clavier (?)"
-              onClick={() => setShowShortcuts(true)}
+              aria-pressed={sidebarOpen}
+              aria-label={sidebarOpen ? "Masquer les dossiers" : "Afficher les dossiers"}
+              title={sidebarOpen ? "Masquer les dossiers" : "Afficher les dossiers"}
+              onClick={() => setSidebarOpen((open) => !open)}
             >
-              ?
+              Dossiers
             </Button>
             <Button size="sm" onClick={() => openComposer()}>
               Écrire
             </Button>
+            <Menu
+              label="Actions de la boîte"
+              align="end"
+              triggerIcon={<span aria-hidden>⋯</span>}
+              triggerClassName="h-8 w-8 border-transparent bg-transparent px-0 hover:bg-muted focus-visible:ring-offset-0"
+              items={[
+                {
+                  id: "shortcuts",
+                  label: "Raccourcis clavier",
+                  shortcut: "?",
+                  onSelect: () => setShowShortcuts(true),
+                },
+                {
+                  id: "manage-labels",
+                  label: "Gérer les libellés…",
+                  onSelect: () => setShowLabels(true),
+                },
+                {
+                  id: "refresh",
+                  label: "Actualiser",
+                  separated: true,
+                  onSelect: () => void refreshAll(),
+                },
+              ]}
+            />
           </div>
         }
       />
 
+      <FilterBar
+        inputRef={searchRef}
+        filters={filters}
+        resultCount={items.length}
+        labels={labels}
+        onChange={setFilters}
+      />
+
       <div className="flex min-h-0 flex-1 gap-3">
-        <aside className="flex w-52 shrink-0 flex-col gap-3 rounded-xl border border-border bg-card p-3">
-          <p className="truncate text-xs text-muted-foreground" title={address}>
-            {address || "…"}
-          </p>
-          <nav aria-label="Dossiers" className="flex flex-col gap-1">
-            {folderEntries.map((key) => {
-              const counts = folders?.[key];
-              return (
-                <button
-                  key={key}
-                  type="button"
-                  onClick={() => {
-                    setFolder(key);
-                    setActiveIndex(-1);
-                    setSelected(null);
-                    setSelectedThread(null);
-                  }}
-                  className={cn(
-                    "flex items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm transition-colors",
-                    key === folder ? "bg-accent text-accent-foreground" : "hover:bg-muted",
-                  )}
-                >
-                  <span className="truncate">{FOLDER_LABELS[key]}</span>
-                  <span className="ml-auto flex items-center gap-1">
-                    {counts && counts.unread > 0 ? <Badge>{counts.unread}</Badge> : null}
-                    <span className="text-xs text-muted-foreground">{counts?.total ?? ""}</span>
-                  </span>
-                </button>
-              );
-            })}
-          </nav>
+        {sidebarOpen ? (
+          <aside className="flex w-52 shrink-0 flex-col gap-3 overflow-y-auto rounded-xl border border-border bg-card p-3">
+            <div className="flex items-center justify-between gap-1">
+              <p className="min-w-0 truncate text-xs text-muted-foreground" title={address}>
+                {address || "…"}
+              </p>
+              <button
+                type="button"
+                aria-label="Fermer les dossiers"
+                title="Fermer les dossiers"
+                onClick={() => setSidebarOpen(false)}
+                className="grid size-6 shrink-0 place-items-center rounded text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+              >
+                ✕
+              </button>
+            </div>
+            <nav aria-label="Dossiers" className="flex flex-col gap-1">
+              {folderEntries.map((key) => {
+                const counts = folders?.[key];
+                return (
+                  <button
+                    key={key}
+                    type="button"
+                    onClick={() => {
+                      setFolder(key);
+                      setActiveIndex(-1);
+                      setSelected(null);
+                      setSelectedThread(null);
+                      setReply(null);
+                      setReplyBody("");
+                    }}
+                    className={cn(
+                      "flex items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm transition-colors",
+                      key === folder ? "bg-accent text-accent-foreground" : "hover:bg-muted",
+                    )}
+                  >
+                    <span className="truncate">{FOLDER_LABELS[key]}</span>
+                    <span className="ml-auto flex items-center gap-1">
+                      {counts && counts.unread > 0 ? <Badge>{counts.unread}</Badge> : null}
+                      <span className="text-xs text-muted-foreground">{counts?.total ?? ""}</span>
+                    </span>
+                  </button>
+                );
+              })}
+            </nav>
 
-          <LabelsPanel
-            labels={labelEntries}
-            activeLabelId={filters.labelId}
-            onSelect={(labelId) => setFilters({ ...filters, labelId })}
-            onManage={() => setShowLabels(true)}
-          />
-
-          <div className="mt-auto flex flex-col gap-1 text-xs">
-            <button
-              type="button"
-              aria-pressed={filters.unreadOnly}
-              onClick={() => setFilters({ ...filters, unreadOnly: !filters.unreadOnly })}
-              className={cn(
-                "rounded-lg px-2 py-1.5 text-left transition-colors",
-                filters.unreadOnly ? "bg-accent text-accent-foreground" : "hover:bg-muted",
-              )}
-            >
-              Non lus uniquement
-            </button>
-            <button
-              type="button"
-              aria-pressed={filters.starredOnly}
-              onClick={() => setFilters({ ...filters, starredOnly: !filters.starredOnly })}
-              className={cn(
-                "rounded-lg px-2 py-1.5 text-left transition-colors",
-                filters.starredOnly ? "bg-accent text-accent-foreground" : "hover:bg-muted",
-              )}
-            >
-              Suivis ★
-            </button>
-          </div>
-        </aside>
+            <LabelsPanel
+              labels={labelEntries}
+              activeLabelId={filters.labelId}
+              onSelect={(labelId) => setFilters({ ...filters, labelId })}
+              onManage={() => setShowLabels(true)}
+            />
+          </aside>
+        ) : null}
 
         <section className="flex w-80 shrink-0 flex-col rounded-xl border border-border bg-card">
-          <div className="flex flex-col gap-2 border-b border-border p-2">
+          <div className="flex items-center justify-between gap-2 border-b border-border p-2">
             <SegmentedTabs
               ariaLabel="Affichage"
               items={VIEW_TABS}
@@ -778,16 +883,11 @@ export function MailView() {
                 setSelectedThread(null);
                 setExpandedKey(null);
                 setExpandedMessages(null);
+                setReply(null);
+                setReplyBody("");
               }}
             />
           </div>
-          <FilterBar
-            inputRef={searchRef}
-            filters={filters}
-            resultCount={items.length}
-            labels={labels}
-            onChange={setFilters}
-          />
           <MessageList
             items={items}
             selectedKey={selectedKey}
@@ -838,119 +938,41 @@ export function MailView() {
                     ))}
                   </div>
                 </div>
-                <div className="flex flex-wrap items-center gap-1">
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    aria-label={threadLatest?.starred ? "Retirer le suivi" : "Suivre"}
-                    onClick={() => threadLatest && void onToggleStar(threadLatest.id)}
-                  >
-                    {threadLatest?.starred ? "★" : "☆"}
-                  </Button>
-                  {folder !== "sent" && folder !== "drafts" && threadLatest ? (
-                    <>
-                      <Button size="sm" variant="outline" onClick={() => replyTo(threadLatest)}>
-                        Répondre
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={() => replyTo(threadLatest, "replyAll")}
-                      >
-                        Répondre à tous
-                      </Button>
-                    </>
-                  ) : null}
-                  {unreadThread > 0 ? (
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      loading={busy}
-                      onClick={() => void onMarkThreadRead()}
-                    >
-                      Tout marquer comme lu
-                    </Button>
-                  ) : null}
-                  {folder === "drafts" && threadLatest ? (
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() =>
-                        openComposer({
-                          id: threadLatest.id,
-                          to: [...threadLatest.toAddresses],
-                          cc: [...threadLatest.ccAddresses],
-                          bcc: [...threadLatest.bccAddresses],
-                          subject: threadLatest.subject,
-                          body: threadLatest.body,
-                        })
-                      }
-                    >
-                      Modifier
-                    </Button>
-                  ) : null}
-                  {canArchive ? (
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      loading={busy}
-                      onClick={() => void onArchive()}
-                    >
-                      Archiver
-                    </Button>
-                  ) : null}
-                  {folder === "trash" ? (
-                    <>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        loading={busy}
-                        onClick={() => void onRestore()}
-                      >
-                        Restaurer
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        className="text-destructive"
-                        loading={busy}
-                        onClick={() => setConfirmDeleteForever(true)}
-                      >
-                        Supprimer définitivement
-                      </Button>
-                    </>
-                  ) : folder === "archive" ? (
-                    <>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        loading={busy}
-                        onClick={() => void onRestore()}
-                      >
-                        Remettre dans son dossier
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        className="text-destructive"
-                        loading={busy}
-                        onClick={() => void onTrash()}
-                      >
-                        Corbeille
-                      </Button>
-                    </>
-                  ) : (
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      className="text-destructive"
-                      loading={busy}
-                      onClick={() => void onTrash()}
-                    >
-                      Corbeille
-                    </Button>
-                  )}
-                </div>
+                {threadLatest ? (
+                  <ReadingActions
+                    folder={folder}
+                    starred={threadLatest.starred}
+                    busy={busy}
+                    unread={unreadThread}
+                    appliedLabelIds={threadLatest.labels.map((label) => label.id)}
+                    allLabels={labels}
+                    onToggleStar={() => void onToggleStar(threadLatest.id)}
+                    onReply={(mode) => replyTo(threadLatest, mode)}
+                    onEditDraft={() =>
+                      openComposer({
+                        id: threadLatest.id,
+                        to: [...threadLatest.toAddresses],
+                        cc: [...threadLatest.ccAddresses],
+                        bcc: [...threadLatest.bccAddresses],
+                        subject: threadLatest.subject,
+                        body: threadLatest.body,
+                      })
+                    }
+                    onArchive={() => void onArchive()}
+                    onTrash={() => void onTrash()}
+                    onRestore={() => void onRestore()}
+                    onDeleteForever={() => setConfirmDeleteForever(true)}
+                    onMarkRead={() => void onMarkThreadRead()}
+                    onToggleLabel={(labelId) =>
+                      toggleMessageLabel(
+                        threadLatest.id,
+                        threadLatest.labels.map((label) => label.id),
+                        labelId,
+                      )
+                    }
+                    onManageLabels={() => setShowLabels(true)}
+                  />
+                ) : null}
               </header>
               <div className="flex-1 overflow-y-auto">
                 {selectedThread.messages.map((message, index) => (
@@ -992,15 +1014,16 @@ export function MailView() {
                   </article>
                 ))}
               </div>
-              {threadLatest ? (
-                <div className="border-t border-border p-4">
-                  <LabelAssignment
-                    messageLabels={threadLatest.labels}
-                    allLabels={labels}
-                    busy={busy}
-                    onApply={(labelIds) => void onApplyLabels(threadLatest.id, labelIds)}
-                  />
-                </div>
+              {reply ? (
+                <ReplyEditor
+                  reply={reply}
+                  body={replyBody}
+                  busy={replyBusy}
+                  onBodyChange={setReplyBody}
+                  onClose={closeReply}
+                  onExpand={expandReply}
+                  onSend={() => void sendReply()}
+                />
               ) : null}
             </>
           ) : selected ? (
@@ -1034,124 +1057,56 @@ export function MailView() {
                     </p>
                   ) : null}
                 </div>
-                <div className="flex flex-wrap items-center gap-1">
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    aria-label={selected.starred ? "Retirer le suivi" : "Suivre"}
-                    onClick={() => void onToggleStar(selected.id)}
-                  >
-                    {selected.starred ? "★" : "☆"}
-                  </Button>
-                  {folder !== "sent" && folder !== "drafts" ? (
-                    <>
-                      <Button size="sm" variant="outline" onClick={() => replyTo(selected)}>
-                        Répondre
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={() => replyTo(selected, "replyAll")}
-                      >
-                        Répondre à tous
-                      </Button>
-                    </>
-                  ) : null}
-                  {folder === "drafts" ? (
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() =>
-                        openComposer({
-                          id: selected.id,
-                          to: [...selected.toAddresses],
-                          cc: [...selected.ccAddresses],
-                          bcc: [...selected.bccAddresses],
-                          subject: selected.subject,
-                          body: selected.body,
-                        })
-                      }
-                    >
-                      Modifier
-                    </Button>
-                  ) : null}
-                  {canArchive ? (
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      loading={busy}
-                      onClick={() => void onArchive()}
-                    >
-                      Archiver
-                    </Button>
-                  ) : null}
-                  {folder === "trash" ? (
-                    <>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        loading={busy}
-                        onClick={() => void onRestore()}
-                      >
-                        Restaurer
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        className="text-destructive"
-                        loading={busy}
-                        onClick={() => setConfirmDeleteForever(true)}
-                      >
-                        Supprimer définitivement
-                      </Button>
-                    </>
-                  ) : folder === "archive" ? (
-                    <>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        loading={busy}
-                        onClick={() => void onRestore()}
-                      >
-                        Remettre dans son dossier
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        className="text-destructive"
-                        loading={busy}
-                        onClick={() => void onTrash()}
-                      >
-                        Corbeille
-                      </Button>
-                    </>
-                  ) : (
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      className="text-destructive"
-                      loading={busy}
-                      onClick={() => void onTrash()}
-                    >
-                      Corbeille
-                    </Button>
-                  )}
-                </div>
+                <ReadingActions
+                  folder={folder}
+                  starred={selected.starred}
+                  busy={busy}
+                  unread={0}
+                  appliedLabelIds={selected.labels.map((label) => label.id)}
+                  allLabels={labels}
+                  onToggleStar={() => void onToggleStar(selected.id)}
+                  onReply={(mode) => replyTo(selected, mode)}
+                  onEditDraft={() =>
+                    openComposer({
+                      id: selected.id,
+                      to: [...selected.toAddresses],
+                      cc: [...selected.ccAddresses],
+                      bcc: [...selected.bccAddresses],
+                      subject: selected.subject,
+                      body: selected.body,
+                    })
+                  }
+                  onArchive={() => void onArchive()}
+                  onTrash={() => void onTrash()}
+                  onRestore={() => void onRestore()}
+                  onDeleteForever={() => setConfirmDeleteForever(true)}
+                  onToggleLabel={(labelId) =>
+                    toggleMessageLabel(
+                      selected.id,
+                      selected.labels.map((label) => label.id),
+                      labelId,
+                    )
+                  }
+                  onManageLabels={() => setShowLabels(true)}
+                />
               </header>
               <div className="flex flex-1 flex-col gap-3 overflow-y-auto p-4">
                 <div className="whitespace-pre-wrap text-sm">
                   {selected.body || "(message vide)"}
                 </div>
                 <AttachmentLinks attachments={selected.attachments} />
-                <div className="border-t border-border pt-3">
-                  <LabelAssignment
-                    messageLabels={selected.labels}
-                    allLabels={labels}
-                    busy={busy}
-                    onApply={(labelIds) => void onApplyLabels(selected.id, labelIds)}
-                  />
-                </div>
               </div>
+              {reply ? (
+                <ReplyEditor
+                  reply={reply}
+                  body={replyBody}
+                  busy={replyBusy}
+                  onBodyChange={setReplyBody}
+                  onClose={closeReply}
+                  onExpand={expandReply}
+                  onSend={() => void sendReply()}
+                />
+              ) : null}
             </>
           ) : (
             <div className="grid flex-1 place-items-center p-6">
@@ -1218,6 +1173,260 @@ export function MailView() {
   );
 }
 
+/** Pied de lecture : la réponse se rédige et s'envoie en place. */
+function ReplyEditor({
+  reply,
+  body,
+  busy,
+  onBodyChange,
+  onClose,
+  onExpand,
+  onSend,
+}: {
+  reply: ReplyDraft;
+  body: string;
+  busy: boolean;
+  onBodyChange: (value: string) => void;
+  onClose: () => void;
+  onExpand: () => void;
+  onSend: () => void;
+}) {
+  return (
+    <form
+      className="flex flex-col gap-2 border-t border-border bg-card p-4"
+      onSubmit={(event) => {
+        event.preventDefault();
+        onSend();
+      }}
+    >
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+        <span className="min-w-0 truncate">À : {reply.to.join(", ")}</span>
+        {reply.cc.length > 0 ? (
+          <span className="min-w-0 truncate">Cc : {reply.cc.join(", ")}</span>
+        ) : null}
+        <span className="ml-auto max-w-full truncate">{reply.subject}</span>
+      </div>
+      <textarea
+        aria-label="Votre réponse"
+        value={body}
+        rows={6}
+        maxLength={100_000}
+        disabled={busy}
+        // biome-ignore lint/a11y/noAutofocus: réponse rédigée en place, le champ prend le focus.
+        autoFocus
+        onChange={(event) => onBodyChange(event.target.value)}
+        className="rounded-md border border-input bg-background px-3 py-2 text-sm shadow-soft"
+      />
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="mr-auto text-xs text-muted-foreground">
+          Le message d'origine est cité sous votre réponse.
+        </span>
+        <Button
+          type="button"
+          variant="ghost"
+          disabled={busy}
+          onClick={onExpand}
+          title="Ouvrir dans le compositeur (Cci, pièces jointes)"
+        >
+          Ouvrir dans le compositeur
+        </Button>
+        <Button
+          type="button"
+          variant="ghost"
+          disabled={busy}
+          title="Fermer (Échap)"
+          onClick={onClose}
+        >
+          Fermer
+        </Button>
+        <Button type="submit" loading={busy}>
+          Envoyer
+        </Button>
+      </div>
+    </form>
+  );
+}
+
+/** Menu des libellés d'un message : coche appliquée, bascule immédiate. */
+function LabelsMenu({
+  appliedLabelIds,
+  allLabels,
+  onToggle,
+  onManage,
+}: {
+  appliedLabelIds: string[];
+  allLabels: MailLabel[];
+  onToggle: (labelId: string) => void;
+  onManage: () => void;
+}) {
+  const applied = new Set(appliedLabelIds);
+  const items: MenuItem[] = allLabels.map((label) => ({
+    id: label.id,
+    label: `${applied.has(label.id) ? "✓ " : ""}${label.name}`,
+    onSelect: () => onToggle(label.id),
+  }));
+  items.push({
+    id: "manage-labels",
+    label: allLabels.length > 0 ? "Gérer les libellés…" : "Créer un libellé…",
+    separated: allLabels.length > 0,
+    onSelect: onManage,
+  });
+  return (
+    <Menu
+      label="Libellés"
+      align="end"
+      triggerClassName="h-8 border-transparent bg-transparent px-2 hover:bg-muted focus-visible:ring-offset-0"
+      items={items}
+    />
+  );
+}
+
+type ReadingActionsProps = {
+  folder: FolderKey;
+  starred: boolean;
+  busy: boolean;
+  /** Messages non lus du fil — 0 pour un message seul. */
+  unread: number;
+  /** Libellés appliqués au message lu. */
+  appliedLabelIds: string[];
+  allLabels: MailLabel[];
+  onToggleStar: () => void;
+  onReply: (mode: "reply" | "replyAll") => void;
+  onEditDraft?: () => void;
+  onArchive: () => void;
+  onTrash: () => void;
+  onRestore: () => void;
+  onDeleteForever: () => void;
+  onMarkRead?: () => void;
+  onToggleLabel: (labelId: string) => void;
+  onManageLabels: () => void;
+};
+
+/**
+ * Actions du message lu — gestes fréquents en boutons `ghost` (suivre,
+ * répondre, archiver, libellés), le reste replié dans le menu « ⋯ ».
+ */
+function ReadingActions({
+  folder,
+  starred,
+  busy,
+  unread,
+  appliedLabelIds,
+  allLabels,
+  onToggleStar,
+  onReply,
+  onEditDraft,
+  onArchive,
+  onTrash,
+  onRestore,
+  onDeleteForever,
+  onMarkRead,
+  onToggleLabel,
+  onManageLabels,
+}: ReadingActionsProps) {
+  const canReply = folder !== "sent" && folder !== "drafts";
+  const canArchive = folder !== "trash" && folder !== "drafts" && folder !== "archive";
+
+  const rare: MenuItem[] = [];
+  if (unread > 0 && onMarkRead) {
+    rare.push({
+      id: "mark-read",
+      label: "Tout marquer comme lu",
+      disabled: busy,
+      onSelect: onMarkRead,
+    });
+  }
+  if (folder === "trash") {
+    rare.push({
+      id: "restore",
+      label: "Restaurer",
+      separated: rare.length > 0,
+      disabled: busy,
+      onSelect: onRestore,
+    });
+    rare.push({
+      id: "delete-forever",
+      label: "Supprimer définitivement",
+      separated: true,
+      destructive: true,
+      disabled: busy,
+      onSelect: onDeleteForever,
+    });
+  } else if (folder === "archive") {
+    rare.push({
+      id: "restore",
+      label: "Remettre dans son dossier",
+      separated: rare.length > 0,
+      disabled: busy,
+      onSelect: onRestore,
+    });
+    rare.push({
+      id: "trash",
+      label: "Mettre à la corbeille",
+      separated: true,
+      destructive: true,
+      disabled: busy,
+      onSelect: onTrash,
+    });
+  } else {
+    rare.push({
+      id: "trash",
+      label: "Mettre à la corbeille",
+      shortcut: "Suppr",
+      separated: rare.length > 0,
+      destructive: true,
+      disabled: busy,
+      onSelect: onTrash,
+    });
+  }
+
+  return (
+    <div className="flex flex-wrap items-center gap-1">
+      <Button
+        size="sm"
+        variant="ghost"
+        aria-label={starred ? "Retirer le suivi" : "Suivre"}
+        onClick={onToggleStar}
+      >
+        {starred ? "★" : "☆"}
+      </Button>
+      {canReply ? (
+        <>
+          <Button size="sm" variant="ghost" onClick={() => onReply("reply")}>
+            Répondre
+          </Button>
+          <Button size="sm" variant="ghost" onClick={() => onReply("replyAll")}>
+            Répondre à tous
+          </Button>
+        </>
+      ) : null}
+      {folder === "drafts" && onEditDraft ? (
+        <Button size="sm" variant="ghost" onClick={onEditDraft}>
+          Modifier le brouillon
+        </Button>
+      ) : null}
+      {canArchive ? (
+        <Button size="sm" variant="ghost" disabled={busy} onClick={onArchive}>
+          Archiver
+        </Button>
+      ) : null}
+      <LabelsMenu
+        appliedLabelIds={appliedLabelIds}
+        allLabels={allLabels}
+        onToggle={onToggleLabel}
+        onManage={onManageLabels}
+      />
+      <Menu
+        label="Actions du message"
+        align="end"
+        triggerIcon={<span aria-hidden>⋯</span>}
+        triggerClassName="h-8 w-8 border-transparent bg-transparent px-0 hover:bg-muted focus-visible:ring-offset-0"
+        items={rare}
+      />
+    </div>
+  );
+}
+
 /** Liste des pièces jointes d'un message lues (liens de téléchargement). */
 function AttachmentLinks({ attachments }: { attachments: MessageDetail["attachments"] }) {
   if (attachments.length === 0) return null;
@@ -1232,9 +1441,10 @@ function AttachmentLinks({ attachments }: { attachments: MessageDetail["attachme
           <li key={attachment.id}>
             <a
               href={`/api/mail/attachments/${attachment.id}`}
-              className="text-sm text-primary underline-offset-2 hover:underline"
+              className="inline-flex items-center gap-1 text-sm text-primary underline-offset-2 hover:underline"
             >
-              📎 {attachment.filename}{" "}
+              <PaperclipGlyph />
+              <span className="min-w-0 truncate">{attachment.filename}</span>{" "}
               <span className="text-xs text-muted-foreground">
                 ({formatFileSize(attachment.sizeBytes)})
               </span>

@@ -181,16 +181,17 @@ export function MessageList({
                   </span>
                   {item.attachmentCount > 0 ? (
                     <span
-                      className="shrink-0 text-[10px] text-muted-foreground"
+                      className="inline-flex shrink-0 items-center gap-0.5 text-[10px] text-muted-foreground"
                       title="Pièces jointes"
                     >
-                      📎 {item.attachmentCount}
+                      <PaperclipGlyph />
+                      {item.attachmentCount}
                     </span>
                   ) : null}
                   {item.starred ? <span className="shrink-0 text-attention">★</span> : null}
                   {item.sendError ? (
-                    <span className="shrink-0 text-[10px] text-destructive" title={item.sendError}>
-                      ⚠
+                    <span className="shrink-0 text-destructive" title={item.sendError}>
+                      <WarningGlyph />
                     </span>
                   ) : null}
                 </span>
@@ -261,6 +262,44 @@ export function MessageList({
         );
       })}
     </ul>
+  );
+}
+
+/** Trombone — signalétique de pièce jointe, jamais un emoji. */
+export function PaperclipGlyph() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      aria-hidden
+      className="size-3"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48" />
+    </svg>
+  );
+}
+
+/** Triangle d'avertissement — échec d'envoi du message. */
+export function WarningGlyph() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      aria-hidden
+      className="size-3"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+      <path d="M12 9v4" />
+      <path d="M12 17h.01" />
+    </svg>
   );
 }
 

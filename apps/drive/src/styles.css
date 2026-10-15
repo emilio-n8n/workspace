@@ -21,3 +21,11 @@ body {
 body {
   margin: 0;
 }
+
+/* Le Drive remplit exactement la fenêtre : la zone de contenu de la coque perd
+   son rembourrage et son défilement, les écrans gèrent les leurs (en-tête et
+   barre d'outils fixes, seules les listes défilent). */
+main#contenu:has(.drive-shell) {
+  padding: 0;
+  overflow: hidden;
+}

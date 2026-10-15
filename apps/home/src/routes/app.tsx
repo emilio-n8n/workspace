@@ -103,7 +103,7 @@ function AppLayout() {
 
   if (loadError) {
     return (
-      <div className="grid min-h-screen place-items-center p-8">
+      <div className="grid min-h-dvh place-items-center p-8">
         <div className="flex flex-col items-center gap-3 text-center">
           <p className="text-sm text-destructive">Impossible de charger votre espace de travail.</p>
           <button
@@ -119,13 +119,19 @@ function AppLayout() {
   }
 
   if (!workspace || !urls) {
-    return <p className="p-8 text-sm text-muted-foreground">Chargement…</p>;
+    return (
+      <div className="grid min-h-dvh place-items-center p-8">
+        <p role="status" className="text-sm text-muted-foreground">
+          Chargement…
+        </p>
+      </div>
+    );
   }
 
   return (
     <AppShell
       activeAppId="home"
-      apps={resolveSuiteApps(urls)}
+      apps={resolveSuiteApps(urls, workspace.activeOrganization?.kind)}
       search={async (query) => await searchFn({ data: { query } })}
       notifications={{
         unreadCount: notifications.unreadCount,

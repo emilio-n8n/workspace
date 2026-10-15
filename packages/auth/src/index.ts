@@ -1,11 +1,13 @@
 export { isWorkspaceScope, WORKSPACE_SCOPES, type WorkspaceScope } from "./scopes.ts";
 export {
+  type AccountKind,
   type Auth,
   auth,
   ensurePersonalOrganization,
   getSession,
   listMyOrganizations,
   NoOrganizationError,
+  parseAccountKind,
   requireActor,
   requireActorContext,
   UnauthorizedError,

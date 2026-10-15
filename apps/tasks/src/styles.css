@@ -21,3 +21,11 @@ body {
 body {
   margin: 0;
 }
+
+/* La vue Tâches remplit exactement la fenêtre : la zone de contenu de la
+   coque perd son rembourrage et son défilement, la vue gère les siens (seules
+   les zones internes — listes, tâches — scrollent). */
+main#contenu:has(.tasks-view) {
+  padding: 0;
+  overflow: hidden;
+}

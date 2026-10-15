@@ -21,3 +21,10 @@ body {
 body {
   margin: 0;
 }
+
+/* L'éditeur de site remplit exactement la fenêtre : la zone de contenu de la
+   coque perd son rembourrage et son défilement, l'éditeur gère les siens. */
+main#contenu:has(.site-editor) {
+  padding: 0;
+  overflow: hidden;
+}

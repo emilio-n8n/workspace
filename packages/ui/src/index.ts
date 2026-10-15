@@ -78,6 +78,7 @@ export {
   type PaletteSearchResult,
 } from "./shell/command-palette.tsx";
 export {
+  type AccountKind,
   type ResolvedSuiteApp,
   resolveSuiteApps,
   SUITE_APPS,

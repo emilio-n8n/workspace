@@ -111,9 +111,9 @@ export function FormulaBar({
   return (
     <fieldset
       aria-label="Barre de formule"
-      className="flex flex-wrap items-center gap-2 rounded-xl border border-border bg-card px-2 py-1.5"
+      className="flex min-w-0 flex-nowrap items-center gap-2 border-b border-border bg-card px-2 py-1"
     >
-      <div className="flex flex-col">
+      <div className="relative shrink-0">
         <Input
           aria-label="Référence de cellule"
           value={reference}
@@ -126,14 +126,17 @@ export function FormulaBar({
           className="h-8 w-20 px-2 text-center font-mono text-xs tabular-nums"
         />
         {nameError ? (
-          <span role="alert" className="pt-1 text-[11px] text-destructive">
+          <span
+            role="alert"
+            className="absolute top-full left-0 z-10 mt-1 w-64 rounded-md border border-destructive/40 bg-card px-2 py-1 text-[11px] text-destructive shadow-soft"
+          >
             {nameError}
           </span>
         ) : null}
       </div>
 
-      <span aria-hidden className="h-6 w-px bg-border" />
-      <span aria-hidden className="px-1 font-display text-sm italic text-muted-foreground">
+      <span aria-hidden className="h-6 w-px shrink-0 bg-border" />
+      <span aria-hidden className="shrink-0 px-1 font-display text-sm italic text-muted-foreground">
         fx
       </span>
 
@@ -155,7 +158,7 @@ export function FormulaBar({
           }}
           onKeyDown={onValueKeyDown}
           className={cn(
-            "h-8 font-mono text-xs",
+            "h-8 w-full min-w-0 flex-1 font-mono text-xs",
             tooLong && "border-destructive text-destructive",
             tone === "error" && !tooLong && "text-destructive",
           )}
@@ -164,7 +167,7 @@ export function FormulaBar({
           <span
             aria-hidden
             className={cn(
-              "shrink-0 text-xs tabular-nums",
+              "max-w-48 shrink-0 truncate text-xs tabular-nums",
               tone === "error" ? "text-destructive" : "text-muted-foreground",
             )}
           >
@@ -178,7 +181,7 @@ export function FormulaBar({
         annule la saisie.
       </span>
       {tooLong ? (
-        <span role="alert" className="w-full text-[11px] text-destructive">
+        <span role="alert" className="shrink-0 text-[11px] text-destructive">
           Valeur limitée à {MAX_VALUE_CHARS} caractères.
         </span>
       ) : null}

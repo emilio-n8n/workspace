@@ -10,15 +10,28 @@ import {
   placeholderLabel,
   SLIDE_LAYOUT_IDS,
   SLIDE_LAYOUTS,
+  TITLE_LAYOUT,
 } from "../src/slide-layouts.ts";
 
 describe("slides — mises en page", () => {
-  it("décrit les trois mises en page avec libellé et aide", () => {
-    expect(SLIDE_LAYOUT_IDS).toEqual(["title", "title-content", "blank"]);
+  it("décrit les huit mises en page avec libellé et aide", () => {
+    expect(SLIDE_LAYOUT_IDS).toEqual([
+      "title",
+      "title-content",
+      "section",
+      "title-two-content",
+      "title-image",
+      "image-full",
+      "quote",
+      "blank",
+    ]);
     for (const id of SLIDE_LAYOUT_IDS) {
       expect(layoutLabel(id).length).toBeGreaterThan(0);
       expect(layoutHint(id).length).toBeGreaterThan(0);
     }
+    expect(TITLE_LAYOUT).toBe("title");
+    expect(DEFAULT_NEW_LAYOUT).toBe("title-content");
+    expect(layoutLabel("title-content")).toBe("Titre et contenu");
   });
 
   it("place les zones dans les bornes de la diapositive", () => {
@@ -48,6 +61,21 @@ describe("slides — mises en page", () => {
     ]);
   });
 
+  it("compose deux colonnes, une image et une citation", () => {
+    expect(layoutElements("title-two-content").map((zone) => zone.placeholder)).toEqual([
+      "title",
+      "body",
+      "body",
+    ]);
+    expect(layoutElements("title-image").map((zone) => zone.placeholder)).toEqual([
+      "title",
+      "body",
+      "image",
+    ]);
+    expect(layoutElements("image-full").map((zone) => zone.placeholder)).toEqual(["image"]);
+    expect(layoutElements("quote").map((zone) => zone.placeholder)).toEqual(["body", "subtitle"]);
+  });
+
   it("rend une copie des zones : la table n'est jamais mutée", () => {
     const zones = layoutElements("title");
     const zone = zones[0];
@@ -64,6 +92,7 @@ describe("slides — mises en page", () => {
 
   it("relit un rôle de zone : valeur inconnue ou absente → aucune zone", () => {
     expect(normalizePlaceholder("body")).toBe("body");
+    expect(normalizePlaceholder("image")).toBe("image");
     expect(normalizePlaceholder("autre")).toBeNull();
     expect(normalizePlaceholder(null)).toBeNull();
   });
@@ -72,7 +101,10 @@ describe("slides — mises en page", () => {
     expect(placeholderHint("title")).toBe("Cliquez pour ajouter un titre");
     expect(placeholderHint("subtitle")).toBe("Cliquez pour ajouter un sous-titre");
     expect(placeholderHint("body")).toBe("Cliquez pour ajouter du texte");
+    expect(placeholderHint("image")).toBe("Cliquez pour insérer une image");
+    expect(placeholderLabel("title")).toBe("titre");
     expect(placeholderLabel("subtitle")).toBe("sous-titre");
     expect(placeholderLabel("body")).toBe("texte");
+    expect(placeholderLabel("image")).toBe("image");
   });
 });

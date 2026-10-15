@@ -10,7 +10,7 @@ import { LABEL_COLOR_LABELS, labelDotClass, TASK_LABEL_COLOR_VALUES } from "./ta
  * Chaque étiquette est une CASE À COCHER ÉTIQUETÉE (`<label for>`), pas une
  * pastille cliquable : l'étiquette reste utilisable au clavier et annoncée par
  * les lecteurs d'écran. La création est inline pour ne pas ouvrir un deuxième
- * dialogue depuis le dialogue d'édition.
+ * dialogue depuis l'édition en place.
  */
 export function TaskLabelsEditor({
   labels,

@@ -12,6 +12,7 @@ import {
   IconClipboard,
   IconFileText,
   IconSearch,
+  PageHeader,
 } from "@workspace/ui";
 import { useEffect, useRef, useState } from "react";
 import { z } from "zod";
@@ -152,12 +153,10 @@ function SearchPage() {
 
   return (
     <div className="mx-auto flex w-full max-w-3xl flex-col gap-4">
-      <header className="flex flex-col gap-1">
-        <h1 className="font-display text-3xl font-semibold tracking-tight">Recherche</h1>
-        <p className="text-sm text-muted-foreground">
-          Fichiers, tâches, formulaires et événements — dans toute la suite.
-        </p>
-      </header>
+      <PageHeader
+        title="Recherche"
+        description="Fichiers, tâches, formulaires et événements — dans toute la suite."
+      />
 
       <div className="relative">
         <IconSearch className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />

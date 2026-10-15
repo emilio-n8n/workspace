@@ -52,3 +52,33 @@ export function IconUsers(props: SVGProps<SVGSVGElement>) {
     </Svg>
   );
 }
+
+/** Menu « ⋯ » des actions secondaires. */
+export function IconMore(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Svg {...props}>
+      {[3, 8, 13].map((cx) => (
+        <circle key={cx} cx={cx} cy={8} r="1.2" fill="currentColor" stroke="none" />
+      ))}
+    </Svg>
+  );
+}
+
+/** Crayon de l'édition en place d'un message. */
+export function IconPen(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Svg {...props}>
+      <path d="m3 13 .6-2.8L10.9 2.9a1.5 1.5 0 0 1 2.2 2.2L5.8 12.4z" />
+      <path d="m9.8 4 2.2 2.2" />
+    </Svg>
+  );
+}
+
+/** Trombonne des pièces jointes du compositeur. */
+export function IconPaperclip(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Svg {...props}>
+      <path d="M13.4 7.2 8.1 12.5a3.1 3.1 0 0 1-4.4-4.4l5.6-5.6a2 2 0 0 1 2.9 2.9L6.7 10.9a.9.9 0 0 1-1.3-1.3l4.9-4.9" />
+    </Svg>
+  );
+}

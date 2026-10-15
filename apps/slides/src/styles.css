@@ -22,6 +22,28 @@ body {
   margin: 0;
 }
 
+/* L'éditeur Slides remplit exactement la fenêtre : la zone de contenu de la
+   coque perd son rembourrage et son défilement, l'éditeur gère les siens. */
+main#contenu:has(.slides-editor) {
+  padding: 0;
+  overflow: hidden;
+}
+
+/* Mode concentration de l'éditeur : le rail d'applications et la barre haute
+   de la suite disparaissent, l'éditeur garde sa propre barre d'outils et son
+   bouton de retour. */
+body.workspace-slides-focus nav[aria-label="Applications de la suite"] {
+  display: none !important;
+}
+
+body.workspace-slides-focus div:has(> header + main#contenu) > header {
+  display: none !important;
+}
+
+body.workspace-slides-focus main#contenu {
+  padding: 0 !important;
+}
+
 /* Racine d'impression : montée par l'éditeur uniquement le temps de
    window.print(), invisible à l'écran. */
 #slides-print-root {

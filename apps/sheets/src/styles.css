@@ -21,3 +21,11 @@ body {
 body {
   margin: 0;
 }
+
+/* L'éditeur Sheets remplit exactement la fenêtre : la zone de contenu de la
+   coque perd son rembourrage et son défilement, l'éditeur gère les siens
+   (barre d'outils et onglets fixes, grille qui défile en interne). */
+main#contenu:has(.sheet-editor) {
+  padding: 0;
+  overflow: hidden;
+}

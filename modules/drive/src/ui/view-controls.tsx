@@ -82,6 +82,7 @@ export function ViewControls({ prefs, onChange }: ViewControlsProps) {
       <RadioMenu
         label={`Trier : ${sortSummary(prefs)}`}
         entries={sortEntries}
+        triggerClassName="border-transparent bg-transparent px-2 focus-visible:ring-offset-0"
         trigger={() => (
           <>
             <SortGlyph />
@@ -94,6 +95,7 @@ export function ViewControls({ prefs, onChange }: ViewControlsProps) {
       <RadioMenu
         label={`Densité : ${DENSITY_LABELS[prefs.density]}`}
         entries={densityEntries}
+        triggerClassName="border-transparent bg-transparent px-2 focus-visible:ring-offset-0"
         trigger={() => (
           <>
             <IconGrid className="size-4" aria-hidden />
