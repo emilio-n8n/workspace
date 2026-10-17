@@ -1,5 +1,5 @@
 import { Alert, Button, cn, IconTrash, Input, Label, Spinner } from "@workspace/ui";
-import { type FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { edgeIds, nudgeIds } from "../dnd.ts";
 import {
   createTaskSubtaskFn,
@@ -87,8 +87,10 @@ export function SubtasksEditor({
     });
   }
 
-  async function onAdd(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  // Pas de <form> ici : ce bloc vit dans le formulaire d'édition de la tâche
+  // (formulaires imbriqués interdits en HTML → avertissement d'hydratation).
+  async function onAdd(event?: { preventDefault: () => void }) {
+    event?.preventDefault();
     const clean = title.trim();
     if (clean.length === 0 || creating || rows === null) return;
 
@@ -256,18 +258,20 @@ export function SubtasksEditor({
         </>
       )}
 
-      <form
-        onSubmit={onAdd}
-        method="post"
-        aria-busy={creating || undefined}
-        className="flex items-end gap-2"
-      >
+      <div aria-busy={creating || undefined} className="flex items-end gap-2">
         <div className="flex flex-1 flex-col gap-1.5">
           <Label htmlFor="new-subtask-title" className="text-xs">
             Nouvelle sous-tâche
           </Label>
           <Input
             id="new-subtask-title"
+            onKeyDown={(event) => {
+              // Entrée ajoute l'élément sans soumettre le formulaire parent.
+              if (event.key === "Enter") {
+                event.preventDefault();
+                void onAdd();
+              }
+            }}
             value={title}
             onChange={(event) => setTitle(event.target.value)}
             placeholder="Étape suivante"
@@ -275,10 +279,16 @@ export function SubtasksEditor({
             disabled={creating}
           />
         </div>
-        <Button type="submit" size="sm" loading={creating} disabled={title.trim().length === 0}>
+        <Button
+          type="button"
+          onClick={() => void onAdd()}
+          size="sm"
+          loading={creating}
+          disabled={title.trim().length === 0}
+        >
           Ajouter
         </Button>
-      </form>
+      </div>
 
       <p aria-live="polite" className="sr-only">
         {announcement}
