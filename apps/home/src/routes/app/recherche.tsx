@@ -3,7 +3,10 @@ import { createServerFn } from "@tanstack/react-start";
 import { getRequest } from "@tanstack/react-start/server";
 import { requireActor } from "@workspace/auth";
 import type { SuiteAppKey } from "@workspace/config";
-import { type SearchResult, searchEverything, searchResultHref } from "@workspace/search";
+import { type SearchResult, searchEverything } from "@workspace/search";
+// Sous-chemin pur : importer `searchResultHref` depuis la racine embarquait
+// `pg` (via les services) dans le bundle client → « Buffer is not defined ».
+import { searchResultHref } from "@workspace/search/href";
 import {
   Alert,
   EmptyState,
