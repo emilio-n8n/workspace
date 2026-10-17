@@ -17,7 +17,7 @@ import {
   markAllNotificationsRead,
   markNotificationRead,
 } from "@workspace/notifications";
-import { searchEverything } from "@workspace/search";
+import { searchEverything, searchResultHref } from "@workspace/search";
 import { eq } from "drizzle-orm";
 import { z } from "zod";
 
@@ -112,14 +112,7 @@ export const searchFn = createServerFn({ method: "GET" })
       id: r.id,
       title: r.title,
       subtitle: r.subtitle,
-      href:
-        r.appId === "drive"
-          ? urls.drive
-          : r.appId === "forms"
-            ? `${urls.forms}/form/${r.id}`
-            : r.appId === "tasks"
-              ? urls.tasks
-              : `${urls.calendar}`,
+      href: searchResultHref(r, urls),
     }));
   });
 

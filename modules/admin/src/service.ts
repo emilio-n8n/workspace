@@ -1,7 +1,7 @@
 import { recordAudit } from "@workspace/audit";
 import { allowsManagedAccounts, parseAccountKind } from "@workspace/auth/account-kind";
 import { classroomAssignments, classroomCourses, classroomSubmissions } from "@workspace/classroom";
-import { schema as core, getDb } from "@workspace/database";
+import { schema as core, getDb, sortFr } from "@workspace/database";
 import { docsComments, docsDocuments } from "@workspace/docs";
 import { driveFiles } from "@workspace/drive";
 import type { Actor } from "@workspace/permissions";
@@ -134,7 +134,7 @@ export async function listMembers(actor: Actor): Promise<MemberFull[]> {
     .innerJoin(core.user, eq(core.user.id, core.member.userId))
     .where(eq(core.member.organizationId, actor.orgId))
     .orderBy(asc(core.user.name));
-  return rows.map((row) => ({
+  return sortFr(rows, (row) => row.name).map((row) => ({
     userId: row.userId,
     name: row.name,
     email: row.email,

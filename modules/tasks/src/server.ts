@@ -1,7 +1,7 @@
 import { createServerFn } from "@tanstack/react-start";
 import { getRequest } from "@tanstack/react-start/server";
 import { requireActor } from "@workspace/auth";
-import { schema as coreSchema, getDb } from "@workspace/database";
+import { schema as coreSchema, getDb, sortFr } from "@workspace/database";
 import { asc, eq } from "drizzle-orm";
 import { z } from "zod";
 import {
@@ -308,7 +308,7 @@ export const listMembersFn = createServerFn({ method: "GET" }).handler(
   async (): Promise<MemberView[]> => {
     const { actor } = await requireActor(getRequest().headers);
     const db = getDb();
-    return db
+    const rows = await db
       .select({
         userId: coreSchema.user.id,
         name: coreSchema.user.name,
@@ -318,6 +318,7 @@ export const listMembersFn = createServerFn({ method: "GET" }).handler(
       .innerJoin(coreSchema.user, eq(coreSchema.member.userId, coreSchema.user.id))
       .where(eq(coreSchema.member.organizationId, actor.orgId))
       .orderBy(asc(coreSchema.user.name));
+    return sortFr(rows, (row) => row.name);
   },
 );
 

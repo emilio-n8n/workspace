@@ -1,6 +1,6 @@
 import { recordAudit } from "@workspace/audit";
 import { getAppUrls } from "@workspace/config";
-import { schema as core, getDb, withTransaction } from "@workspace/database";
+import { schema as core, getDb, sortFr, withTransaction } from "@workspace/database";
 import { createNotification } from "@workspace/notifications";
 import {
   type Actor,
@@ -932,11 +932,12 @@ function assertLabelColor(color: string): TaskLabelColor {
  */
 /** Étiquettes de l'organisation, par ordre alphabétique français. */
 export async function listLabels(actor: Actor): Promise<TaskLabel[]> {
-  return db()
+  const rows = await db()
     .select()
     .from(taskLabels)
     .where(eq(taskLabels.orgId, actor.orgId))
     .orderBy(asc(taskLabels.name));
+  return sortFr(rows, (row) => row.name);
 }
 
 export async function createLabel(
@@ -1042,7 +1043,7 @@ export async function listTaskLabels(actor: Actor, taskId: string): Promise<Task
     .innerJoin(taskLabels, eq(taskLabelLinks.labelId, taskLabels.id))
     .where(and(eq(taskLabelLinks.taskId, taskId), eq(taskLabels.orgId, actor.orgId)))
     .orderBy(asc(taskLabels.name))
-    .then((rows) => rows.map((row) => row.label));
+    .then((rows) => sortFr(rows, (row) => row.label.name).map((row) => row.label));
 }
 
 /**

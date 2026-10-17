@@ -3,7 +3,7 @@ import { createServerFn } from "@tanstack/react-start";
 import { getRequest } from "@tanstack/react-start/server";
 import { requireActor } from "@workspace/auth";
 import type { SuiteAppKey } from "@workspace/config";
-import { type SearchResult, searchEverything } from "@workspace/search";
+import { type SearchResult, searchEverything, searchResultHref } from "@workspace/search";
 import {
   Alert,
   EmptyState,
@@ -57,18 +57,9 @@ const KIND_ICONS: Record<SearchResult["kind"], typeof IconSearch> = {
   event: IconCalendar,
 };
 
-/** Cible de navigation inter-applications d'un résultat. */
+/** Cible de navigation inter-applications d'un résultat (éditeur direct). */
 function hrefFor(result: SearchResult, urls: Record<SuiteAppKey, string>): string {
-  switch (result.appId) {
-    case "drive":
-      return urls.drive;
-    case "forms":
-      return `${urls.forms}/form/${result.id}`;
-    case "tasks":
-      return `${urls.tasks}/`;
-    case "calendar":
-      return urls.calendar;
-  }
+  return searchResultHref(result, urls);
 }
 
 function ResultRow({
