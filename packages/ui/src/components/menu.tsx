@@ -87,7 +87,7 @@ export function Menu({
     function onPointerDown(event: PointerEvent) {
       if (rootRef.current && !rootRef.current.contains(event.target as Node)) {
         focusRestore.current = false;
-        setOpen(false);
+        setOpenRef.current(false);
       }
     }
     document.addEventListener("pointerdown", onPointerDown);
@@ -104,6 +104,11 @@ export function Menu({
     if (controlledOpen === undefined) setInternalOpen(next);
     onOpenChange?.(next);
   }
+
+  // Référence stable : l'écouteur pointerdown lit toujours la dernière version
+  // (onOpenChange peut changer à chaque rendu) sans se réabonner.
+  const setOpenRef = useRef(setOpen);
+  setOpenRef.current = setOpen;
 
   function focusItem(index: number) {
     itemRefs.current[index]?.focus();

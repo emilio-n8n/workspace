@@ -33,6 +33,7 @@ export function SkeletonText({ lines = 3, lastLineWidth = "60%", className }: Sk
     <div aria-hidden className={cn("flex flex-col gap-2", className)}>
       {Array.from({ length: lines }, (_, index) => (
         <Skeleton
+          // biome-ignore lint/suspicious/noArrayIndexKey: lignes factices statiques, jamais réordonnées
           key={index}
           className="h-3 w-full"
           style={index === lines - 1 ? { width: lastLineWidth } : undefined}
@@ -97,6 +98,7 @@ export function SkeletonTable({ rows = 5, columns = 4, className }: SkeletonTabl
       <TableHeader>
         <TableRow>
           {Array.from({ length: columns }, (_, index) => (
+            // biome-ignore lint/suspicious/noArrayIndexKey: colonnes factices statiques, jamais réordonnées
             <TableHead key={index}>
               <Skeleton className="h-3 w-24" />
             </TableHead>
@@ -105,8 +107,10 @@ export function SkeletonTable({ rows = 5, columns = 4, className }: SkeletonTabl
       </TableHeader>
       <TableBody>
         {Array.from({ length: rows }, (_, row) => (
+          // biome-ignore lint/suspicious/noArrayIndexKey: lignes factices statiques, jamais réordonnées
           <TableRow key={row}>
             {Array.from({ length: columns }, (_, column) => (
+              // biome-ignore lint/suspicious/noArrayIndexKey: cellules factices statiques, jamais réordonnées
               <TableCell key={column}>
                 <Skeleton className={column === 0 ? "h-3 w-40" : "h-3 w-20"} />
               </TableCell>

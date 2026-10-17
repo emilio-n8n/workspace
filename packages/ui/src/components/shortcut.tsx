@@ -32,6 +32,7 @@ export function Shortcut({
       {keys.map((key, index) => {
         const glyph = isLabeledKey(key) ? key.keys : key;
         return (
+          // biome-ignore lint/suspicious/noArrayIndexKey: une même touche peut se répéter et la combinaison n'est jamais réordonnée
           <span key={`${glyph}-${index}`} className="inline-flex items-center gap-0.5">
             {index > 0 ? (
               <span aria-hidden className="text-muted-foreground">
