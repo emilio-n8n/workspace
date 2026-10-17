@@ -13,8 +13,17 @@ export async function gotoHydrated(page: Page, path: string): Promise<void> {
   await page.waitForSelector("html[data-hydrated='true']", { timeout: 30_000 });
 }
 
-export async function signupNewUser(page: Page, name: string, email: string): Promise<void> {
+/** Type d'espace choisi à l'inscription (Sites/Admin : entreprise, Classroom : éducation). */
+export type SignupKind = "Personnel" | "Entreprise" | "Éducation";
+
+export async function signupNewUser(
+  page: Page,
+  name: string,
+  email: string,
+  kind: SignupKind = "Personnel",
+): Promise<void> {
   await gotoHydrated(page, "/signup");
+  if (kind !== "Personnel") await page.getByText(kind, { exact: true }).click();
   await page.getByLabel("Nom complet").fill(name);
   await page.getByLabel("Adresse e-mail").fill(email);
   await page.getByLabel("Mot de passe").fill(PASSWORD);

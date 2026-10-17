@@ -169,7 +169,9 @@ export const SUITE_APPS: SuiteAppDefinition[] = [
     phase: 5,
     shipped: true,
     toneClass: "text-app-classroom",
-    audiences: ["education"],
+    // Un élève rejoint un cours depuis son espace personnel (code d'accès) :
+    // Classroom doit y rester accessible, pas seulement aux établissements.
+    audiences: ["personal", "education"],
     Icon: IconGraduation,
   },
   {

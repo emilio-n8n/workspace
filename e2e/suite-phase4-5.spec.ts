@@ -89,7 +89,7 @@ test("meet : salle créée, page de réunion avec configuration expliquée", asy
 
 test("sites : page en Markdown, aperçu HTML rendu et sûr", async ({ page }) => {
   const email = uniqueEmail("site");
-  await signupNewUser(page, "Site E2E", email);
+  await signupNewUser(page, "Site E2E", email, "Entreprise");
 
   await openApp(page, `${SITES}/`);
   await page.getByRole("button", { name: "Nouveau site" }).first().click();
@@ -120,7 +120,7 @@ test("classroom : cours, code d'accès, copie d'élève et notation", async ({ p
   const studentEmail = uniqueEmail("eleve");
 
   // L'enseignant crée le cours et un devoir.
-  await signupNewUser(page, "Prof E2E", ownerEmail);
+  await signupNewUser(page, "Prof E2E", ownerEmail, "Éducation");
   await openApp(page, `${CLASSROOM}/`);
   // En-tête + état vide exposent les deux mêmes actions : on vise la première.
   await page.getByRole("button", { name: "Créer un cours" }).first().click();
@@ -180,7 +180,7 @@ test("classroom : cours, code d'accès, copie d'élève et notation", async ({ p
 
 test("admin : profil d'organisation, membres, quota et journal", async ({ page }) => {
   const email = uniqueEmail("admin");
-  await signupNewUser(page, "Admin E2E", email);
+  await signupNewUser(page, "Admin E2E", email, "Entreprise");
 
   await openApp(page, `${ADMIN}/`);
   await expect(page.getByRole("heading", { name: "Administration" })).toBeVisible();

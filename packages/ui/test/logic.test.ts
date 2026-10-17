@@ -41,9 +41,9 @@ describe("applications de la suite par type d'espace", () => {
     expect(ids()).toEqual(SUITE_APPS.map((app) => app.id));
   });
 
-  it("espace personnel : ni Classroom, ni Sites, ni Admin", () => {
+  it("espace personnel : Classroom (élève qui rejoint un cours), ni Sites ni Admin", () => {
     const personal = ids("personal");
-    expect(personal).not.toContain("classroom");
+    expect(personal).toContain("classroom");
     expect(personal).not.toContain("sites");
     expect(personal).not.toContain("admin");
     expect(personal).toContain("docs");
@@ -56,7 +56,9 @@ describe("applications de la suite par type d'espace", () => {
   });
 
   it("isAppAvailable suit les mêmes règles que le rail", () => {
-    expect(isAppAvailable("classroom", "personal")).toBe(false);
+    expect(isAppAvailable("classroom", "personal")).toBe(true);
+    expect(isAppAvailable("classroom", "business")).toBe(false);
+    expect(isAppAvailable("sites", "personal")).toBe(false);
     expect(isAppAvailable("classroom", "education")).toBe(true);
     expect(isAppAvailable("docs", "personal")).toBe(true);
     expect(isAppAvailable("admin", undefined)).toBe(true);

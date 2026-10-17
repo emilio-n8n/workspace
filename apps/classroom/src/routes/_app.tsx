@@ -167,8 +167,8 @@ function AppLayout() {
           <div className="flex max-w-md flex-col items-center gap-3 text-center">
             <h1 className="font-display text-xl">Application indisponible dans cet espace</h1>
             <p className="text-sm text-muted-foreground">
-              Classroom est réservé aux espaces éducation. Changez d'espace avec le sélecteur
-              d'organisation ou revenez à l'accueil.
+              Classroom est réservé aux espaces éducation et personnels. Changez d'espace avec le
+              sélecteur d'organisation ou revenez à l'accueil.
             </p>
             <a
               href={`${urls.home}/app`}
