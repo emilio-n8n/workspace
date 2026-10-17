@@ -142,6 +142,22 @@ describe("calendar — agendas", () => {
     expect(second).toBe(first);
   });
 
+  it("l'agenda par défaut reste unique sous appels concurrents", async () => {
+    const ids = await Promise.all(
+      Array.from({ length: 6 }, () => ensurePrimaryCalendar(f.actorBruno)),
+    );
+    expect(new Set(ids).size).toBe(1);
+    const mine = (await listCalendars(f.actorBruno)).filter((c) => c.name === "Mon agenda");
+    expect(mine).toHaveLength(1);
+  });
+
+  it("refuse deux agendas partagés de même nom dans l'organisation", async () => {
+    await createCalendar(f.actorAlice, { name: "Direction", shared: true });
+    await expect(
+      createCalendar(f.actorBruno, { name: "Direction", shared: true }),
+    ).rejects.toMatchObject({ code: "conflict" });
+  });
+
   it("crée un agenda partagé visible par les autres membres", async () => {
     const shared = await createCalendar(f.actorAlice, { name: "Équipe", shared: true });
     expect(shared.isOrg).toBe(true);

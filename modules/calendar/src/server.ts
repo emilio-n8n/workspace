@@ -7,6 +7,7 @@ import {
   createCalendar,
   createEvent,
   deleteEvent,
+  ensurePrimaryCalendar,
   listCalendars,
   listEvents,
   setAttendance,
@@ -92,6 +93,17 @@ export const setAttendanceFn = createServerFn({ method: "POST" })
     const { actor } = await requireActor(getRequest().headers);
     return setAttendance(actor, data.eventId, data.status);
   });
+
+/**
+ * Garantit l'agenda personnel par défaut (idempotent : `ON CONFLICT DO NOTHING`).
+ * Remplace l'ancien `createCalendarFn("Mon agenda")` côté client, qui partait en
+ * course quand deux chargements se chevauchaient (double effet en mode strict,
+ * changement de plage) et violait `calendars_org_owner_name_uidx`.
+ */
+export const ensurePrimaryCalendarFn = createServerFn({ method: "POST" }).handler(async () => {
+  const { actor } = await requireActor(getRequest().headers);
+  return { id: await ensurePrimaryCalendar(actor) };
+});
 
 export const createCalendarFn = createServerFn({ method: "POST" })
   .validator((input: unknown) =>

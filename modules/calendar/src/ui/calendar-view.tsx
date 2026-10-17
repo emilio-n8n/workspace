@@ -16,6 +16,7 @@ import {
   createEventFn,
   deleteEventFn,
   type EventView,
+  ensurePrimaryCalendarFn,
   getMeetUrlFn,
   listCalendarsFn,
   listEventsFn,
@@ -99,7 +100,7 @@ export function CalendarView() {
     try {
       let options = await listCalendarsFn();
       if (options.length === 0) {
-        await createCalendarFn({ data: { name: "Mon agenda", shared: false } });
+        await ensurePrimaryCalendarFn();
         options = await listCalendarsFn();
       }
       const list = await listEventsFn({
