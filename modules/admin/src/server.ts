@@ -4,6 +4,7 @@ import { auth, requireActor } from "@workspace/auth";
 import { z } from "zod";
 import {
   addMemberByEmail,
+  assertManagedAccountAllowed,
   clampAuditPage,
   clampAuditPageSize,
   eraseUserAccount,
@@ -63,7 +64,7 @@ export const createManagedAccountFn = createServerFn({ method: "POST" })
   )
   .handler(async ({ data }) => {
     const { actor } = await requireActor(getRequest().headers);
-    const email = data.email.trim();
+    const email = await assertManagedAccountAllowed(actor, data.email);
     // 14 caractères aléatoires, assez longs pour la politique de mots de passe.
     const temporaryPassword = crypto.randomUUID().replace(/-/g, "").slice(0, 14);
 

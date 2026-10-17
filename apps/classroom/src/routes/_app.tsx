@@ -3,6 +3,7 @@ import type { NotificationView } from "@workspace/notifications";
 import {
   AppShell,
   currentTheme,
+  isAppAvailable,
   resolveSuiteApps,
   type SuiteAppId,
   type Theme,
@@ -121,10 +122,14 @@ function AppLayout() {
     return <p className="p-8 text-sm text-muted-foreground">Chargement…</p>;
   }
 
+  // Application hors du type d'espace actif (ex. espace personnel) : on
+  // l'explique au lieu d'ouvrir un écran que le rail ne propose pas.
+  const unavailable = !isAppAvailable("classroom", workspace.activeOrganization?.kind);
+
   return (
     <AppShell
       activeAppId={"classroom" as SuiteAppId}
-      apps={resolveSuiteApps(urls)}
+      apps={resolveSuiteApps(urls, workspace.activeOrganization?.kind)}
       search={async (query) => await searchFn({ data: { query } })}
       notifications={{
         unreadCount: notifications.unreadCount,
@@ -157,7 +162,25 @@ function AppLayout() {
       onToggleTheme={() => setTheme(toggleTheme())}
       onSignOut={() => void onSignOut()}
     >
-      <Outlet />
+      {unavailable ? (
+        <div className="grid flex-1 place-items-center p-8">
+          <div className="flex max-w-md flex-col items-center gap-3 text-center">
+            <h1 className="font-display text-xl">Application indisponible dans cet espace</h1>
+            <p className="text-sm text-muted-foreground">
+              Classroom est réservé aux espaces éducation. Changez d'espace avec le sélecteur
+              d'organisation ou revenez à l'accueil.
+            </p>
+            <a
+              href={`${urls.home}/app`}
+              className="rounded-md border border-border bg-card px-3 py-1.5 text-sm hover:bg-muted"
+            >
+              Retour à l'accueil
+            </a>
+          </div>
+        </div>
+      ) : (
+        <Outlet />
+      )}
     </AppShell>
   );
 }

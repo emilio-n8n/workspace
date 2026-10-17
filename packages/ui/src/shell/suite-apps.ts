@@ -204,6 +204,12 @@ export function resolveSuiteApps(
   );
 }
 
+/** Une application est-elle proposée pour ce type d'espace ? (type inconnu : oui) */
+export function isAppAvailable(id: SuiteAppId, kind?: AccountKind): boolean {
+  const app = SUITE_APPS.find((candidate) => candidate.id === id);
+  return !kind || !app?.audiences || app.audiences.includes(kind);
+}
+
 export function shippedApps(apps: ResolvedSuiteApp[]): ResolvedSuiteApp[] {
   return apps.filter((app) => app.shipped && app.href);
 }

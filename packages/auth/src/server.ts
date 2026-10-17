@@ -1,5 +1,8 @@
 import { randomUUID } from "node:crypto";
+import { getDb, schema } from "@workspace/database";
 import type { Actor } from "@workspace/permissions";
+import { eq } from "drizzle-orm";
+import { type AccountKind, parseAccountKind } from "./account-kind.ts";
 import { auth } from "./auth.ts";
 
 /** Session utilisateur courante à partir des en-têtes de requête. */
@@ -71,10 +74,6 @@ export class NoOrganizationError extends Error {
   }
 }
 
-/** Type de compte choisi à l'inscription : il décide des apps disponibles. */
-export type AccountKind = "personal" | "business" | "education";
-
-/** Nom de l'espace créé à l'inscription pour chaque type de compte. */
 const ORG_NAME: Record<AccountKind, string> = {
   personal: "Espace personnel",
   business: "Mon organisation",
@@ -85,23 +84,6 @@ function orgSlugPrefix(kind: AccountKind): string {
   if (kind === "business") return "org";
   if (kind === "education") return "etab";
   return "perso";
-}
-
-/**
- * Lit le type de compte dans la méta d'organisation (texte JSON en base).
- * Indéfini si la méta est absente ou illisible : les anciens espaces gardent
- * alors la totalité de la suite (aucune app n'est retirée par défaut).
- */
-export function parseAccountKind(metadata: unknown): AccountKind | undefined {
-  if (typeof metadata !== "string") return undefined;
-  try {
-    const parsed = JSON.parse(metadata) as { kind?: unknown };
-    const kind = parsed?.kind;
-    if (kind === "personal" || kind === "business" || kind === "education") return kind;
-  } catch {
-    // Méta non-JSON : aucune décision possible, on retombe sur le défaut.
-  }
-  return undefined;
 }
 
 /**
@@ -145,3 +127,42 @@ export async function ensurePersonalOrganization(
 
 export type { Auth } from "./auth.ts";
 export { auth };
+
+/** Contexte d'espace partagé par les 14 applications (rail, sélecteur). */
+export type ActiveWorkspace = {
+  user: { id: string; name: string; email: string };
+  organizations: { id: string; name: string }[];
+  activeOrganization: { id: string; name: string; slug: string; kind?: AccountKind } | null;
+};
+
+/** Type de compte d'une organisation (méta), indéfini pour les anciens espaces. */
+export async function getOrganizationKind(orgId: string): Promise<AccountKind | undefined> {
+  const [row] = await getDb()
+    .select({ metadata: schema.organization.metadata })
+    .from(schema.organization)
+    .where(eq(schema.organization.id, orgId))
+    .limit(1);
+  return parseAccountKind(row?.metadata);
+}
+
+/**
+ * Espace courant de l'utilisateur : organisations, organisation active et son
+ * type de compte (qui filtre le rail d'applications dans toutes les apps).
+ */
+export async function getActiveWorkspace(headers: Headers): Promise<ActiveWorkspace | null> {
+  const session = await getSession(headers);
+  if (!session) return null;
+
+  const orgs = await listMyOrganizations(headers);
+  const activeId = session.session.activeOrganizationId ?? orgs[0]?.id ?? null;
+  const active = orgs.find((org) => org.id === activeId) ?? null;
+  const kind = active ? await getOrganizationKind(active.id) : undefined;
+
+  return {
+    user: { id: session.user.id, name: session.user.name, email: session.user.email },
+    organizations: orgs.map((org) => ({ id: org.id, name: org.name })),
+    activeOrganization: active
+      ? { id: active.id, name: active.name, slug: active.slug, kind }
+      : null,
+  };
+}
