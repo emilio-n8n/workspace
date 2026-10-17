@@ -3,15 +3,17 @@ import { schema as coreSchema, getDb, withTransaction } from "@workspace/databas
 import {
   createLinkedFile,
   type DriveEntry,
+  driveFiles,
   rename as driveRename,
   effectiveRole,
   getEntry,
   listEntries,
+  resolveRolesForEntries,
   touchEntry,
 } from "@workspace/drive";
 import { type Actor, roleSatisfies } from "@workspace/permissions";
 import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
-import { escapeHtml, type PmNode, toHtml, toMarkdown } from "./export.ts";
+import { escapeHtml, type PmNode, toHtml, toMarkdown, toPlainText } from "./export.ts";
 import {
   type DocsComment,
   type DocsDocument,
@@ -771,4 +773,185 @@ export async function exportDocument(
     contentType: "text/html; charset=utf-8",
     body: `<!doctype html>\n<html lang="fr">\n<head>\n<meta charset="utf-8" />\n<title>${escapeHtml(document.title)}</title>\n</head>\n<body>\n${toHtml(content)}\n</body>\n</html>\n`,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Texte brut → document (agents MCP) et recherche plein texte
+// ---------------------------------------------------------------------------
+
+/**
+ * Convertit du texte brut (Markdown léger) en document : `#`, `##`, `###` en
+ * titres, lignes `- ` / `* ` en liste à puces, le reste en paragraphes (une
+ * ligne vide sépare les paragraphes, une ligne simple devient un saut de ligne).
+ */
+export function fromPlainText(text: string): PmNode {
+  const blocks: PmNode[] = [];
+  const textNode = (value: string): PmNode[] => (value ? [{ type: "text", text: value }] : []);
+  let paragraph: string[] = [];
+  let bullets: string[] = [];
+
+  const flushParagraph = () => {
+    if (paragraph.length === 0) return;
+    const content: PmNode[] = [];
+    paragraph.forEach((line, index) => {
+      if (index > 0) content.push({ type: "hardBreak" });
+      content.push(...textNode(line));
+    });
+    blocks.push({ type: "paragraph", ...(content.length > 0 ? { content } : {}) });
+    paragraph = [];
+  };
+  const flushBullets = () => {
+    if (bullets.length === 0) return;
+    blocks.push({
+      type: "bulletList",
+      content: bullets.map((item) => ({
+        type: "listItem",
+        content: [{ type: "paragraph", ...(item ? { content: textNode(item) } : {}) }],
+      })),
+    });
+    bullets = [];
+  };
+
+  for (const raw of text.replace(/\r\n?/g, "\n").split("\n")) {
+    const line = raw.trimEnd();
+    const heading = /^(#{1,3})\s+(.*)$/.exec(line);
+    const bullet = /^\s*[-*]\s+(.*)$/.exec(line);
+    if (heading?.[1] && heading[2] !== undefined) {
+      flushParagraph();
+      flushBullets();
+      blocks.push({
+        type: "heading",
+        attrs: { level: heading[1].length },
+        content: textNode(heading[2].trim()),
+      });
+    } else if (bullet?.[1] !== undefined) {
+      flushParagraph();
+      bullets.push(bullet[1].trim());
+    } else if (line.trim() === "") {
+      flushParagraph();
+      flushBullets();
+    } else {
+      flushBullets();
+      paragraph.push(line);
+    }
+  }
+  flushParagraph();
+  flushBullets();
+  return { type: "doc", content: blocks.length > 0 ? blocks : [{ type: "paragraph" }] };
+}
+
+/**
+ * Écrit du texte dans un document existant : `replace` remplace tout le
+ * contenu, `append` l'ajoute à la fin. Chaque écriture crée une nouvelle
+ * version (instantané) : l'historique permet toujours de revenir en arrière.
+ */
+export async function writeDocumentText(
+  actor: Actor,
+  fileId: string,
+  input: { text: string; mode?: "replace" | "append" },
+): Promise<{ version: number; documentId: string; updatedAt: string }> {
+  const incoming = fromPlainText(input.text);
+  let content = incoming;
+  if ((input.mode ?? "append") === "append") {
+    const current = await getDocumentByFileId(actor, fileId);
+    const existing = (current.content.content ?? []).filter(
+      (node) => !(node.type === "paragraph" && !node.content?.length),
+    );
+    content = { type: "doc", content: [...existing, ...(incoming.content ?? [])] };
+  }
+  return saveDocument(actor, fileId, { content, mode: "append" });
+}
+
+/** Résultat de recherche plein texte : document et extrait autour de la première occurrence. */
+export type DocumentTextHit = {
+  fileId: string;
+  title: string;
+  snippet: string;
+  updatedAt: string;
+};
+
+const fold = (value: string) =>
+  value
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "")
+    .toLowerCase();
+
+/**
+ * Recherche dans le CONTENU des documents (pas seulement leur titre), limitée
+ * aux documents non supprimés que l'acteur peut lire (partages hérités compris).
+ * Pré-filtre SQL insensible à la casse sur la dernière version, puis
+ * vérification exacte (sans accents) sur le texte brut et contrôle des droits.
+ */
+export async function searchDocumentsText(
+  actor: Actor,
+  input: { query: string; limit?: number },
+): Promise<DocumentTextHit[]> {
+  const query = input.query.trim();
+  if (query.length < 2) {
+    throw new DocsError("validation", "Recherche trop courte (2 caractères minimum).");
+  }
+  const limit = Math.min(Math.max(input.limit ?? 20, 1), 50);
+  const needle = fold(query);
+  const pattern = `%${query.replace(/[\\%_]/g, (char) => `\\${char}`)}%`;
+
+  const latest = db()
+    .select({
+      documentId: docsVersions.documentId,
+      version: sql<number>`max(${docsVersions.version})`.as("max_version"),
+    })
+    .from(docsVersions)
+    .groupBy(docsVersions.documentId)
+    .as("latest");
+
+  const rows = await db()
+    .select({
+      fileId: docsDocuments.fileId,
+      title: docsDocuments.title,
+      ownerId: driveFiles.ownerId,
+      content: docsVersions.content,
+      updatedAt: docsVersions.createdAt,
+    })
+    .from(docsDocuments)
+    .innerJoin(latest, eq(latest.documentId, docsDocuments.id))
+    .innerJoin(
+      docsVersions,
+      and(eq(docsVersions.documentId, docsDocuments.id), eq(docsVersions.version, latest.version)),
+    )
+    .innerJoin(driveFiles, eq(driveFiles.id, docsDocuments.fileId))
+    .where(
+      and(
+        eq(docsDocuments.orgId, actor.orgId),
+        eq(driveFiles.status, "active"),
+        sql`${driveFiles.trashedAt} is null`,
+        sql`(${docsVersions.content}::text ilike ${pattern} or ${docsDocuments.title} ilike ${pattern})`,
+      ),
+    )
+    .orderBy(desc(docsVersions.createdAt))
+    .limit(200);
+
+  const roles = await resolveRolesForEntries(
+    actor,
+    rows.map((row) => ({ id: row.fileId, ownerId: row.ownerId })),
+  );
+
+  const hits: DocumentTextHit[] = [];
+  for (const row of rows) {
+    if (!roleSatisfies(roles.get(row.fileId), "read")) continue;
+    const text = toPlainText(row.content as PmNode);
+    const index = fold(text).indexOf(needle);
+    if (index < 0 && !fold(row.title).includes(needle)) continue;
+    const start = Math.max(0, index - 60);
+    const snippet =
+      index < 0
+        ? text.slice(0, 160)
+        : `${start > 0 ? "…" : ""}${text.slice(start, index + needle.length + 100).replace(/\s+/g, " ")}…`;
+    hits.push({
+      fileId: row.fileId,
+      title: row.title,
+      snippet: snippet.trim(),
+      updatedAt: row.updatedAt.toISOString(),
+    });
+    if (hits.length >= limit) break;
+  }
+  return hits;
 }

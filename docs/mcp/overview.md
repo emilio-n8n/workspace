@@ -37,7 +37,7 @@ Agent (stdio ou HTTP) ──► apps/mcp-server ──► modules/*/service.ts �
 | `errors` | typées — jamais de détail interne au-delà du message métier |
 | `audit` | acteur, org, outil, résultat (succès **et** refus) dans `audit_events` |
 
-## Outils livrés (v3 — 29)
+## Outils livrés (v4 — 36)
 
 | Outil | Scopes | Description |
 |---|---|---|
@@ -47,7 +47,12 @@ Agent (stdio ou HTTP) ──► apps/mcp-server ──► modules/*/service.ts �
 | `files.read` | `drive:read` | Lecture d'un fichier texte (tronquée à 60 k caractères) |
 | `files.write` | `drive:write` | Création d'un fichier texte (mime allowlist, ≤ 2 Mo, quota appliqué) |
 | `files.delete` | `drive:write` | Suppression (corbeille par défaut ; définitive = propriétaire + déjà en corbeille) — **confirmation « SUPPRIMER » exigée** |
+| `files.update` | `drive:write` | Remplace le contenu d'un fichier **texte** (nouvelle version Drive, binaires et Docs refusés) |
+| `drive.create_folder` / `drive.rename` / `drive.move` | `drive:write` | Dossiers, renommage, déplacement groupé (échecs détaillés élément par élément) |
 | `docs.read` | `docs:read` | Lecture du texte d'un document (extraction plain text) |
+| `docs.create` | `docs:write` | Crée un document, contenu initial facultatif en texte / Markdown léger (`#` titres, `- ` puces) |
+| `docs.write` | `docs:write` | Ajoute à la fin (`append`, défaut) ou remplace (`replace`) — **chaque écriture crée une version restaurable** |
+| `search.fulltext` | `docs:read` et/ou `drive:read` | Recherche dans le **contenu** des documents (extrait autour de l'occurrence, insensible aux accents) + noms de fichiers ; droits hérités appliqués |
 | `docs.list_versions` | `docs:read` | Historique des versions d'un document |
 | `docs.restore_version` | `docs:write` | Restaure une version (crée une nouvelle version, auditée) |
 | `tasks.lists` / `tasks.list` | `tasks:read` | Listes accessibles avec rôle ; tâches (statut, priorité, échéance) |
@@ -64,7 +69,7 @@ Agent (stdio ou HTTP) ──► apps/mcp-server ──► modules/*/service.ts �
 
 ## Feuille de route des outils
 
-- Prochaines briques : recherche plein texte transverse, `sheets.write`, `slides.write`, outils Formulaires en écriture.
+- Prochaines briques : `sheets.write`, `slides.write`, outils Formulaires en écriture.
 - Les outils destructifs exigent toujours une confirmation littérale (principe : aucun agent ne supprime par accident).
 
 ## Sécurité et tests obligatoires

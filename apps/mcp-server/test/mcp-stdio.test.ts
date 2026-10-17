@@ -112,7 +112,7 @@ afterAll(async () => {
 });
 
 describe("serveur MCP — intégration réelle (stdio)", () => {
-  it("liste les vingt-neuf outils de la suite et répond à me.whoami avec le bon principal", async () => {
+  it("liste les trente-six outils de la suite et répond à me.whoami avec le bon principal", async () => {
     const f = await fixtures(["drive:read"]);
     const { client, transport } = await connectClient(f.token);
     try {
@@ -127,12 +127,18 @@ describe("serveur MCP — intégration réelle (stdio)", () => {
         "chat.read",
         "chat.send",
         "classroom.list",
+        "docs.create",
         "docs.list_versions",
         "docs.read",
         "docs.restore_version",
+        "docs.write",
+        "drive.create_folder",
+        "drive.move",
+        "drive.rename",
         "files.delete",
         "files.read",
         "files.search",
+        "files.update",
         "files.write",
         "forms.list",
         "forms.responses",
@@ -140,6 +146,7 @@ describe("serveur MCP — intégration réelle (stdio)", () => {
         "mail.read",
         "mail.send",
         "me.whoami",
+        "search.fulltext",
         "sheets.read",
         "sites.read",
         "slides.read",
@@ -730,6 +737,137 @@ describe("serveur MCP — tâches (lecture et création par un agent)", () => {
         to: "2026-04-02T00:00:00.000Z",
       });
       expect(remaining.some((entry) => entry.id === event.id)).toBe(false);
+    } finally {
+      await client.close();
+      await transport.close();
+    }
+  });
+  it("docs.create, docs.write (ajout puis remplacement) et docs.read : un agent rédige un document", async () => {
+    const f = await fixtures(["docs:read", "docs:write"]);
+    const { client, transport } = await connectClient(f.token);
+    try {
+      const created = await client.callTool({
+        name: "docs.create",
+        arguments: { title: "Note agent", text: "# Ordre du jour\n- Budget\n- Recrutement" },
+      });
+      expect(created.isError).toBeFalsy();
+      const { fileId } = payloadOf(created) as { fileId: string };
+
+      const appended = await client.callTool({
+        name: "docs.write",
+        arguments: { fileId, text: "Conclusion : feu vert." },
+      });
+      expect(appended.isError).toBeFalsy();
+
+      const read = await client.callTool({ name: "docs.read", arguments: { fileId } });
+      const text = payloadOf(read).text as string;
+      expect(text).toContain("Ordre du jour");
+      expect(text).toContain("Recrutement");
+      expect(text).toContain("Conclusion : feu vert.");
+
+      await client.callTool({
+        name: "docs.write",
+        arguments: { fileId, text: "Tout neuf", mode: "replace" },
+      });
+      const replaced = payloadOf(
+        await client.callTool({ name: "docs.read", arguments: { fileId } }),
+      );
+      expect(replaced.text).toBe("Tout neuf");
+
+      // Chaque écriture est une version restaurable.
+      const versions = await client.callTool({ name: "docs.list_versions", arguments: { fileId } });
+      expect(versions.isError).toBeFalsy();
+    } finally {
+      await client.close();
+      await transport.close();
+    }
+  });
+
+  it("docs.write refusé sans scope docs:write", async () => {
+    const f = await fixtures(["docs:read"]);
+    const actor = { userId: f.userId, orgId: f.orgId };
+    const { entry } = await createDocument(actor, { title: "Lecture seule" });
+    const { client, transport } = await connectClient(f.token);
+    try {
+      const denied = await client.callTool({
+        name: "docs.write",
+        arguments: { fileId: entry.id, text: "intrus" },
+      });
+      expect(denied.isError).toBe(true);
+    } finally {
+      await client.close();
+      await transport.close();
+    }
+  });
+
+  it("search.fulltext trouve un mot présent seulement dans le contenu d'un document", async () => {
+    const f = await fixtures(["docs:read", "drive:read"]);
+    const actor = { userId: f.userId, orgId: f.orgId };
+    const { entry } = await createDocument(actor, { title: "Réunion hebdo" });
+    await saveDocument(actor, entry.id, {
+      content: {
+        type: "doc",
+        content: [
+          { type: "paragraph", content: [{ type: "text", text: "Le mot-clé zéphyrin est ici." }] },
+        ],
+      },
+      mode: "append",
+    });
+    await createDocument(actor, { title: "Sans rapport" });
+
+    const { client, transport } = await connectClient(f.token);
+    try {
+      const result = await client.callTool({
+        name: "search.fulltext",
+        arguments: { query: "zéphyrin" },
+      });
+      expect(result.isError).toBeFalsy();
+      const { documents } = payloadOf(result) as {
+        documents: { fileId: string; snippet: string }[];
+      };
+      expect(documents.map((hit) => hit.fileId)).toEqual([entry.id]);
+      expect(documents[0]?.snippet).toContain("zéphyrin");
+    } finally {
+      await client.close();
+      await transport.close();
+    }
+  });
+
+  it("drive.create_folder, drive.move, drive.rename et files.update", async () => {
+    const f = await fixtures(["drive:read", "drive:write"]);
+    const actor = { userId: f.userId, orgId: f.orgId };
+    const file = await createTextFile(actor, { name: "brouillon.txt", content: "v1" });
+    const { client, transport } = await connectClient(f.token);
+    try {
+      const folder = payloadOf(
+        await client.callTool({ name: "drive.create_folder", arguments: { name: "Archives" } }),
+      ) as { id: string };
+
+      const moved = payloadOf(
+        await client.callTool({
+          name: "drive.move",
+          arguments: { entryIds: [file.id], targetParentId: folder.id },
+        }),
+      ) as { moved: string[] };
+      expect(moved.moved).toEqual([file.id]);
+
+      const renamed = payloadOf(
+        await client.callTool({
+          name: "drive.rename",
+          arguments: { entryId: file.id, name: "final.txt" },
+        }),
+      );
+      expect(renamed.name).toBe("final.txt");
+
+      const updated = await client.callTool({
+        name: "files.update",
+        arguments: { fileId: file.id, content: "v2 rédigée par l'agent" },
+      });
+      expect(updated.isError).toBeFalsy();
+      const read = payloadOf(
+        await client.callTool({ name: "files.read", arguments: { fileId: file.id } }),
+      );
+      expect(read.text).toBe("v2 rédigée par l'agent");
     } finally {
       await client.close();
       await transport.close();

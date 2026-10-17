@@ -1,7 +1,7 @@
 # ROADMAP — Workspace
 
 > Source de vérité de l'avancement. Mise à jour à chaque jalon livré et vérifié.
-> Dernière mise à jour : 2026-10-15.
+> Dernière mise à jour : 2026-10-17.
 
 **Légende** : ✅ terminé (vérifié) · ▶ en cours · ○ à venir · ⛔ bloqué
 
@@ -46,7 +46,7 @@ Prouver de bout en bout : authentification → stockage → permissions → édi
 - [x] Sheets : moteur de formules natif (SUM/AVG/MIN/MAX/COUNT, erreurs typées, plages bornées) — **ADR-0014** ; Univer reste candidat pour le collaboratif — tests moteur + service
 - [x] Slides : zones de texte et formes, glisser-déposer, révision optimiste, mode présentation — tests service
 - [ ] Collaboration temps réel (Yjs/Hocuspocus) — chantier dédié, non bloquant
-- [x] MCP étendu : **20 outils** (calendar, forms, sheets, slides, chat, mail, classroom, sites ajoutés) ; écritures Docs/Drive et recherche plein texte restent à venir
+- [x] MCP étendu : **36 outils** (calendar, forms, sheets, slides, chat, mail, classroom, sites) ; écritures Docs/Drive (`docs.create`, `docs.write`, `files.update`, `drive.create_folder/rename/move`) et recherche plein texte dans le contenu des documents (`search.fulltext`) livrées en v2.1
 
 ## Phase 4 — Communication ○
 
@@ -75,7 +75,15 @@ Toutes les applications au niveau de l'éditeur Slides : barre d'outils unique (
 - [x] Pages publiques : landing refaite (héros éditorial, fenêtres produit reconstituées, scène spatiale — les écrans arrivent du fond, champ d'étoiles 3D continu), logo `BrandMark` en SVG (carreau dégradé encre/vert + W géométrique), dialogues centrés
 - [x] Multi-comptes : type d'espace à l'inscription (**personnel / entreprise / éducation**) stocké en méta d'organisation (sans migration, parité ascendante), applications filtrées par audience (Classroom, Sites, Admin), création de **comptes gérés** dans Admin (compte créé via better-auth + mot de passe temporaire affiché une seule fois)
 - [x] Qualité : Biome propre sur 884 fichiers (suppressions ciblées justifiées), tests unitaires et E2E conservés (parcours mis à jour pour l'édition en place)
-- [ ] Suite : filtrer le rail d'applications dans toutes les apps (aujourd'hui seul l'accueil filtre — point d'accroche `getAppUrls(kind)` prêt), garde serveur interdisant les comptes gérés sur un espace personnel
+- [x] Rail d'applications filtré par type d'espace dans les 14 apps, écran « indisponible » explicite (Sites ; Classroom reste ouvert aux espaces personnels pour qu'un élève rejoigne un cours), garde serveur interdisant les comptes gérés sur un espace personnel (v2, PR #6)
+
+## Upgrade v2 / v2.1 (2026-10-17)
+
+- [x] **v2 (PR #6, en production)** : CI de nouveau verte (E2E Chat : Devtools masqués en E2E), Tasks sans `<form>` imbriqué, agenda par défaut Calendar idempotent, ⌘K qui ouvre le bon éditeur + tri français, page Recherche réparée (`pg` n'est plus embarqué côté client), Classroom accessible aux élèves en espace personnel, vitest 5, nodemailer 10.1, actions GitHub v6/v7, +73 tests unitaires (UI, accueil)
+- [x] E2E locale reproductible sur machine modeste : builds de prod (`.output/server`) des 14 apps lancés en parallèle, 36/36 verts
+- [x] **v2.1** : MCP en écriture Docs/Drive + recherche plein texte, Docs « Document vierge » en un clic, parcours exploratoire Playwright des 14 apps
+- [ ] Recherche plein texte insensible aux accents côté SQL (`unaccent` → migration additive à prévoir) ; aujourd'hui le pré-filtre SQL est sensible aux accents, la vérification finale ne l'est pas
+- [ ] `sheets.write` / `slides.write` côté MCP
 
 ## Dépendances structurantes
 
