@@ -16,26 +16,40 @@ export const Route = createFileRoute("/_app/")({ component: DocsIndexPage });
 
 type DocItem = { id: string; name: string; updatedAt: string };
 
+const UNTITLED = "Document sans titre";
+
 function DocsIndexPage() {
   const router = useRouter();
   const [newTitle, setNewTitle] = useState("");
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  async function create(title: string, { untitled }: { untitled: boolean }) {
+    setCreating(true);
+    setError(null);
+    // Un nom est unique par dossier : pour un document vierge, on numérote
+    // (« Document sans titre (2) », …) au lieu d'échouer comme avant.
+    const attempts = untitled ? 20 : 1;
+    for (let index = 1; index <= attempts; index++) {
+      const candidate = index === 1 ? title : `${title} (${index})`;
+      try {
+        const created = await createDocumentFn({
+          data: { parentFolderId: null, title: candidate },
+        });
+        void router.navigate({ to: "/doc/$fileId", params: { fileId: created.fileId } });
+        return;
+      } catch {
+        // Conflit de nom probable : essai suivant (document vierge) ou message.
+      }
+    }
+    setError("Création impossible : un document portant ce titre existe déjà à la racine.");
+    setCreating(false);
+  }
+
   async function onCreate(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const title = newTitle.trim();
-    if (title.length === 0) return;
-
-    setCreating(true);
-    setError(null);
-    try {
-      const created = await createDocumentFn({ data: { parentFolderId: null, title } });
-      void router.navigate({ to: "/doc/$fileId", params: { fileId: created.fileId } });
-    } catch {
-      setError("Création impossible : un document portant ce titre existe peut-être déjà.");
-      setCreating(false);
-    }
+    await create(title || UNTITLED, { untitled: title.length === 0 });
   }
 
   return (
@@ -53,9 +67,21 @@ function DocsIndexPage() {
       <Card>
         <CardHeader>
           <CardTitle className="text-base">Nouveau document</CardTitle>
-          <CardDescription>Le titre deviendra le nom du fichier dans le Drive.</CardDescription>
+          <CardDescription>
+            Commencez tout de suite avec un document vierge, ou donnez-lui un titre : il deviendra
+            le nom du fichier dans le Drive (renommable à tout moment).
+          </CardDescription>
         </CardHeader>
-        <CardContent>
+        <CardContent className="flex flex-col gap-4">
+          <div>
+            <Button
+              type="button"
+              loading={creating}
+              onClick={() => void create(UNTITLED, { untitled: true })}
+            >
+              Document vierge
+            </Button>
+          </div>
           <form onSubmit={onCreate} method="post" className="flex max-w-xl items-end gap-3">
             <div className="flex flex-1 flex-col gap-2">
               <label htmlFor="doc-title" className="text-sm font-medium">
@@ -65,16 +91,16 @@ function DocsIndexPage() {
                 id="doc-title"
                 value={newTitle}
                 onChange={(event) => setNewTitle(event.target.value)}
-                placeholder="Compte rendu de réunion"
+                placeholder="Compte rendu de réunion (facultatif)"
                 maxLength={255}
               />
             </div>
-            <Button type="submit" loading={creating} disabled={newTitle.trim().length === 0}>
+            <Button type="submit" variant="outline" loading={creating}>
               Créer
             </Button>
           </form>
           {error ? (
-            <p role="alert" className="mt-3 text-sm text-destructive">
+            <p role="alert" className="text-sm text-destructive">
               {error}
             </p>
           ) : null}

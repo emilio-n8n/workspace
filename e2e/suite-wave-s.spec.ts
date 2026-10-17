@@ -84,3 +84,15 @@ test("notifications : la cloche existe sur le lanceur", async ({ page }) => {
   await page.keyboard.press("Escape");
   await expect(panneau).toBeHidden({ timeout: 10_000 });
 });
+
+test("docs : document vierge en un clic, numéroté s'il existe déjà", async ({ page }) => {
+  await signupNewUser(page, "Vierge E2E", uniqueEmail("vierge"));
+  for (const expected of ["Document sans titre", "Document sans titre (2)"]) {
+    await openApp(page, `${DOCS}/`);
+    await page.getByRole("button", { name: "Document vierge" }).click();
+    await expect(page).toHaveURL(/localhost:3002\/doc\//, { timeout: 25_000 });
+    await expect(page.getByRole("textbox", { name: "Titre du document" })).toHaveValue(expected, {
+      timeout: 15_000,
+    });
+  }
+});
