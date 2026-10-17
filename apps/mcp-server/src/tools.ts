@@ -22,6 +22,7 @@ import { and, desc, eq } from "drizzle-orm";
 import { z } from "zod";
 import { errorResult, requireScope, withAudit } from "./audit.ts";
 import { registerSuiteTools } from "./tools-suite.ts";
+import { registerWriteTools } from "./tools-write.ts";
 
 /**
  * Outils MCP — mêmes services que l'application web, mêmes règles de
@@ -678,4 +679,5 @@ export function registerTools(server: McpServer, principal: TokenPrincipal): voi
   );
 
   registerSuiteTools(server, principal);
+  registerWriteTools(server, principal);
 }
