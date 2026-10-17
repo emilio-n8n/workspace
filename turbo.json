@@ -16,7 +16,13 @@
     "test": {}
   },
   "envMode": "loose",
-  "globalPassThroughEnv": ["DEMO_SEED_ALLOW_REMOTE"],
+  "globalPassThroughEnv": [
+    "DEMO_SEED_ALLOW_REMOTE",
+    "PLAYWRIGHT_CHROMIUM_PATH",
+    "E2E_APPS",
+    "CI",
+    "VITE_DEVTOOLS"
+  ],
   "concurrency": "20",
   "globalEnv": [
     "DATABASE_URL",

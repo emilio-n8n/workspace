@@ -544,17 +544,19 @@ export function AdminView() {
                 >
                   Ajouter
                 </Button>
-                <Button
-                  size="sm"
-                  onClick={() => {
-                    setManagedName("");
-                    setManagedEmail("");
-                    setManagedPassword(null);
-                    setManagedOpen(true);
-                  }}
-                >
-                  Créer un compte géré
-                </Button>
+                {overview?.managedAccountsAllowed === false ? null : (
+                  <Button
+                    size="sm"
+                    onClick={() => {
+                      setManagedName("");
+                      setManagedEmail("");
+                      setManagedPassword(null);
+                      setManagedOpen(true);
+                    }}
+                  >
+                    Créer un compte géré
+                  </Button>
+                )}
               </div>
 
               {managedOpen ? (

@@ -1,7 +1,7 @@
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { recordAudit } from "@workspace/audit";
 import { getServerEnv } from "@workspace/config";
-import { schema as core, getDb, withTransaction } from "@workspace/database";
+import { schema as core, getDb, sortFr, withTransaction } from "@workspace/database";
 import type { Actor } from "@workspace/permissions";
 import { getStorage } from "@workspace/storage";
 import { and, asc, desc, eq, ilike, inArray, isNull, or, sql } from "drizzle-orm";
@@ -917,7 +917,7 @@ export async function listLabels(actor: Actor): Promise<MailLabel[]> {
     .from(mailLabels)
     .where(eq(mailLabels.userId, actor.userId))
     .orderBy(asc(mailLabels.name));
-  return rows.map(labelView);
+  return sortFr(rows, (row) => row.name).map(labelView);
 }
 
 /** Nombre de messages par libellé (total, puis non lus de la boîte). */

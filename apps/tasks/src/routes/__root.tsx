@@ -94,7 +94,9 @@ function RootDocument({ children }: { children: ReactNode }) {
       </head>
       <body className="bg-background text-foreground antialiased">
         {children}
-        {import.meta.env.DEV ? (
+        {/* Outils de dev masqués en E2E (VITE_DEVTOOLS=off) : le bouton flottant
+            recouvrait « Envoyer » du Chat et faisait échouer les clics. */}
+        {import.meta.env.DEV && import.meta.env.VITE_DEVTOOLS !== "off" ? (
           <TanStackDevtools
             config={{ position: "bottom-right" }}
             plugins={[{ name: "TanStack Router", render: <TanStackRouterDevtoolsPanel /> }]}

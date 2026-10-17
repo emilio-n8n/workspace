@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { recordAudit } from "@workspace/audit";
-import { schema as core, type Database, getDb, withTransaction } from "@workspace/database";
+import { schema as core, type Database, getDb, sortFr, withTransaction } from "@workspace/database";
 import type { Actor } from "@workspace/permissions";
 import { getStorage } from "@workspace/storage";
 import { and, asc, desc, eq, gt, inArray, isNull, lt, ne, sql } from "drizzle-orm";
@@ -365,7 +365,7 @@ export async function listChannelMembers(
     .innerJoin(chatChannels, eq(chatChannels.id, chatMembers.channelId))
     .where(eq(chatMembers.channelId, channelId))
     .orderBy(asc(core.user.name));
-  return rows.map((row) => ({
+  return sortFr(rows, (row) => row.name).map((row) => ({
     id: row.id,
     name: row.name,
     email: row.email,

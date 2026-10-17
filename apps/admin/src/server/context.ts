@@ -1,8 +1,10 @@
 import { createServerFn } from "@tanstack/react-start";
 import { getRequest } from "@tanstack/react-start/server";
 import {
+  type ActiveWorkspace,
   auth,
   ensurePersonalOrganization,
+  getActiveWorkspace,
   getSession,
   listMyOrganizations,
   requireActor,
@@ -15,7 +17,7 @@ import {
   markAllNotificationsRead,
   markNotificationRead,
 } from "@workspace/notifications";
-import { searchEverything } from "@workspace/search";
+import { searchEverything, searchResultHref } from "@workspace/search";
 import { eq } from "drizzle-orm";
 import { z } from "zod";
 
@@ -25,11 +27,7 @@ export type SessionInfo = {
   name: string;
 } | null;
 
-export type WorkspaceInfo = {
-  user: { id: string; name: string; email: string };
-  organizations: { id: string; name: string }[];
-  activeOrganization: { id: string; name: string; slug: string } | null;
-} | null;
+export type WorkspaceInfo = ActiveWorkspace | null;
 
 /** Session courante (null si non connecté). */
 export const getSessionFn = createServerFn({ method: "GET" }).handler(
@@ -45,23 +43,12 @@ export const getSessionFn = createServerFn({ method: "GET" }).handler(
   },
 );
 
-/** Contexte de l'espace utilisateur (organisations + active). */
+/**
+ * Contexte de l'espace utilisateur (organisations + active, avec son type de
+ * compte : il filtre le rail d'applications de la même façon dans toutes les apps).
+ */
 export const getWorkspaceFn = createServerFn({ method: "GET" }).handler(
-  async (): Promise<WorkspaceInfo> => {
-    const request = getRequest();
-    const session = await getSession(request.headers);
-    if (!session) return null;
-
-    const orgs = await listMyOrganizations(request.headers);
-    const activeId = session.session.activeOrganizationId ?? orgs[0]?.id ?? null;
-    const active = orgs.find((org) => org.id === activeId) ?? null;
-
-    return {
-      user: { id: session.user.id, name: session.user.name, email: session.user.email },
-      organizations: orgs.map((org) => ({ id: org.id, name: org.name })),
-      activeOrganization: active ? { id: active.id, name: active.name, slug: active.slug } : null,
-    };
-  },
+  async (): Promise<WorkspaceInfo> => getActiveWorkspace(getRequest().headers),
 );
 
 /** URLs publiques des applications de la suite (calculées côté serveur). */
@@ -118,14 +105,7 @@ export const searchFn = createServerFn({ method: "GET" })
       id: r.id,
       title: r.title,
       subtitle: r.subtitle,
-      href:
-        r.appId === "drive"
-          ? urls.drive
-          : r.appId === "forms"
-            ? `${urls.forms}/form/${r.id}`
-            : r.appId === "tasks"
-              ? urls.tasks
-              : `${urls.calendar}`,
+      href: searchResultHref(r, urls),
     }));
   });
 

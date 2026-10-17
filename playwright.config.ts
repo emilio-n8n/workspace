@@ -5,6 +5,30 @@ import { defineConfig, devices } from "@playwright/test";
  * 14 applications sur localhost:3000-3013. Le SSO fonctionne sans
  * configuration : les cookies de session ignorent les ports.
  */
+/** Applications de la suite, dans l'ordre des ports 3000-3013. */
+const APPS = [
+  "home",
+  "drive",
+  "docs",
+  "tasks",
+  "calendar",
+  "forms",
+  "sheets",
+  "slides",
+  "mail",
+  "chat",
+  "meet",
+  "sites",
+  "classroom",
+  "admin",
+] as const;
+
+/**
+ * Sous-ensemble facultatif (machines à mémoire limitée) :
+ * E2E_APPS=home,chat pnpm test:e2e e2e/suite-phase4-5.spec.ts
+ */
+const ONLY = process.env.E2E_APPS ? new Set(process.env.E2E_APPS.split(",")) : null;
+
 export default defineConfig({
   testDir: "./e2e",
   outputDir: "./test-results",
@@ -15,97 +39,25 @@ export default defineConfig({
   expect: { timeout: 10_000 },
   reporter: [["list"]],
   use: {
+    // Chromium système facultatif (ex. machines ARM sans build Playwright) :
+    // PLAYWRIGHT_CHROMIUM_PATH=/usr/bin/chromium pnpm test:e2e
+    ...(process.env.PLAYWRIGHT_CHROMIUM_PATH
+      ? { launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROMIUM_PATH } }
+      : {}),
     baseURL: "http://localhost:3000",
     trace: "retain-on-failure",
     screenshot: "only-on-failure",
     locale: "fr-FR",
     timezoneId: "Europe/Paris",
   },
-  webServer: [
-    {
-      command: "pnpm --filter @app/home dev",
-      url: "http://localhost:3000",
-      reuseExistingServer: !process.env.CI,
-      timeout: 120_000,
-    },
-    {
-      command: "pnpm --filter @app/drive dev",
-      url: "http://localhost:3001",
-      reuseExistingServer: !process.env.CI,
-      timeout: 120_000,
-    },
-    {
-      command: "pnpm --filter @app/docs dev",
-      url: "http://localhost:3002",
-      reuseExistingServer: !process.env.CI,
-      timeout: 120_000,
-    },
-    {
-      command: "pnpm --filter @app/tasks dev",
-      url: "http://localhost:3003",
-      reuseExistingServer: !process.env.CI,
-      timeout: 120_000,
-    },
-    {
-      command: "pnpm --filter @app/calendar dev",
-      url: "http://localhost:3004",
-      reuseExistingServer: !process.env.CI,
-      timeout: 120_000,
-    },
-    {
-      command: "pnpm --filter @app/forms dev",
-      url: "http://localhost:3005",
-      reuseExistingServer: !process.env.CI,
-      timeout: 120_000,
-    },
-    {
-      command: "pnpm --filter @app/sheets dev",
-      url: "http://localhost:3006",
-      reuseExistingServer: !process.env.CI,
-      timeout: 120_000,
-    },
-    {
-      command: "pnpm --filter @app/slides dev",
-      url: "http://localhost:3007",
-      reuseExistingServer: !process.env.CI,
-      timeout: 120_000,
-    },
-    {
-      command: "pnpm --filter @app/mail dev",
-      url: "http://localhost:3008",
-      reuseExistingServer: !process.env.CI,
-      timeout: 120_000,
-    },
-    {
-      command: "pnpm --filter @app/chat dev",
-      url: "http://localhost:3009",
-      reuseExistingServer: !process.env.CI,
-      timeout: 120_000,
-    },
-    {
-      command: "pnpm --filter @app/meet dev",
-      url: "http://localhost:3010",
-      reuseExistingServer: !process.env.CI,
-      timeout: 120_000,
-    },
-    {
-      command: "pnpm --filter @app/sites dev",
-      url: "http://localhost:3011",
-      reuseExistingServer: !process.env.CI,
-      timeout: 120_000,
-    },
-    {
-      command: "pnpm --filter @app/classroom dev",
-      url: "http://localhost:3012",
-      reuseExistingServer: !process.env.CI,
-      timeout: 120_000,
-    },
-    {
-      command: "pnpm --filter @app/admin dev",
-      url: "http://localhost:3013",
-      reuseExistingServer: !process.env.CI,
-      timeout: 120_000,
-    },
-  ],
+  webServer: APPS.filter((app) => !ONLY || ONLY.has(app)).map((app) => ({
+    command: `pnpm --filter @app/${app} dev`,
+    url: `http://localhost:${3000 + APPS.indexOf(app)}`,
+    reuseExistingServer: !process.env.CI,
+    timeout: 120_000,
+    // Sans le bouton flottant des TanStack Devtools, qui interceptait les
+    // clics en bas à droite (cause réelle de l'échec du parcours Chat).
+    env: { VITE_DEVTOOLS: "off" },
+  })),
   projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
 });

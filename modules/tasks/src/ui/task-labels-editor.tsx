@@ -1,5 +1,5 @@
 import { Button, cn, Input, Label } from "@workspace/ui";
-import { type FormEvent, useState } from "react";
+import { useState } from "react";
 import type { TaskLabelColor } from "../schema.ts";
 import type { TaskLabelView } from "../server.ts";
 import { LABEL_COLOR_LABELS, labelDotClass, TASK_LABEL_COLOR_VALUES } from "./task-visuals.tsx";
@@ -31,8 +31,10 @@ export function TaskLabelsEditor({
   const [creating, setCreating] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
 
-  async function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  // Pas de <form> ici : ce bloc vit dans le formulaire d'édition de la tâche
+  // (formulaires imbriqués interdits en HTML → avertissement d'hydratation).
+  async function submit(event?: { preventDefault: () => void }) {
+    event?.preventDefault();
     const clean = name.trim();
     if (clean.length === 0 || creating) return;
 
@@ -85,18 +87,20 @@ export function TaskLabelsEditor({
         </ul>
       )}
 
-      <form
-        onSubmit={submit}
-        method="post"
-        aria-busy={creating || undefined}
-        className="flex flex-wrap items-end gap-2"
-      >
+      <div aria-busy={creating || undefined} className="flex flex-wrap items-end gap-2">
         <div className="flex min-w-40 flex-1 flex-col gap-1.5">
           <Label htmlFor="new-label-name" className="text-xs">
             Nouvelle étiquette
           </Label>
           <Input
             id="new-label-name"
+            onKeyDown={(event) => {
+              // Entrée ajoute l'élément sans soumettre le formulaire parent.
+              if (event.key === "Enter") {
+                event.preventDefault();
+                void submit();
+              }
+            }}
             value={name}
             onChange={(event) => setName(event.target.value)}
             placeholder="Urgent"
@@ -122,10 +126,16 @@ export function TaskLabelsEditor({
             ))}
           </select>
         </div>
-        <Button type="submit" size="sm" loading={creating} disabled={name.trim().length === 0}>
+        <Button
+          type="button"
+          onClick={() => void submit()}
+          size="sm"
+          loading={creating}
+          disabled={name.trim().length === 0}
+        >
           Ajouter
         </Button>
-      </form>
+      </div>
 
       {message ? (
         <p role="status" className="text-xs text-muted-foreground">

@@ -79,6 +79,7 @@ export {
 } from "./shell/command-palette.tsx";
 export {
   type AccountKind,
+  isAppAvailable,
   type ResolvedSuiteApp,
   resolveSuiteApps,
   SUITE_APPS,

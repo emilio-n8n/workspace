@@ -10,6 +10,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   AdminError,
   addMemberByEmail,
+  assertManagedAccountAllowed,
   eraseUserAccount,
   exportUserData,
   getOverview,
@@ -706,5 +707,51 @@ describe("admin — centre de conformité (RGPD)", () => {
         metadata: { targetUserId: f.simpleUser },
       });
     }
+  });
+});
+
+describe("admin — comptes gérés (garde serveur)", () => {
+  let f: Fixtures;
+  beforeEach(async () => {
+    f = await createFixtures();
+  });
+  afterEach(async () => {
+    await cleanup(f);
+  });
+
+  const setKind = (kind: string | null) =>
+    getDb()
+      .update(organization)
+      .set({ metadata: kind ? JSON.stringify({ kind }) : null })
+      .where(eq(organization.id, f.orgId));
+
+  it("autorise un admin d'un espace entreprise avec une adresse libre", async () => {
+    await setKind("business");
+    await expect(assertManagedAccountAllowed(f.actorAdmin, " Nouveau@Exemple.org ")).resolves.toBe(
+      "nouveau@exemple.org",
+    );
+    expect((await getOverview(f.actorAdmin)).managedAccountsAllowed).toBe(true);
+  });
+
+  it("refuse sur un espace personnel", async () => {
+    await setKind("personal");
+    await expect(
+      assertManagedAccountAllowed(f.actorOwner, "libre@exemple.org"),
+    ).rejects.toMatchObject({ code: "forbidden" });
+    expect((await getOverview(f.actorOwner)).managedAccountsAllowed).toBe(false);
+  });
+
+  it("refuse un simple membre avant toute création de compte", async () => {
+    await setKind("education");
+    await expect(
+      assertManagedAccountAllowed(f.actorSimple, "libre@exemple.org"),
+    ).rejects.toMatchObject({ code: "forbidden" });
+  });
+
+  it("refuse une adresse déjà utilisée", async () => {
+    await setKind(null);
+    await expect(
+      assertManagedAccountAllowed(f.actorAdmin, f.outsiderEmail.toUpperCase()),
+    ).rejects.toMatchObject({ code: "conflict" });
   });
 });

@@ -464,6 +464,18 @@ export async function createCalendar(
   if (name.length < 1 || name.length > 120) {
     throw new CalendarError("validation", "Le nom doit contenir entre 1 et 120 caractères.");
   }
+  if (input.shared) {
+    // L'index unique (org, propriétaire, nom) ne couvre pas les agendas
+    // partagés (propriétaire NULL : les NULL sont distincts en SQL).
+    const [duplicate] = await db()
+      .select({ id: calendars.id })
+      .from(calendars)
+      .where(
+        and(eq(calendars.orgId, actor.orgId), isNull(calendars.ownerId), eq(calendars.name, name)),
+      )
+      .limit(1);
+    if (duplicate) throw new CalendarError("conflict", "Un agenda porte déjà ce nom.");
+  }
   let created: CalendarRow | undefined;
   try {
     [created] = await db()

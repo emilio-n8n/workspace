@@ -4,6 +4,9 @@ import { getRequest } from "@tanstack/react-start/server";
 import { requireActor } from "@workspace/auth";
 import type { SuiteAppKey } from "@workspace/config";
 import { type SearchResult, searchEverything } from "@workspace/search";
+// Sous-chemin pur : importer `searchResultHref` depuis la racine embarquait
+// `pg` (via les services) dans le bundle client → « Buffer is not defined ».
+import { searchResultHref } from "@workspace/search/href";
 import {
   Alert,
   EmptyState,
@@ -57,18 +60,9 @@ const KIND_ICONS: Record<SearchResult["kind"], typeof IconSearch> = {
   event: IconCalendar,
 };
 
-/** Cible de navigation inter-applications d'un résultat. */
+/** Cible de navigation inter-applications d'un résultat (éditeur direct). */
 function hrefFor(result: SearchResult, urls: Record<SuiteAppKey, string>): string {
-  switch (result.appId) {
-    case "drive":
-      return urls.drive;
-    case "forms":
-      return `${urls.forms}/form/${result.id}`;
-    case "tasks":
-      return `${urls.tasks}/`;
-    case "calendar":
-      return urls.calendar;
-  }
+  return searchResultHref(result, urls);
 }
 
 function ResultRow({

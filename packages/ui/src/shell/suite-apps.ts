@@ -169,7 +169,9 @@ export const SUITE_APPS: SuiteAppDefinition[] = [
     phase: 5,
     shipped: true,
     toneClass: "text-app-classroom",
-    audiences: ["education"],
+    // Un élève rejoint un cours depuis son espace personnel (code d'accès) :
+    // Classroom doit y rester accessible, pas seulement aux établissements.
+    audiences: ["personal", "education"],
     Icon: IconGraduation,
   },
   {
@@ -202,6 +204,12 @@ export function resolveSuiteApps(
   return SUITE_APPS.filter((app) => !kind || !app.audiences || app.audiences.includes(kind)).map(
     (app) => ({ ...app, href: urls[app.id] }),
   );
+}
+
+/** Une application est-elle proposée pour ce type d'espace ? (type inconnu : oui) */
+export function isAppAvailable(id: SuiteAppId, kind?: AccountKind): boolean {
+  const app = SUITE_APPS.find((candidate) => candidate.id === id);
+  return !kind || !app?.audiences || app.audiences.includes(kind);
 }
 
 export function shippedApps(apps: ResolvedSuiteApp[]): ResolvedSuiteApp[] {

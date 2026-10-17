@@ -1,13 +1,15 @@
+export { type AccountKind, allowsManagedAccounts, parseAccountKind } from "./account-kind.ts";
 export { isWorkspaceScope, WORKSPACE_SCOPES, type WorkspaceScope } from "./scopes.ts";
 export {
-  type AccountKind,
+  type ActiveWorkspace,
   type Auth,
   auth,
   ensurePersonalOrganization,
+  getActiveWorkspace,
+  getOrganizationKind,
   getSession,
   listMyOrganizations,
   NoOrganizationError,
-  parseAccountKind,
   requireActor,
   requireActorContext,
   UnauthorizedError,

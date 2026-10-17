@@ -4,6 +4,13 @@ import { listForms } from "@workspace/forms";
 import type { Actor } from "@workspace/permissions";
 import { listLists, listTasks } from "@workspace/tasks";
 
+export {
+  EDITOR_ROUTES,
+  type SearchHrefInput,
+  type SearchHrefUrls,
+  searchResultHref,
+} from "./href.ts";
+
 /**
  * Recherche globale de la suite.
  *
@@ -20,6 +27,9 @@ export type SearchResult = {
   title: string;
   subtitle: string;
   appId: "drive" | "tasks" | "forms" | "calendar";
+  /** Fichiers Drive : type MIME et dossier, pour ouvrir le bon éditeur. */
+  mimeType?: string | null;
+  isFolder?: boolean;
 };
 
 export type SearchErrorCode = "validation";
@@ -99,6 +109,8 @@ async function searchFiles(actor: Actor, query: string, limit: number): Promise<
       title: entry.name,
       subtitle: mimeLabel(entry),
       appId: "drive",
+      mimeType: entry.mimeType,
+      isFolder: entry.kind === "folder",
     };
   });
 }

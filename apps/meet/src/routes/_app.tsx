@@ -124,7 +124,7 @@ function AppLayout() {
   return (
     <AppShell
       activeAppId={"meet" as SuiteAppId}
-      apps={resolveSuiteApps(urls)}
+      apps={resolveSuiteApps(urls, workspace.activeOrganization?.kind)}
       search={async (query) => await searchFn({ data: { query } })}
       notifications={{
         unreadCount: notifications.unreadCount,

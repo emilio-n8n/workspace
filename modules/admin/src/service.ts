@@ -1,6 +1,7 @@
 import { recordAudit } from "@workspace/audit";
+import { allowsManagedAccounts, parseAccountKind } from "@workspace/auth/account-kind";
 import { classroomAssignments, classroomCourses, classroomSubmissions } from "@workspace/classroom";
-import { schema as core, getDb } from "@workspace/database";
+import { schema as core, getDb, sortFr } from "@workspace/database";
 import { docsComments, docsDocuments } from "@workspace/docs";
 import { driveFiles } from "@workspace/drive";
 import type { Actor } from "@workspace/permissions";
@@ -46,6 +47,8 @@ export type OrgOverview = {
   usedBytes: number;
   quotaBytes: number | null;
   auditCount: number;
+  /** Comptes gérés autorisés (faux sur un espace personnel). */
+  managedAccountsAllowed: boolean;
 };
 
 export type AuditEntry = {
@@ -131,7 +134,7 @@ export async function listMembers(actor: Actor): Promise<MemberFull[]> {
     .innerJoin(core.user, eq(core.user.id, core.member.userId))
     .where(eq(core.member.organizationId, actor.orgId))
     .orderBy(asc(core.user.name));
-  return rows.map((row) => ({
+  return sortFr(rows, (row) => row.name).map((row) => ({
     userId: row.userId,
     name: row.name,
     email: row.email,
@@ -396,6 +399,7 @@ export async function getOverview(actor: Actor): Promise<OrgOverview> {
       id: core.organization.id,
       name: core.organization.name,
       slug: core.organization.slug,
+      metadata: core.organization.metadata,
     })
     .from(core.organization)
     .where(eq(core.organization.id, actor.orgId))
@@ -427,14 +431,53 @@ export async function getOverview(actor: Actor): Promise<OrgOverview> {
     .where(eq(core.auditEvents.orgId, actor.orgId));
 
   return {
-    org,
+    org: { id: org.id, name: org.name, slug: org.slug },
     actorUserId: actor.userId,
     memberCount: members?.value ?? 0,
     fileCount: files?.count ?? 0,
     usedBytes: files?.bytes ?? 0,
     quotaBytes: settings?.quota ?? null,
     auditCount: audit?.value ?? 0,
+    managedAccountsAllowed: allowsManagedAccounts(parseAccountKind(org.metadata)),
   };
+}
+
+/**
+ * Pré-contrôle d'un compte géré, AVANT toute création de compte : rôle
+ * administrateur, espace non personnel, adresse valide et libre. Sans lui, un
+ * simple membre (ou un espace personnel) pouvait créer un compte orphelin
+ * avant que l'ajout à l'organisation ne soit refusé.
+ */
+export async function assertManagedAccountAllowed(actor: Actor, email: string): Promise<string> {
+  await requireAdmin(actor);
+  const [org] = await db()
+    .select({ metadata: core.organization.metadata })
+    .from(core.organization)
+    .where(eq(core.organization.id, actor.orgId))
+    .limit(1);
+  if (!org) throw new AdminError("not_found", "Organisation introuvable.");
+  if (!allowsManagedAccounts(parseAccountKind(org.metadata))) {
+    throw new AdminError(
+      "forbidden",
+      "Les comptes gérés sont réservés aux espaces entreprise et éducation.",
+    );
+  }
+  const clean = email.trim().toLowerCase();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(clean)) {
+    throw new AdminError("validation", "Adresse e-mail invalide.");
+  }
+  const [existing] = await db()
+    .select({ id: core.user.id })
+    .from(core.user)
+    .where(sql`lower(${core.user.email}) = ${clean}`)
+    .limit(1);
+  if (existing) {
+    throw new AdminError(
+      "conflict",
+      "Un compte existe déjà avec cette adresse — ajoutez-le plutôt comme membre.",
+    );
+  }
+  return clean;
 }
 
 export async function updateQuota(actor: Actor, quotaBytes: number | null): Promise<void> {
