@@ -123,3 +123,34 @@ export function filmstripOptionLabel(input: {
 export function reorderAnnouncement(from: number, to: number): string {
   return `Diapositive ${from + 1} déplacée en position ${to + 1}.`;
 }
+
+/**
+ * Navigation au clavier dans la trieuse (grille de vignettes) : flèches
+ * gauche/droite d'une vignette, haut/bas d'une rangée, Début/Fin. Avec Alt,
+ * la diapositive est déplacée au lieu de la sélection.
+ */
+export function sorterKeyAction(input: {
+  key: string;
+  altKey: boolean;
+  current: number;
+  count: number;
+  columns: number;
+}): FilmstripKeyAction | null {
+  const { key, altKey, current, count } = input;
+  const columns = Math.max(1, Math.floor(input.columns));
+  if (count === 0) return null;
+  const steps: Record<string, number> = {
+    ArrowLeft: -1,
+    ArrowRight: 1,
+    ArrowUp: -columns,
+    ArrowDown: columns,
+  };
+  let target: number | null = null;
+  if (key in steps) target = current + (steps[key] ?? 0);
+  else if (key === "Home") target = 0;
+  else if (key === "End") target = count - 1;
+  if (target === null) return null;
+  const clamped = Math.min(count - 1, Math.max(0, target));
+  if (clamped === current) return null;
+  return altKey ? { kind: "move", index: clamped } : { kind: "select", index: clamped };
+}

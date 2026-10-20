@@ -188,3 +188,102 @@ test("sheets v3 : saisie directe, recopie, fonctions françaises, autocomplétio
   await expect(cell("A2")).toHaveCSS("font-weight", "700");
   await expect(cell("B2")).toHaveText("");
 });
+
+test("slides v3 : menu contextuel, remplissage, rotation, raccourcis, collage de texte, trieuse", async ({
+  page,
+}) => {
+  await signupNewUser(page, "Slides v3", uniqueEmail("slides-v3"));
+  await openApp(page, `${SLIDES}/`);
+  await page.getByRole("button", { name: "Nouvelle présentation" }).first().click();
+  await page.getByLabel("Titre de la présentation").fill("Pitch v3");
+  await page.getByRole("button", { name: "Créer et ouvrir" }).click();
+  await expect(page.getByRole("button", { name: "Élément titre" })).toBeVisible({
+    timeout: 20_000,
+  });
+
+  // Plus aucun glyphe « ＋ » pleine chasse : de vraies icônes.
+  await expect(page.getByText("＋")).toHaveCount(0);
+
+  // Insertion d'un rectangle (reprise : course d'hydratation).
+  const rect = page.getByRole("button", { name: "Élément rectangle" });
+  await expect(async () => {
+    await page.getByRole("button", { name: "Formes" }).click();
+    await page.getByRole("menuitem", { name: "Rectangle" }).click();
+    await expect(rect.first()).toBeVisible({ timeout: 2_000 });
+  }).toPass({ timeout: 20_000 });
+  await expect(rect).toHaveCount(1);
+
+  // Remplissage (jeton accent) et rotation à 45°.
+  await page.getByLabel("Remplissage", { exact: true }).selectOption("accent");
+  await expect(rect).toHaveClass(/bg-primary/);
+  await page.getByLabel("Rotation (degrés)").fill("45");
+  await expect(rect).toHaveAttribute("style", /rotate\(45deg\)/);
+
+  // Flèches : déplacement d'un pas (1 %) de l'élément sélectionné.
+  await rect.click();
+  const leftOf = async () =>
+    Number.parseFloat((await rect.getAttribute("style"))?.match(/left:\s*([\d.]+)%/)?.[1] ?? "NaN");
+  const before = await leftOf();
+  await page.keyboard.press("ArrowRight");
+  await expect.poll(leftOf).toBeCloseTo(before + 1, 1);
+  await page.keyboard.press("Shift+ArrowRight");
+  await expect.poll(leftOf).toBeCloseTo(before + 6, 1);
+
+  // Menu contextuel de l'élément : Dupliquer.
+  await rect.click({ button: "right" });
+  const menu = page.getByRole("menu", { name: "Actions de l'élément" });
+  await expect(menu).toBeVisible();
+  await menu.getByRole("menuitem", { name: "Dupliquer" }).click();
+  await expect(rect).toHaveCount(2);
+  // Ctrl+D duplique la sélection.
+  await page.keyboard.press("ControlOrMeta+d");
+  await expect(rect).toHaveCount(3);
+
+  // Collage d'un texte venu d'ailleurs : nouvelle zone de texte.
+  await page.keyboard.press("Escape");
+  await page.evaluate(() => {
+    const data = new DataTransfer();
+    data.setData("text/plain", "Texte collé d'ailleurs");
+    document.body.dispatchEvent(
+      new ClipboardEvent("paste", { clipboardData: data, bubbles: true, cancelable: true }),
+    );
+  });
+  await expect(page.getByRole("button", { name: "Élément Texte collé d'ailleurs" })).toBeVisible();
+
+  // Ctrl+M : nouvelle diapositive ; Ctrl+D sans sélection : duplique la diapositive.
+  const thumbs = page.getByRole("list", { name: "Liste des diapositives" }).locator("[data-thumb]");
+  await expect(thumbs).toHaveCount(1);
+  await page.keyboard.press("Escape");
+  await page.keyboard.press("ControlOrMeta+m");
+  await expect(thumbs).toHaveCount(2);
+  await page.keyboard.press("ControlOrMeta+d");
+  await expect(thumbs).toHaveCount(3);
+
+  // Menu contextuel d'une vignette.
+  await thumbs.nth(2).click({ button: "right" });
+  const slideMenu = page.getByRole("menu", { name: "Actions de la diapositive" });
+  await expect(slideMenu).toBeVisible();
+  await slideMenu.getByRole("menuitem", { name: "Supprimer la diapositive" }).click();
+  await expect(thumbs).toHaveCount(2);
+
+  // Trieuse : toutes les diapositives en grille, Entrée rouvre la vue normale.
+  await page.getByRole("button", { name: "Trieuse de diapositives" }).click();
+  const sorter = page.getByRole("region", { name: "Trieuse de diapositives" });
+  await expect(sorter).toBeVisible();
+  const sorterThumbs = sorter.locator("[data-sorter-thumb]");
+  await expect(sorterThumbs).toHaveCount(2);
+  await sorterThumbs.first().click();
+  await page.keyboard.press("Enter");
+  await expect(sorter).toHaveCount(0);
+  await expect(rect.first()).toBeVisible();
+
+  // Persistance du remplissage et de la rotation.
+  await expect(page.getByRole("status").filter({ hasText: /^Enregistré$/ })).toBeVisible({
+    timeout: 15_000,
+  });
+  await page.reload();
+  await page.waitForSelector("html[data-hydrated='true']", { timeout: 40_000 });
+  await expect(rect.first()).toHaveClass(/bg-primary/, { timeout: 15_000 });
+  await expect(rect.first()).toHaveAttribute("style", /rotate\(45deg\)/);
+  await expect(page.getByText("Texte collé d'ailleurs").first()).toBeVisible();
+});

@@ -235,6 +235,48 @@ describe("slides — cycle de vie", () => {
   });
 });
 
+describe("slides — remplissage et rotation", () => {
+  it("persiste le remplissage et la rotation, normalise les valeurs reçues", async () => {
+    const { entry } = await createPresentation(f.actorAlice, { title: "Formes v3" });
+    const saved = await savePresentation(f.actorAlice, entry.id, {
+      revision: 1,
+      slides: [
+        {
+          elements: [
+            element({ kind: "rectangle", text: "", fill: "accent", rotation: 45 }),
+            element({ fill: "danger", rotation: -90 }),
+            element({ kind: "ellipse", text: "", rotation: 450.4 }),
+          ],
+        },
+      ],
+    });
+    const [rect, text, ellipse] = saved.slides[0]?.elements ?? [];
+    expect(rect?.fill).toBe("accent");
+    expect(rect?.rotation).toBe(45);
+    expect(text?.fill).toBe("danger");
+    expect(text?.rotation).toBe(270);
+    // Champs omis par un ancien client : remplissage du thème, 0° ramené.
+    expect(ellipse?.fill).toBe("theme");
+    expect(ellipse?.rotation).toBe(90);
+
+    const reread = await getPresentation(f.actorAlice, entry.id);
+    expect(reread.slides[0]?.elements.map((item) => [item.fill, item.rotation])).toEqual([
+      ["accent", 45],
+      ["danger", 270],
+      ["theme", 90],
+    ]);
+  });
+
+  it("retombe au remplissage du thème pour une valeur inconnue", async () => {
+    const { entry } = await createPresentation(f.actorAlice, { title: "Remplissage inconnu" });
+    const saved = await savePresentation(f.actorAlice, entry.id, {
+      revision: 1,
+      slides: [{ elements: [element({ fill: "fuchsia" } as Record<string, unknown>)] }],
+    });
+    expect(saved.slides[0]?.elements[0]?.fill).toBe("theme");
+  });
+});
+
 describe("slides — sauvegarde incrémentale", () => {
   it("conserve les identifiants des diapositives et des éléments entre deux sauvegardes", async () => {
     const { entry } = await createPresentation(f.actorAlice, { title: "Stable" });
