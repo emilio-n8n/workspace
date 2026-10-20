@@ -13,15 +13,24 @@ function plainSpaces(value: string): string {
 }
 
 describe("sheets — formats de nombre", () => {
-  it("propose cinq formats dont « auto », et quatre formats stockables", () => {
+  it("propose sept formats dont « auto », et six formats stockables", () => {
     expect(CELL_FORMATS.map((format) => format.id)).toEqual([
       "auto",
       "number",
       "integer",
       "percent",
       "currency",
+      "thousands",
+      "date",
     ]);
-    expect([...CELL_STORED_FORMAT_IDS]).toEqual(["number", "integer", "percent", "currency"]);
+    expect([...CELL_STORED_FORMAT_IDS]).toEqual([
+      "number",
+      "integer",
+      "percent",
+      "currency",
+      "thousands",
+      "date",
+    ]);
     for (const format of CELL_FORMATS) {
       expect(format.label.length).toBeGreaterThan(0);
       expect(format.glyph.length).toBeGreaterThan(0);
@@ -65,5 +74,11 @@ describe("sheets — formats de nombre", () => {
     const raw = "3.14159";
     expect(formatCellDisplay(raw, "number")).not.toBe(raw);
     expect(raw).toBe("3.14159");
+  });
+
+  it("affiche milliers et dates de série (v3)", () => {
+    expect(plainSpaces(formatCellDisplay("1234567.5", "thousands"))).toBe("1 234 567,5");
+    expect(formatCellDisplay("46315", "date")).toBe("20/10/2026");
+    expect(formatCellDisplay("texte", "date")).toBe("texte");
   });
 });

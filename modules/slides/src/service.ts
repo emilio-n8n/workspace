@@ -18,6 +18,7 @@ import {
   slideElements,
 } from "./schema.ts";
 import { normalizeAspect, SLIDE_ASPECT_IDS, type SlideAspectId } from "./slide-aspect.ts";
+import { normalizeFill, normalizeRotation, type SlideFill } from "./slide-fill.ts";
 import {
   layoutElements,
   normalizePlaceholder,
@@ -99,6 +100,10 @@ export type ElementView = {
   /** Rôle de zone d'une mise en page ; null pour un élément libre. */
   placeholder: SlidePlaceholderRole | null;
   align: ElementAlign;
+  /** Remplissage (« theme » = design de la présentation). */
+  fill: SlideFill;
+  /** Rotation en degrés entiers, dans [0, 360). */
+  rotation: number;
 };
 
 export type SlideView = {
@@ -133,9 +138,11 @@ export type PresentationDetail = {
  */
 export type ElementInput = Omit<
   ElementView,
-  "id" | "italic" | "underline" | "textColor" | "placeholder"
+  "id" | "italic" | "underline" | "textColor" | "placeholder" | "fill" | "rotation"
 > & {
   id?: string;
+  fill?: SlideFill;
+  rotation?: number;
   italic?: boolean;
   underline?: boolean;
   textColor?: SlideTextColor;
@@ -286,6 +293,9 @@ function assertSlides(input: unknown): SlideInput[] {
           // Les zones de mise en page n'ont de sens que pour du texte.
           placeholder: element.kind === "text" ? normalizePlaceholder(element.placeholder) : null,
           align: element.align as ElementAlign,
+          // Une image n'a pas de remplissage ; la rotation vaut pour tous.
+          fill: element.kind === "image" ? "theme" : normalizeFill(element.fill),
+          rotation: normalizeRotation(element.rotation ?? 0),
         };
       }),
     };
@@ -363,6 +373,8 @@ async function loadSlides(presentationId: string): Promise<SlideView[]> {
       textColor: normalizeTextColor(element.textColor),
       placeholder: normalizePlaceholder(element.placeholder),
       align: element.align as ElementAlign,
+      fill: normalizeFill(element.fill),
+      rotation: normalizeRotation(element.rotation),
     });
     bySlide.set(element.slideId, list);
   }
@@ -649,6 +661,8 @@ export async function savePresentation(
           textColor: element.textColor,
           placeholder: element.placeholder,
           align: element.align,
+          fill: element.fill,
+          rotation: element.rotation,
         };
         if (element.id && knownElementIds.has(element.id)) {
           keptElementIds.add(element.id);

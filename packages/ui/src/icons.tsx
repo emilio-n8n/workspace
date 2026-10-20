@@ -278,3 +278,94 @@ export function IconBell(props: SVGProps<SVGSVGElement>) {
     </Svg>
   );
 }
+
+export function IconPlus(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Svg {...props}>
+      <path d="M8 3v10M3 8h10" />
+    </Svg>
+  );
+}
+
+export function IconMinus(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Svg {...props}>
+      <path d="M3 8h10" />
+    </Svg>
+  );
+}
+
+export function IconUndo(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Svg {...props}>
+      <path d="M5.5 3 2.5 6l3 3" />
+      <path d="M2.5 6h7a4 4 0 0 1 0 8H7" />
+    </Svg>
+  );
+}
+
+export function IconRedo(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Svg {...props}>
+      <path d="m10.5 3 3 3-3 3" />
+      <path d="M13.5 6h-7a4 4 0 0 0 0 8H9" />
+    </Svg>
+  );
+}
+
+/** Rotation horaire (pivoter de 90°). */
+export function IconRotate(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Svg {...props}>
+      <path d="M13 3v3.5H9.5" />
+      <path d="M12.6 6.5A5 5 0 1 0 13 9" />
+    </Svg>
+  );
+}
+
+/** Trieuse : grille de vignettes. */
+export function IconLayoutGrid(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Svg {...props}>
+      <rect x="2" y="2.5" width="5" height="4.5" rx="0.8" />
+      <rect x="9" y="2.5" width="5" height="4.5" rx="0.8" />
+      <rect x="2" y="9" width="5" height="4.5" rx="0.8" />
+      <rect x="9" y="9" width="5" height="4.5" rx="0.8" />
+    </Svg>
+  );
+}
+
+/** Vue normale : une diapositive et sa colonne de vignettes. */
+export function IconSlideNormal(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Svg {...props}>
+      <rect x="1.5" y="3" width="3" height="10" rx="0.6" />
+      <rect x="6" y="3" width="8.5" height="10" rx="1" />
+    </Svg>
+  );
+}
+
+export function IconArrowUp(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Svg {...props}>
+      <path d="M8 13V3M4 7l4-4 4 4" />
+    </Svg>
+  );
+}
+
+export function IconArrowDown(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Svg {...props}>
+      <path d="M8 3v10M4 9l4 4 4-4" />
+    </Svg>
+  );
+}
+
+/** Plein écran / mode concentration. */
+export function IconExpand(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Svg {...props}>
+      <path d="M2.5 6V2.5H6M10 2.5h3.5V6M13.5 10v3.5H10M6 13.5H2.5V10" />
+    </Svg>
+  );
+}

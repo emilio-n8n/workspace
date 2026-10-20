@@ -33,6 +33,8 @@ export type SearchValue = {
   query: string;
   /** Occurrence active : c'est elle qui porte la décoration marquée. */
   activeIndex: number;
+  /** Respecter la casse (« Respecter la casse » du rechercher-remplacer). */
+  caseSensitive?: boolean;
 };
 
 /** Recherche vide : aucune décoration. */
@@ -73,14 +75,40 @@ export const SearchHighlight = Extension.create({
  * Unique point de contact avec ProseMirror : `collectTextSlices` reste pure et
  * se teste avec de simples doubles de nœuds.
  */
-export function matchesIn(editor: Editor, query: string): SearchMatch[] {
+export function matchesIn(editor: Editor, query: string, caseSensitive = false): SearchMatch[] {
   if (query.length === 0) return [];
-  return findMatches(collectTextSlices(editor.state.doc as unknown as WalkableNode), query);
+  return findMatches(collectTextSlices(editor.state.doc as unknown as WalkableNode), query, {
+    caseSensitive,
+  });
+}
+
+/**
+ * Remplace des occurrences par `replacement`, en une seule transaction (donc
+ * une seule entrée d'annulation). Les plages sont traitées de la fin vers le
+ * début : chaque remplacement laisse intactes les positions des précédentes.
+ * Le texte inséré reprend la mise en forme du début de l'occurrence.
+ */
+export function replaceMatches(
+  editor: Editor,
+  matches: readonly SearchMatch[],
+  replacement: string,
+): number {
+  if (matches.length === 0) return 0;
+  const ordered = [...matches].sort((a, b) => b.from - a.from);
+  const tr = editor.state.tr;
+  for (const match of ordered) {
+    if (replacement.length === 0) tr.delete(match.from, match.to);
+    else tr.insertText(replacement, match.from, match.to);
+  }
+  editor.view.dispatch(tr);
+  return ordered.length;
 }
 
 /** Surlignages de toutes les occurrences, l'active étant distinguée. */
 export function highlightMatches(doc: PmNode, value: SearchValue): DecorationSet {
-  const matches = findMatches(collectTextSlices(doc as unknown as WalkableNode), value.query);
+  const matches = findMatches(collectTextSlices(doc as unknown as WalkableNode), value.query, {
+    caseSensitive: value.caseSensitive ?? false,
+  });
   const active = Math.min(Math.max(value.activeIndex, 0), matches.length - 1);
   return DecorationSet.create(
     doc,

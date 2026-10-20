@@ -11,6 +11,7 @@ import {
   updatePresentationSetting,
 } from "./service.ts";
 import { SLIDE_ASPECT_IDS } from "./slide-aspect.ts";
+import { SLIDE_FILL_IDS, type SlideFill } from "./slide-fill.ts";
 import { PLACEHOLDER_ROLES } from "./slide-layouts.ts";
 import { SLIDE_TEXT_COLOR_IDS, type SlideTextColor } from "./slide-text.ts";
 import { SLIDE_THEME_IDS } from "./slide-theme.ts";
@@ -37,6 +38,8 @@ const elementSchema = z.object({
   textColor: z.enum(SLIDE_TEXT_COLOR_IDS as [SlideTextColor, ...SlideTextColor[]]).optional(),
   placeholder: z.enum(PLACEHOLDER_ROLES).nullish(),
   align: z.enum(["left", "center", "right"]),
+  fill: z.enum(SLIDE_FILL_IDS as [SlideFill, ...SlideFill[]]).optional(),
+  rotation: z.number().finite().min(-3600).max(3600).optional(),
 });
 
 const slideSchema = z.object({

@@ -43,6 +43,13 @@
       "when": 1791987536429,
       "tag": "0005_early_william_stryker",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1792531571744,
+      "tag": "0006_flowery_black_widow",
+      "breakpoints": true
     }
   ]
 }

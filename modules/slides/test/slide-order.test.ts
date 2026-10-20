@@ -9,6 +9,7 @@ import {
   reorderAnnouncement,
   reorderSlides,
   type StripItem,
+  sorterKeyAction,
 } from "../src/slide-order.ts";
 
 /** Bande verticale de 4 vignettes de 60 px, espacées de 8 px, dès 0. */
@@ -171,5 +172,32 @@ describe("slides — libellés de la bande", () => {
   it("annonce un déplacement avec ses deux positions", () => {
     expect(reorderAnnouncement(0, 3)).toBe("Diapositive 1 déplacée en position 4.");
     expect(reorderAnnouncement(3, 0)).toBe("Diapositive 4 déplacée en position 1.");
+  });
+});
+
+describe("trieuse : navigation au clavier dans la grille", () => {
+  const base = { altKey: false, current: 4, count: 10, columns: 4 };
+  it("gauche/droite d'une vignette, haut/bas d'une rangée", () => {
+    expect(sorterKeyAction({ ...base, key: "ArrowRight" })).toEqual({ kind: "select", index: 5 });
+    expect(sorterKeyAction({ ...base, key: "ArrowLeft" })).toEqual({ kind: "select", index: 3 });
+    expect(sorterKeyAction({ ...base, key: "ArrowDown" })).toEqual({ kind: "select", index: 8 });
+    expect(sorterKeyAction({ ...base, key: "ArrowUp" })).toEqual({ kind: "select", index: 0 });
+  });
+  it("borne aux extrémités et ignore un déplacement nul", () => {
+    expect(sorterKeyAction({ ...base, current: 8, key: "ArrowDown" })).toEqual({
+      kind: "select",
+      index: 9,
+    });
+    expect(sorterKeyAction({ ...base, current: 0, key: "ArrowLeft" })).toBeNull();
+    expect(sorterKeyAction({ ...base, key: "Home" })).toEqual({ kind: "select", index: 0 });
+    expect(sorterKeyAction({ ...base, key: "End" })).toEqual({ kind: "select", index: 9 });
+    expect(sorterKeyAction({ ...base, key: "a" })).toBeNull();
+    expect(sorterKeyAction({ ...base, count: 0, key: "ArrowRight" })).toBeNull();
+  });
+  it("Alt + flèche déplace la diapositive", () => {
+    expect(sorterKeyAction({ ...base, altKey: true, key: "ArrowRight" })).toEqual({
+      kind: "move",
+      index: 5,
+    });
   });
 });

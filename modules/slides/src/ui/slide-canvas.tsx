@@ -14,6 +14,7 @@ import {
   normalizeAspect,
   type SlideAspectId,
 } from "../slide-aspect.ts";
+import { fillClass, lineFillClass, rotationTransform } from "../slide-fill.ts";
 import { type GuideLine, type SnapBox, snapMove, unionBox } from "../slide-guides.ts";
 import { placeholderHint, placeholderLabel } from "../slide-layouts.ts";
 import { isShapeKind, shapeFillClass, shapeLabel, shapeVariant } from "../slide-shapes.ts";
@@ -191,6 +192,10 @@ export function SlideCanvas({
         : [element.key];
     onGestureStart?.();
     dragMovedRef.current = false;
+    // Le pointeur annulé ne déplace pas le focus : on le pose sur l'élément,
+    // pour que les flèches, Suppr et Ctrl+D agissent aussitôt sur lui (et
+    // plus sur le champ de la barre d'outils resté actif).
+    event.currentTarget.focus({ preventScroll: true });
     const canvas = canvasRef.current;
     if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
@@ -356,7 +361,11 @@ export function SlideCanvas({
           "absolute select-none whitespace-pre-wrap rounded-sm",
           // Les formes suivent le design de la diapositive (jetons sémantiques),
           // sauf la ligne qui n'a pas de remplissage : elle dessine un trait.
-          shape !== null && shape !== "line" && shapeFillClass(shape, themeShapeClass(palette)),
+          // Remplissage choisi (jeton du design system), sinon celui du design.
+          shape !== null &&
+            shape !== "line" &&
+            shapeFillClass(shape, fillClass(element.fill, themeShapeClass(palette))),
+          element.kind === "text" && fillClass(element.fill, ""),
           element.kind === "image" && "bg-muted",
         );
         const style = {
@@ -370,6 +379,8 @@ export function SlideCanvas({
           textDecorationLine: element.underline ? "underline" : "none",
           textAlign: element.align,
           lineHeight: 1.25,
+          // Rotation autour du centre, comme PowerPoint : les poignées suivent.
+          transform: rotationTransform(element.rotation),
         } as const;
         const textClass = element.kind === "image" ? "" : textColorClass(element.textColor);
         const wantsImage = element.placeholder === "image" && element.kind !== "image";
@@ -394,7 +405,7 @@ export function SlideCanvas({
               aria-hidden
               className={cn(
                 "absolute left-0 right-0 top-1/2 h-0.5 -translate-y-1/2 rounded-full",
-                themeLineClass(palette),
+                lineFillClass(element.fill, themeLineClass(palette)),
               )}
             />
           ) : showsPlaceholder && element.placeholder ? (
@@ -484,6 +495,7 @@ export function SlideCanvas({
             key={element.key}
             type="button"
             data-slide-element=""
+            data-element-key={element.key}
             aria-label={elementAriaLabel(element)}
             onPointerDown={(event) => startElementDrag(event, element)}
             onClick={(event) => {

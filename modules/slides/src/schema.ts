@@ -13,6 +13,7 @@ import {
   uuid,
 } from "drizzle-orm/pg-core";
 import { DEFAULT_SLIDE_ASPECT, type SlideAspectId } from "./slide-aspect.ts";
+import type { SlideFill } from "./slide-fill.ts";
 import type { SlidePlaceholderRole } from "./slide-layouts.ts";
 import type { SlideTextColor } from "./slide-text.ts";
 import { DEFAULT_SLIDE_THEME, type SlideThemeId } from "./slide-theme.ts";
@@ -100,6 +101,10 @@ export const slideElements = pgTable(
      */
     placeholder: text("placeholder").$type<SlidePlaceholderRole | null>(),
     align: text("align").notNull().default("left"),
+    /** Remplissage (jeton du design system ; « theme » = design de la présentation). */
+    fill: text("fill").$type<SlideFill>().notNull().default("theme"),
+    /** Rotation en degrés entiers, dans [0, 360). */
+    rotation: integer("rotation").notNull().default(0),
   },
   (table) => [index("slide_elements_slide_idx").on(table.slideId)],
 );

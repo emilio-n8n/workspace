@@ -56,6 +56,9 @@ export function CommandPalette({
 }: CommandPaletteProps) {
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      // Un éditeur qui a déjà consommé Ctrl+K (insérer un lien, comme dans
+      // Word et Google Docs) garde son raccourci.
+      if (event.defaultPrevented) return;
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
         event.preventDefault();
         onOpenChange(!open);

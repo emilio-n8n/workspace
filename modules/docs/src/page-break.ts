@@ -22,4 +22,11 @@ export const PageBreak = Node.create({
   renderHTML() {
     return ["div", { "data-page-break": "true", class: "workspace-page-break" }];
   },
+
+  // Ctrl+Entrée : saut de page, comme dans Word et Google Docs.
+  addKeyboardShortcuts() {
+    return {
+      "Mod-Enter": () => this.editor.chain().insertContent({ type: this.name }).run(),
+    };
+  },
 });

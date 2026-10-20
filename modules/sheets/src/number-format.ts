@@ -7,7 +7,14 @@
  * la grille) et le service (validation) partagent la même table.
  */
 
-export type CellFormatId = "auto" | "number" | "integer" | "percent" | "currency";
+export type CellFormatId =
+  | "auto"
+  | "number"
+  | "integer"
+  | "percent"
+  | "currency"
+  | "thousands"
+  | "date";
 
 export type CellFormatOption = {
   id: CellFormatId;
@@ -22,6 +29,8 @@ export const CELL_FORMATS: readonly CellFormatOption[] = [
   { id: "integer", label: "Entier", glyph: "0" },
   { id: "percent", label: "Pourcentage", glyph: "%" },
   { id: "currency", label: "Euro", glyph: "€" },
+  { id: "thousands", label: "Nombre avec séparateur de milliers", glyph: "1 000" },
+  { id: "date", label: "Date (jj/mm/aaaa)", glyph: "Date" },
 ];
 
 /** Identifiants de formats, dans l'ordre des boutons. */
@@ -31,7 +40,14 @@ export const CELL_FORMAT_IDS = CELL_FORMATS.map((format) => format.id) as CellFo
  * Formats réellement stockés : « auto » efface la clé (il ne se persiste pas),
  * comme les attributs booléens absents.
  */
-export const CELL_STORED_FORMAT_IDS = ["number", "integer", "percent", "currency"] as const;
+export const CELL_STORED_FORMAT_IDS = [
+  "number",
+  "integer",
+  "percent",
+  "currency",
+  "thousands",
+  "date",
+] as const;
 export type CellStoredFormat = (typeof CELL_STORED_FORMAT_IDS)[number];
 
 /** Relit un format stocké ; `null` pour toute valeur absente ou inconnue. */
@@ -71,6 +87,16 @@ const CURRENCY_FORMATTER = new Intl.NumberFormat("fr-FR", {
   style: "currency",
   currency: "EUR",
 });
+const THOUSANDS_FORMATTER = new Intl.NumberFormat("fr-FR", { maximumFractionDigits: 10 });
+
+/** Date d'un numéro de série de tableur (jours depuis le 30/12/1899). */
+function serialDate(value: number): string | null {
+  if (!Number.isFinite(value) || value < 0 || value > 2_958_465) return null;
+  const date = new Date(Date.UTC(1899, 11, 30) + Math.floor(value) * 86_400_000);
+  const dd = String(date.getUTCDate()).padStart(2, "0");
+  const mm = String(date.getUTCMonth() + 1).padStart(2, "0");
+  return `${dd}/${mm}/${date.getUTCFullYear()}`;
+}
 
 /**
  * Formate une valeur pour l'affichage. « auto » — ou une valeur non numérique —
@@ -89,6 +115,10 @@ export function formatCellDisplay(raw: string, format: CellFormatId): string {
       return PERCENT_FORMATTER.format(value);
     case "currency":
       return CURRENCY_FORMATTER.format(value);
+    case "thousands":
+      return THOUSANDS_FORMATTER.format(value);
+    case "date":
+      return serialDate(value) ?? raw;
     default:
       return raw;
   }

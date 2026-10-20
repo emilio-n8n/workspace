@@ -1,7 +1,7 @@
 # ROADMAP — Workspace
 
 > Source de vérité de l'avancement. Mise à jour à chaque jalon livré et vérifié.
-> Dernière mise à jour : 2026-10-17.
+> Dernière mise à jour : 2026-10-20.
 
 **Légende** : ✅ terminé (vérifié) · ▶ en cours · ○ à venir · ⛔ bloqué
 
@@ -84,6 +84,15 @@ Toutes les applications au niveau de l'éditeur Slides : barre d'outils unique (
 - [x] **v2.1** : MCP en écriture Docs/Drive + recherche plein texte, Docs « Document vierge » en un clic, parcours exploratoire Playwright des 14 apps
 - [ ] Recherche plein texte insensible aux accents côté SQL (`unaccent` → migration additive à prévoir) ; aujourd'hui le pré-filtre SQL est sensible aux accents, la vérification finale ne l'est pas
 - [ ] `sheets.write` / `slides.write` côté MCP
+
+## Upgrade v3 « parité Office » ▶ (branche `upgrade/v3`, PR ouverte, non fusionnée)
+
+Écarts détaillés et état vérifié : `docs/v3-parity-gaps.md`.
+
+- [x] **Docs vs Word web** : barre de menus, vue page A4/Lettre (marges, orientation, règle), police et interligne, retraits, exposant/indice, listes de tâches, rechercher-remplacer (Ctrl+H), menu contextuel, raccourcis Word, tableaux redimensionnables, « Nombre de mots »
+- [x] **Sheets vs Excel web** : modèle de sélection Excel (saisie directe), poignée de recopie (séries), 92 fonctions avec noms français et `;`, autocomplétion de formules, mise en forme de plage, Ctrl+flèche, Ctrl+D/R, Ctrl+;, barre d'état somme/moyenne/nombre, 26 × 1 000 cellules virtualisées
+- [x] **Slides vs PowerPoint web** : menu contextuel, trieuse de diapositives, remplissage et rotation (migration additive `0006`), collage de texte externe, Ctrl+D / Ctrl+M / flèches, vraies icônes, vignettes plus nettes
+- [ ] Vague suivante : commentaires ancrés et nuanciers (Docs), filtres, graphiques et format personnalisé (Sheets), poignée de rotation, mode présentateur et texte enrichi par mot (Slides), interop OOXML (docx/xlsx/pptx)
 
 ## Dépendances structurantes
 

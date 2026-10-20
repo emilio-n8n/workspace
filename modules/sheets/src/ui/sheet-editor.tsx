@@ -11,7 +11,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { MAX_CELL_CHARS } from "../csv.ts";
+import { MAX_CELL_CHARS, MAX_ROWS } from "../csv.ts";
 import {
   applyResize,
   clampSize,
@@ -22,6 +22,7 @@ import {
   sizeKey,
   sizeOf,
 } from "../dimensions.ts";
+import { fillRange, fillTarget, shiftPasted } from "../fill.ts";
 import { cellKey, evaluateCells, formatValue, parseKey } from "../formula.ts";
 import {
   DEFAULT_FREEZE,
@@ -40,11 +41,13 @@ import {
   copySummary,
   inRange,
   isSingleCell,
+  jumpTarget,
   parseTsv,
   pasteSummary,
   pasteTargets,
   rangeFrom,
   rangeLabel,
+  selectionStats,
   serializeTsv,
 } from "../range.ts";
 import type { CellStyle, CellStyleAlign } from "../schema.ts";
@@ -78,13 +81,21 @@ import {
   type CellTextColor,
   MAX_STYLE_CELLS,
 } from "../style-palette.ts";
-import { toneOf } from "./cell-tone.ts";
+import { type CellTone, toneOf } from "./cell-tone.ts";
+import { useFormulaAssist } from "./formula-assist.tsx";
 import { FormulaBar } from "./formula-bar.tsx";
 import { ResizeHandle } from "./resize-handle.tsx";
 import { SheetContextMenu, type SheetMenuItem } from "./sheet-context-menu.tsx";
 
-const COLS = 20;
-const ROWS = 100;
+/** Colonnes affichées (A à Z) et lignes (celles acceptées par le service). */
+const COLS = 26;
+const ROWS = MAX_ROWS;
+/** Hauteur par défaut d'une ligne : celle du redimensionnement. */
+const ROW_HEIGHT = DIMENSION_LIMITS.row.fallback;
+/** Lignes rendues au-delà de la fenêtre visible (défilement fluide). */
+const OVERSCAN_ROWS = 12;
+/** Au-delà, une mise en forme ne vise que les cellules utilisées de la plage. */
+const STYLE_RANGE_LIMIT = 2_000;
 const COL_LETTERS = Array.from({ length: COLS }, (_, index) =>
   cellKey(0, index).replace(/\d+$/, ""),
 );
@@ -144,8 +155,7 @@ const STYLE_TEXT_LABELS: Record<CellTextColor, string> = {
 };
 
 type SaveStatus = "idle" | "saving" | "saved" | "error";
-type MoveDirection = "down" | "right" | "none";
-type CellTone = "number" | "error" | "text";
+type MoveDirection = "down" | "up" | "right" | "left" | "none";
 
 /** Cible du menu contextuel : une cellule, une colonne ou une ligne. */
 type ContextTarget =
@@ -201,6 +211,18 @@ function cellOfKey(key: string): CellAddress {
   return { row: row ?? 0, col: col ?? 0 };
 }
 
+/** Index de la ligne qui contient le décalage vertical `y` (recherche dichotomique). */
+function rowIndexAt(offsets: readonly number[], y: number): number {
+  let low = 0;
+  let high = offsets.length - 2;
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2);
+    if ((offsets[middle] ?? 0) <= y) low = middle;
+    else high = middle - 1;
+  }
+  return Math.max(0, low);
+}
+
 /** Jeu de cartes vide, partagé tant qu'aucune taille n'est choisie. */
 const EMPTY_SIZES: SheetSizes = { col: new Map(), row: new Map() };
 
@@ -216,18 +238,133 @@ type GridCellProps = {
   inRange: boolean;
   canEdit: boolean;
   editing: boolean;
-  onStart: (row: number, col: number, extend?: boolean) => void;
+  /**
+   * Brouillon initial de l'édition : la touche tapée sur une cellule
+   * sélectionnée remplace son contenu (mode « saisie » d'Excel), `null` ouvre
+   * l'édition sur la valeur existante (F2, double-clic, Entrée).
+   */
+  initialDraft: string | null;
+  /** Appui du pointeur : sélection (Maj = étendre) et début du glisser. */
+  onPointerSelect: (row: number, col: number, extend: boolean) => void;
+  /** Survol pendant un glisser de sélection. */
+  onPointerExtend: (row: number, col: number) => void;
+  /** Clic sur la cellule déjà active, double-clic : ouvre l'édition. */
+  onEditRequest: (row: number, col: number) => void;
   onCommit: (row: number, col: number, value: string, move: MoveDirection) => void;
   onCancel: () => void;
   /** Clic droit ou touche Menu : ouvre le menu contextuel de la cellule. */
-  onRequestMenu: (row: number, col: number, anchor: DOMRect) => void;
+  onRequestMenu: (
+    row: number,
+    col: number,
+    anchor: DOMRect,
+    pointer?: { x: number; y: number },
+  ) => void;
 };
+
+/** Champ d'édition d'une cellule, avec l'aide à la saisie des formules. */
+function CellInput({
+  row,
+  col,
+  raw,
+  initialDraft,
+  onCommit,
+  onCancel,
+}: Pick<GridCellProps, "row" | "col" | "raw" | "initialDraft" | "onCommit" | "onCancel">) {
+  const [draft, setDraft] = useState(initialDraft ?? raw);
+  const skipBlurRef = useRef(false);
+  const draftRef = useRef(draft);
+  draftRef.current = draft;
+  // Mode « saisie » (frappe directe) : les flèches valident et déplacent,
+  // comme dans Excel. Mode « édition » (F2) : elles déplacent le curseur.
+  const enterMode = initialDraft !== null;
+  const assist = useFormulaAssist(draft, setDraft);
+
+  // Démontage sans validation explicite (défilement, changement d'onglet) :
+  // la saisie n'est jamais perdue. Les valeurs vivent dans une référence pour
+  // que l'effet ne s'exécute qu'au démontage.
+  // Le démontage est confirmé après une micro-tâche : en mode strict, React
+  // démonte puis remonte aussitôt l'effet, ce qui validait la première frappe
+  // (« 1 » au lieu de « 10 ») et fermait le champ.
+  const latestRef = useRef({ row, col, raw, onCommit });
+  latestRef.current = { row, col, raw, onCommit };
+  const mountedRef = useRef(false);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      queueMicrotask(() => {
+        if (mountedRef.current || skipBlurRef.current) return;
+        const latest = latestRef.current;
+        if (draftRef.current !== latest.raw) {
+          latest.onCommit(latest.row, latest.col, draftRef.current, "none");
+        }
+      });
+    };
+  }, []);
+
+  function commit(move: MoveDirection) {
+    skipBlurRef.current = true;
+    onCommit(row, col, draft, move);
+  }
+
+  return (
+    <div className="relative h-full">
+      <input
+        // biome-ignore lint/a11y/noAutofocus: édition de cellule demandée explicitement
+        autoFocus
+        aria-label={`Cellule ${cellKey(row, col)}`}
+        aria-autocomplete="list"
+        value={draft}
+        spellCheck={false}
+        onChange={(event) => setDraft(event.target.value)}
+        onFocus={(event) => {
+          // Saisie directe : le curseur après le caractère tapé.
+          const length = event.currentTarget.value.length;
+          event.currentTarget.setSelectionRange(length, length);
+        }}
+        onBlur={() => {
+          if (skipBlurRef.current) return;
+          skipBlurRef.current = true;
+          onCommit(row, col, draft, "none");
+        }}
+        onKeyDown={(event) => {
+          if (assist.onKeyDown(event)) return;
+          if (event.key === "Enter") {
+            event.preventDefault();
+            commit(event.shiftKey ? "up" : "down");
+          } else if (event.key === "Tab") {
+            event.preventDefault();
+            commit(event.shiftKey ? "left" : "right");
+          } else if (event.key === "Escape") {
+            event.preventDefault();
+            skipBlurRef.current = true;
+            onCancel();
+          } else if (enterMode && !draft.startsWith("=")) {
+            const moves: Record<string, MoveDirection> = {
+              ArrowDown: "down",
+              ArrowUp: "up",
+              ArrowLeft: "left",
+              ArrowRight: "right",
+            };
+            const move = moves[event.key];
+            if (move) {
+              event.preventDefault();
+              commit(move);
+            }
+          }
+        }}
+        className="block h-full w-full bg-background px-2 text-sm outline-2 outline-primary"
+      />
+      {assist.popup}
+    </div>
+  );
+}
 
 /**
  * Cellule mémoïsée : le brouillon d'édition reste local, donc la frappe ne
- * re-rend que cette cellule (pas les 2 000 de la grille). L'édition est validée
- * au blur ou à Entrée (descente), Tab (droite) et annulée avec Échap.
- * La mise en forme (v1) rend gras/italique/alignement/fond de jeton.
+ * re-rend que cette cellule. Modèle Excel : un clic sélectionne, un second
+ * clic (ou un double-clic, F2, Entrée) édite, la frappe remplace ; la
+ * validation se fait au blur, à Entrée (descente), Tab (droite), Échap annule.
  */
 const GridCell = memo(function GridCell({
   row,
@@ -240,42 +377,27 @@ const GridCell = memo(function GridCell({
   inRange,
   canEdit,
   editing,
-  onStart,
+  initialDraft,
+  onPointerSelect,
+  onPointerExtend,
+  onEditRequest,
   onCommit,
   onCancel,
   onRequestMenu,
 }: GridCellProps) {
-  const [draft, setDraft] = useState(raw);
-  const skipBlurRef = useRef(false);
+  // Vrai quand l'appui a eu lieu sur la cellule déjà active : le clic qui suit
+  // ouvre l'édition (et le premier clic ne fait que sélectionner).
+  const wasActiveRef = useRef(false);
 
   if (editing) {
     return (
-      <input
-        // biome-ignore lint/a11y/noAutofocus: édition de cellule demandée explicitement
-        autoFocus
-        aria-label={`Cellule ${cellKey(row, col)}`}
-        value={draft}
-        onChange={(event) => setDraft(event.target.value)}
-        onBlur={() => {
-          if (skipBlurRef.current) return;
-          onCommit(row, col, draft, "none");
-        }}
-        onKeyDown={(event) => {
-          if (event.key === "Enter") {
-            event.preventDefault();
-            skipBlurRef.current = true;
-            onCommit(row, col, draft, "down");
-          } else if (event.key === "Tab") {
-            event.preventDefault();
-            skipBlurRef.current = true;
-            onCommit(row, col, draft, "right");
-          } else if (event.key === "Escape") {
-            event.preventDefault();
-            skipBlurRef.current = true;
-            onCancel();
-          }
-        }}
-        className="block w-full bg-background px-2 py-1 text-sm outline-2 outline-ring"
+      <CellInput
+        row={row}
+        col={col}
+        raw={raw}
+        initialDraft={initialDraft}
+        onCommit={onCommit}
+        onCancel={onCancel}
       />
     );
   }
@@ -286,12 +408,35 @@ const GridCell = memo(function GridCell({
       aria-label={`Cellule ${cellKey(row, col)}`}
       // La cellule active est signalée sans dépendre d'un rôle ARIA de grille.
       aria-current={selected ? "true" : undefined}
-      onClick={(event) => onStart(row, col, event.shiftKey)}
+      data-cell-row={row}
+      data-cell-col={col}
+      tabIndex={selected ? 0 : -1}
+      onPointerDown={(event) => {
+        if (event.button !== 0) return;
+        wasActiveRef.current = selected && !inRange && !event.shiftKey;
+        onPointerSelect(row, col, event.shiftKey);
+      }}
+      onPointerEnter={(event) => {
+        if (event.buttons === 1) onPointerExtend(row, col);
+      }}
+      onClick={(event) => {
+        // Clic clavier (Entrée/Espace sur le bouton) : detail = 0 → édition.
+        if (event.detail === 0 || wasActiveRef.current) {
+          wasActiveRef.current = false;
+          if (canEdit) onEditRequest(row, col);
+        }
+      }}
+      onDoubleClick={() => {
+        if (canEdit) onEditRequest(row, col);
+      }}
       onContextMenu={(event) => {
         // Le menu contextuel est le seul propriétaire du clic droit : on ouvre
         // à la position du pointeur plutôt que d'afficher le menu natif.
         event.preventDefault();
-        onRequestMenu(row, col, event.currentTarget.getBoundingClientRect());
+        onRequestMenu(row, col, event.currentTarget.getBoundingClientRect(), {
+          x: event.clientX,
+          y: event.clientY,
+        });
       }}
       onKeyDown={(event) => {
         // Équivalent clavier du clic droit : touche Menu ou Maj+F10.
@@ -311,12 +456,17 @@ const GridCell = memo(function GridCell({
         textAlign: cellStyle?.align,
       }}
       className={cn(
-        "block w-full truncate px-2 py-1 text-sm",
-        tone === "number" ? "text-right tabular-nums" : "text-left",
+        "block h-full w-full select-none truncate px-2 text-sm leading-[23px] outline-none",
+        tone === "number"
+          ? "text-right tabular-nums"
+          : tone === "boolean"
+            ? "text-center"
+            : "text-left",
         cellStyle?.background ? STYLE_BACKGROUND_CLASSES[cellStyle.background] : undefined,
         cellStyle?.color ? STYLE_TEXT_CLASSES[cellStyle.color] : undefined,
-        inRange && !cellStyle?.background && "bg-accent/25",
-        canEdit ? "cursor-cell hover:bg-muted/60" : "cursor-default",
+        inRange && !selected && "bg-primary/10",
+        selected && "relative z-[1] shadow-[inset_0_0_0_2px_var(--primary)]",
+        canEdit ? "cursor-cell" : "cursor-default",
         tone === "error" && "text-destructive",
       )}
     >
@@ -335,11 +485,33 @@ export function SheetEditor({ fileId }: { fileId: string }) {
   const [title, setTitle] = useState("");
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
   const [cellsByTab, setCellsByTab] = useState<Map<string, Map<string, string>>>(new Map());
-  const [editing, setEditing] = useState<{ row: number; col: number } | null>(null);
+  const [editing, setEditing] = useState<{
+    row: number;
+    col: number;
+    /** Brouillon initial (frappe directe) ; `null` = valeur existante. */
+    draft: string | null;
+  } | null>(null);
   const [selected, setSelected] = useState<{ row: number; col: number } | null>(null);
-  // Ancre de la sélection de plage : nulle pour une cellule seule, remplie par
-  // Maj + clic ou Maj + flèche (TASK-004/006).
+  // Coin opposé de la plage (la cellule active reste fixe, comme dans Excel) :
+  // nul pour une cellule seule, rempli par Maj + clic, Maj + flèche, glisser
+  // ou clic sur un en-tête (TASK-004/006).
   const [rangeAnchor, setRangeAnchor] = useState<CellAddress | null>(null);
+  const rangeAnchorRef = useRef<CellAddress | null>(null);
+  /** Zone de défilement de la grille et fenêtre visible (virtualisation des lignes). */
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const [viewport, setViewport] = useState({ top: 0, height: 800 });
+  /** Décalage vertical cumulé de chaque ligne (ROWS + 1 entrées). */
+  const rowOffsetsRef = useRef<number[]>(
+    Array.from({ length: ROWS + 1 }, (_, index) => index * ROW_HEIGHT),
+  );
+  /** Glisser de sélection en cours (bouton gauche maintenu). */
+  const draggingRef = useRef(false);
+  /** Aperçu de la poignée de recopie pendant le glisser. */
+  const [fillPreview, setFillPreview] = useState<CellRange | null>(null);
+  /** Presse-papiers interne : permet de décaler les formules collées. */
+  const clipboardRef = useRef<{ text: string; origin: CellAddress; cut: CellRange | null } | null>(
+    null,
+  );
   // Repères figés au défilement (TASK-005) : session en cours, défaut figé.
   const [freeze, setFreeze] = useState<FreezeState>(DEFAULT_FREEZE);
   const [stylesByTab, setStylesByTab] = useState<Map<string, Map<string, CellStyle>>>(new Map());
@@ -382,7 +554,6 @@ export function SheetEditor({ fileId }: { fileId: string }) {
   const [barDraft, setBarDraft] = useState<{ key: string; value: string } | null>(null);
   const [announcement, setAnnouncement] = useState("");
   const [structureBusy, setStructureBusy] = useState(false);
-  const gridRef = useRef<HTMLDivElement>(null);
   // Historique annuler/rétablir : instantanés empilés et bornés ; les gestes
   // répétés (frappe, collage, tri) fusionnent dans la même entrée.
   const pastRef = useRef<EditorSnapshot[]>([]);
@@ -423,6 +594,10 @@ export function SheetEditor({ fileId }: { fileId: string }) {
   useEffect(() => {
     selectedRef.current = selected;
   }, [selected]);
+
+  useEffect(() => {
+    rangeAnchorRef.current = rangeAnchor;
+  }, [rangeAnchor]);
 
   useEffect(() => {
     cellsRef.current = cellsByTab;
@@ -847,78 +1022,256 @@ export function SheetEditor({ fileId }: { fileId: string }) {
   );
 
   /**
-   * Clic simple : sélectionne la cellule et ouvre l'édition (si le droit
-   * d'écriture l'autorise). Maj + clic : étend la plage depuis l'ancre, sans
-   * ouvrir l'édition, pour copier ou trier une plage.
+   * Écriture groupée (recopie, collage, effacement) : une seule entrée
+   * d'historique, une seule mise à jour d'état, une file de sauvegarde.
    */
-  const startEditing = useCallback((row: number, col: number, extend = false) => {
-    if (extend) {
-      setRangeAnchor((current) => current ?? selectedRef.current);
-      setSelected({ row, col });
+  const commitCells = useCallback(
+    (updates: { row: number; col: number; value: string }[], kind = "batch") => {
+      const tabId = activeTabIdRef.current;
+      if (!tabId || !canEditRef.current) return 0;
+      const existing = cellsRef.current.get(tabId) ?? new Map<string, string>();
+      const changed = updates.filter(
+        (update) =>
+          update.row >= 0 &&
+          update.col >= 0 &&
+          update.row < ROWS &&
+          update.col < COLS &&
+          (existing.get(`${update.row}:${update.col}`) ?? "") !== update.value,
+      );
+      if (changed.length === 0) return 0;
+      pushHistory(kind);
+      setCellsByTab((current) => {
+        const next = new Map(current);
+        const map = new Map(next.get(tabId) ?? []);
+        for (const update of changed) {
+          const key = `${update.row}:${update.col}`;
+          if (update.value === "") map.delete(key);
+          else map.set(key, update.value);
+        }
+        next.set(tabId, map);
+        return next;
+      });
+      setStatus("idle");
+      for (const update of changed) queueSave(tabId, update);
+      return changed.length;
+    },
+    [pushHistory, queueSave],
+  );
+
+  /** Fait défiler la grille pour que la cellule soit visible (sous les en-têtes). */
+  const ensureVisible = useCallback((row: number, col: number) => {
+    const scroller = scrollRef.current;
+    if (!scroller) return;
+    const header = scroller.querySelector<HTMLElement>("thead th, thead td");
+    const headerHeight = header?.offsetHeight ?? 25;
+    const top = headerHeight + (rowOffsetsRef.current[row] ?? 0);
+    const bottom = headerHeight + (rowOffsetsRef.current[row + 1] ?? 0);
+    if (top - headerHeight < scroller.scrollTop) scroller.scrollTop = top - headerHeight;
+    else if (bottom > scroller.scrollTop + scroller.clientHeight) {
+      scroller.scrollTop = bottom - scroller.clientHeight;
+    }
+    const columnHeader = scroller.querySelector<HTMLElement>(`[data-col-index="${col}"]`);
+    const gutter = scroller.querySelector<HTMLElement>("thead td")?.offsetWidth ?? 44;
+    if (columnHeader) {
+      const left = columnHeader.offsetLeft;
+      const right = left + columnHeader.offsetWidth;
+      if (left - gutter < scroller.scrollLeft) scroller.scrollLeft = Math.max(0, left - gutter);
+      else if (right > scroller.scrollLeft + scroller.clientWidth) {
+        scroller.scrollLeft = right - scroller.clientWidth;
+      }
+    }
+  }, []);
+
+  /** Sélectionne une cellule, puis lui donne le focus une fois rendue. */
+  const focusCell = useCallback(
+    (row: number, col: number) => {
+      ensureVisible(row, col);
+      requestAnimationFrame(() => {
+        const element = scrollRef.current?.querySelector<HTMLButtonElement>(
+          `[data-cell-row="${row}"][data-cell-col="${col}"]`,
+        );
+        element?.focus({ preventScroll: true });
+      });
+    },
+    [ensureVisible],
+  );
+
+  /** Appui du pointeur : sélection simple, Maj = étendre ; début du glisser. */
+  const onPointerSelect = useCallback((row: number, col: number, extend: boolean) => {
+    draggingRef.current = true;
+    if (extend && selectedRef.current) {
+      setRangeAnchor({ row, col });
       return;
     }
     setSelected({ row, col });
     setRangeAnchor(null);
-    if (!canEditRef.current) return;
-    setEditing({ row, col });
   }, []);
 
-  const cancelEditing = useCallback(() => setEditing(null), []);
+  /** Glisser de sélection : la cellule active reste fixe, la plage suit. */
+  const onPointerExtend = useCallback((row: number, col: number) => {
+    if (!draggingRef.current || !selectedRef.current) return;
+    const active = selectedRef.current;
+    setRangeAnchor(active.row === row && active.col === col ? null : { row, col });
+  }, []);
 
-  const commitEditing = useCallback(
-    (row: number, col: number, value: string, move: MoveDirection) => {
-      commitCell(row, col, value);
-      if (move === "none") {
-        setEditing(null);
-        setSelected({ row, col });
-        setRangeAnchor(null);
-        return;
-      }
-      const nextRow = move === "down" ? Math.min(row + 1, ROWS - 1) : row;
-      const nextCol = move === "right" ? Math.min(col + 1, COLS - 1) : col;
-      setEditing({ row: nextRow, col: nextCol });
-      setSelected({ row: nextRow, col: nextCol });
-      setRangeAnchor(null);
-    },
-    [commitCell],
-  );
-
-  /** Met à jour localement le style d'une cellule (même carte que la lecture). */
-  const setCellStyleLocally = useCallback((tabId: string, key: string, style: CellStyle | null) => {
-    setStylesByTab((current) => {
-      const next = new Map(current);
-      const map = new Map(next.get(tabId) ?? []);
-      if (style === null) map.delete(key);
-      else map.set(key, style);
-      next.set(tabId, map);
-      return next;
-    });
+  useEffect(() => {
+    const stop = () => {
+      draggingRef.current = false;
+    };
+    window.addEventListener("pointerup", stop);
+    window.addEventListener("pointercancel", stop);
+    return () => {
+      window.removeEventListener("pointerup", stop);
+      window.removeEventListener("pointercancel", stop);
+    };
   }, []);
 
   /**
-   * Applique une mutation au style de la cellule sélectionnée (v1 : une seule
-   * cellule), en optimiste : la grille est mise à jour tout de suite puis
-   * rejouée à l'identique côté serveur ; en cas d'échec, l'ancien style est
-   * restauré.
+   * Édition demandée mais pas encore rendue : une frappe rapide (« 12 »)
+   * arrive avant le montage du champ, elle complète alors le brouillon au
+   * lieu de le remplacer.
+   */
+  const pendingEditRef = useRef<{ row: number; col: number; draft: string | null } | null>(null);
+
+  const startEditing = useCallback((row: number, col: number, draft: string | null = null) => {
+    if (!canEditRef.current) return;
+    const pending = pendingEditRef.current;
+    const next =
+      pending && pending.row === row && pending.col === col && draft !== null
+        ? { row, col, draft: (pending.draft ?? "") + draft }
+        : { row, col, draft };
+    pendingEditRef.current = next;
+    setSelected({ row, col });
+    setRangeAnchor(null);
+    setEditing(next);
+  }, []);
+
+  // Le champ est rendu : les frappes suivantes vont directement dans le champ.
+  useEffect(() => {
+    if (!editing) pendingEditRef.current = null;
+    else
+      requestAnimationFrame(() => {
+        pendingEditRef.current = null;
+      });
+  }, [editing]);
+
+  const onEditRequest = useCallback(
+    (row: number, col: number) => startEditing(row, col, null),
+    [startEditing],
+  );
+
+  const cancelEditing = useCallback(() => {
+    const current = selectedRef.current;
+    setEditing(null);
+    if (current) focusCell(current.row, current.col);
+  }, [focusCell]);
+
+  /**
+   * Validation de la saisie : la sélection descend (Entrée), remonte
+   * (Maj+Entrée) ou passe à droite / à gauche (Tab, Maj+Tab), comme dans
+   * Excel — la cellule suivante est sélectionnée, pas éditée.
+   */
+  const commitEditing = useCallback(
+    (row: number, col: number, value: string, move: MoveDirection) => {
+      if (value.length > MAX_CELL_CHARS) {
+        setError(`Cellule limitée à ${MAX_CELL_CHARS} caractères.`);
+        return;
+      }
+      commitCell(row, col, value);
+      setEditing((current) =>
+        current && current.row === row && current.col === col ? null : current,
+      );
+      const nextRow =
+        move === "down" ? Math.min(row + 1, ROWS - 1) : move === "up" ? Math.max(0, row - 1) : row;
+      const nextCol =
+        move === "right"
+          ? Math.min(col + 1, COLS - 1)
+          : move === "left"
+            ? Math.max(0, col - 1)
+            : col;
+      setSelected({ row: nextRow, col: nextCol });
+      setRangeAnchor(null);
+      if (move !== "none") focusCell(nextRow, nextCol);
+    },
+    [commitCell, focusCell],
+  );
+
+  /**
+   * Applique une mutation de style à toute la sélection (cellule ou plage),
+   * en optimiste : la grille est mise à jour tout de suite puis rejouée côté
+   * serveur par groupes de style identique ; en cas d'échec, l'ancien style
+   * est restauré. Au-delà de `STYLE_RANGE_LIMIT` cellules (colonne entière,
+   * Ctrl+A), seules les cellules utilisées de la plage sont visées.
    */
   const applyCellStyle = useCallback(
     async (mutate: (current: CellStyle | null) => CellStyle | null) => {
       const tabId = activeTabId;
       const target = selected;
       if (!tabId || !target || !canEdit || styleBusy) return;
-      const key = `${target.row}:${target.col}`;
-      const previous = stylesByTab.get(tabId)?.get(key) ?? null;
-      const next = mutate(previous);
+      const range = selectionRange ?? rangeFrom(target, target);
+      const styleMap = stylesByTab.get(tabId) ?? new Map<string, CellStyle>();
+      const valueMap = cellsByTab.get(tabId) ?? new Map<string, string>();
+      const size = (range.endRow - range.startRow + 1) * (range.endCol - range.startCol + 1);
+      const keys: string[] = [];
+      if (size <= STYLE_RANGE_LIMIT) {
+        for (let row = range.startRow; row <= range.endRow; row += 1) {
+          for (let col = range.startCol; col <= range.endCol; col += 1) keys.push(`${row}:${col}`);
+        }
+      } else {
+        const used = new Set<string>([...valueMap.keys(), ...styleMap.keys()]);
+        for (const key of used) {
+          const { row, col } = cellOfKey(key);
+          if (inRange(range, row, col)) keys.push(key);
+        }
+      }
+      const previous = new Map(keys.map((key) => [key, styleMap.get(key) ?? null] as const));
+      const nextStyles = new Map(
+        keys.map((key) => [key, mutate(previous.get(key) ?? null)] as const),
+      );
+      const changed = keys.filter(
+        (key) =>
+          JSON.stringify(previous.get(key) ?? null) !== JSON.stringify(nextStyles.get(key) ?? null),
+      );
+      if (changed.length === 0) return;
       pushHistory("style");
       setStyleBusy(true);
       setError(null);
-      setCellStyleLocally(tabId, key, next);
-      try {
-        await setCellStyleFn({
-          data: { fileId, tabId, cells: [{ row: target.row, col: target.col }], style: next },
+      const applyLocally = (source: Map<string, CellStyle | null>) =>
+        setStylesByTab((current) => {
+          const next = new Map(current);
+          const map = new Map(next.get(tabId) ?? []);
+          for (const key of changed) {
+            const style = source.get(key) ?? null;
+            if (style === null) map.delete(key);
+            else map.set(key, style);
+          }
+          next.set(tabId, map);
+          return next;
         });
+      applyLocally(nextStyles);
+      try {
+        const groups = new Map<string, { style: CellStyle | null; cells: CellAddress[] }>();
+        for (const key of changed) {
+          const style = nextStyles.get(key) ?? null;
+          const groupKey = JSON.stringify(style);
+          const group = groups.get(groupKey) ?? { style, cells: [] };
+          group.cells.push(cellOfKey(key));
+          groups.set(groupKey, group);
+        }
+        for (const group of groups.values()) {
+          for (let offset = 0; offset < group.cells.length; offset += MAX_STYLE_CELLS) {
+            await setCellStyleFn({
+              data: {
+                fileId,
+                tabId,
+                cells: group.cells.slice(offset, offset + MAX_STYLE_CELLS),
+                style: group.style,
+              },
+            });
+          }
+        }
       } catch (caught) {
-        setCellStyleLocally(tabId, key, previous);
+        applyLocally(previous);
         setError(caught instanceof Error ? caught.message : "Mise en forme impossible.");
       } finally {
         setStyleBusy(false);
@@ -927,64 +1280,67 @@ export function SheetEditor({ fileId }: { fileId: string }) {
     [
       activeTabId,
       canEdit,
+      cellsByTab,
       fileId,
       pushHistory,
       selected,
-      setCellStyleLocally,
+      selectionRange,
       styleBusy,
       stylesByTab,
     ],
   );
 
+  // Les bascules suivent la cellule active, comme dans Excel : si elle est en
+  // gras, toute la plage perd le gras ; sinon toute la plage le prend.
   const toggleFlag = useCallback(
     (flag: "bold" | "italic" | "underline" | "strike") => {
+      const enable = selectedStyle?.[flag] !== true;
       void applyCellStyle((current) => {
         const next = { ...(current ?? {}) };
-        if (next[flag]) delete next[flag];
-        else next[flag] = true;
+        if (enable) next[flag] = true;
+        else delete next[flag];
         return Object.keys(next).length > 0 ? next : null;
       });
     },
-    [applyCellStyle],
+    [applyCellStyle, selectedStyle],
   );
 
   const toggleAlign = useCallback(
     (align: CellStyleAlign) => {
+      const remove = selectedStyle?.align === align;
       void applyCellStyle((current) =>
-        current?.align === align ? withoutKey(current, "align") : { ...(current ?? {}), align },
+        remove ? withoutKey(current ?? {}, "align") : { ...(current ?? {}), align },
       );
     },
-    [applyCellStyle],
+    [applyCellStyle, selectedStyle],
   );
 
   function toggleBackground(background: CellStyleBackground): void {
+    const remove = selectedStyle?.background === background;
     void applyCellStyle((current) =>
-      current?.background === background
-        ? withoutKey(current, "background")
-        : { ...(current ?? {}), background },
+      remove ? withoutKey(current ?? {}, "background") : { ...(current ?? {}), background },
     );
   }
 
   const toggleColor = useCallback(
     (color: CellTextColor) => {
+      const remove = selectedStyle?.color === color;
       void applyCellStyle((current) =>
-        current?.color === color ? withoutKey(current, "color") : { ...(current ?? {}), color },
+        remove ? withoutKey(current ?? {}, "color") : { ...(current ?? {}), color },
       );
     },
-    [applyCellStyle],
+    [applyCellStyle, selectedStyle],
   );
 
   /** Format d'affichage : « auto » (ou re-clic) retire la clé, jamais de valeur par défaut stockée. */
   const toggleFormat = useCallback(
     (format: CellFormatId) => {
-      void applyCellStyle((current) => {
-        if (format === "auto" || current?.format === format) {
-          return withoutKey(current ?? {}, "format");
-        }
-        return { ...(current ?? {}), format };
-      });
+      const remove = format === "auto" || selectedStyle?.format === format;
+      void applyCellStyle((current) =>
+        remove ? withoutKey(current ?? {}, "format") : { ...(current ?? {}), format },
+      );
     },
-    [applyCellStyle],
+    [applyCellStyle, selectedStyle],
   );
 
   async function onRenameSpreadsheet() {
@@ -1127,8 +1483,18 @@ export function SheetEditor({ fileId }: { fileId: string }) {
   /** Ouvre le menu contextuel sur une cible, en coordonnées d'écran. */
   const openMenu = useCallback((target: ContextTarget, anchor: { left: number; top: number }) => {
     if (target.kind === "cell") {
-      setSelected({ row: target.row, col: target.col });
-      setRangeAnchor(null);
+      // Clic droit dans la plage sélectionnée : la plage est conservée (trier,
+      // effacer, mettre en forme toute la plage), comme dans Excel.
+      const active = selectedRef.current;
+      const extent = rangeAnchorRef.current;
+      const keep =
+        active !== null &&
+        extent !== null &&
+        inRange(rangeFrom(active, extent), target.row, target.col);
+      if (!keep) {
+        setSelected({ row: target.row, col: target.col });
+        setRangeAnchor(null);
+      }
       setEditing(null);
     }
     setMenu({ x: anchor.left, y: anchor.top, target });
@@ -1147,8 +1513,11 @@ export function SheetEditor({ fileId }: { fileId: string }) {
 
   /** Ouvre le menu depuis le clavier (touche Menu) sur la cellule active. */
   const requestCellMenu = useCallback(
-    (row: number, col: number, anchor: DOMRect) => {
-      openMenu({ kind: "cell", row, col }, { left: anchor.left, top: anchor.bottom });
+    (row: number, col: number, anchor: DOMRect, pointer?: { x: number; y: number }) => {
+      openMenu(
+        { kind: "cell", row, col },
+        pointer ? { left: pointer.x, top: pointer.y } : { left: anchor.left, top: anchor.bottom },
+      );
     },
     [openMenu],
   );
@@ -1177,14 +1546,63 @@ export function SheetEditor({ fileId }: { fileId: string }) {
     [colSizes],
   );
 
-  const rowTracks = useMemo(
-    () =>
-      Array.from({ length: ROWS }, (_, row) => {
-        const size = rowSizes.get(row);
-        return size === undefined ? "auto" : `${size}px`;
-      }).join(" "),
-    [rowSizes],
+  // Virtualisation des lignes : décalages cumulés, puis fenêtre rendue (les
+  // lignes hors écran sont remplacées par deux espaceurs de même hauteur).
+  const rowOffsets = useMemo(() => {
+    const offsets = new Array<number>(ROWS + 1);
+    offsets[0] = 0;
+    for (let row = 0; row < ROWS; row += 1) {
+      offsets[row + 1] = (offsets[row] ?? 0) + (rowSizes.get(row) ?? ROW_HEIGHT);
+    }
+    return offsets;
+  }, [rowSizes]);
+  rowOffsetsRef.current = rowOffsets;
+
+  const firstRow = Math.max(0, rowIndexAt(rowOffsets, viewport.top) - OVERSCAN_ROWS);
+  const lastRow = Math.min(
+    ROWS - 1,
+    rowIndexAt(rowOffsets, viewport.top + viewport.height) + OVERSCAN_ROWS,
   );
+  const topSpacer = rowOffsets[firstRow] ?? 0;
+  const bottomSpacer = (rowOffsets[ROWS] ?? 0) - (rowOffsets[lastRow + 1] ?? 0);
+
+  const rowTracks = useMemo(() => {
+    const tracks: string[] = [];
+    for (let row = firstRow; row <= lastRow; row += 1) {
+      tracks.push(`${rowSizes.get(row) ?? ROW_HEIGHT}px`);
+    }
+    return tracks.join(" ");
+  }, [firstRow, lastRow, rowSizes]);
+
+  // Fenêtre visible : suivie au défilement (une image d'animation au plus) et
+  // au redimensionnement de la zone. Relancé au chargement : la zone de
+  // défilement n'existe qu'une fois la feuille lue.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `detail` signale le montage de la zone de défilement.
+  useEffect(() => {
+    const scroller = scrollRef.current;
+    if (!scroller) return;
+    let frame: number | null = null;
+    const sync = () => {
+      frame = null;
+      setViewport((current) =>
+        current.top === scroller.scrollTop && current.height === scroller.clientHeight
+          ? current
+          : { top: scroller.scrollTop, height: scroller.clientHeight },
+      );
+    };
+    const onScroll = () => {
+      if (frame === null) frame = requestAnimationFrame(sync);
+    };
+    sync();
+    scroller.addEventListener("scroll", onScroll, { passive: true });
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(onScroll);
+    observer?.observe(scroller);
+    return () => {
+      scroller.removeEventListener("scroll", onScroll);
+      observer?.disconnect();
+      if (frame !== null) cancelAnimationFrame(frame);
+    };
+  }, [detail]);
 
   const currentBarDraft = barDraft?.key === selectedKey ? barDraft.value : null;
 
@@ -1196,12 +1614,17 @@ export function SheetEditor({ fileId }: { fileId: string }) {
       return value ? formatValue(value) : "";
     }
     // Pendant la saisie, on évalue la formule en cours sans toucher la grille.
+    // Le moteur attend des références « A1 » (et non des clés « ligne:col »).
     const raw: Record<string, string> = {};
-    for (const [key, value] of activeMap) raw[key] = value;
-    raw[selectedKey] = currentBarDraft;
-    const previewValue = evaluateCells(raw).get(selectedKey);
+    for (const [key, value] of activeMap) {
+      const { row, col } = cellOfKey(key);
+      raw[cellKey(row, col)] = value;
+    }
+    const reference = selected ? cellKey(selected.row, selected.col) : "";
+    raw[reference] = currentBarDraft;
+    const previewValue = evaluateCells(raw).get(reference);
     return previewValue ? formatValue(previewValue) : "";
-  }, [activeMap, currentBarDraft, evaluated, selectedKey]);
+  }, [activeMap, currentBarDraft, evaluated, selected, selectedKey]);
 
   // -------------------------------------------------------------------------
   // Tri de la plage sélectionnée (TASK-006) et figement (TASK-005)
@@ -1241,6 +1664,411 @@ export function SheetEditor({ fileId }: { fileId: string }) {
     setAnnouncement(freezeAnnouncement(next));
   }
 
+  function submitBarValue(value: string, move: MoveDirection) {
+    if (!selected) return;
+    if (value.length > MAX_CELL_CHARS) {
+      setError(`Cellule limitée à ${MAX_CELL_CHARS} caractères.`);
+      return;
+    }
+    commitCell(selected.row, selected.col, value);
+    if (move === "none") {
+      setEditing(null);
+      return;
+    }
+    const nextRow = move === "down" ? Math.min(selected.row + 1, ROWS - 1) : selected.row;
+    const nextCol = move === "right" ? Math.min(selected.col + 1, COLS - 1) : selected.col;
+    setEditing(null);
+    setSelected({ row: nextRow, col: nextCol });
+    setRangeAnchor(null);
+    focusCell(nextRow, nextCol);
+  }
+
+  function goToReference(reference: string) {
+    const target = parseKey(reference);
+    if (!target) {
+      setError(`Référence « ${reference} » invalide.`);
+      return;
+    }
+    if (target.row >= ROWS || target.col >= COLS) {
+      setError(
+        `Référence hors de la grille affichée (lignes 1 à ${ROWS}, colonnes A à ${COL_LETTERS[COLS - 1]}).`,
+      );
+      return;
+    }
+    setError(null);
+    setEditing(null);
+    setSelected({ row: target.row, col: target.col });
+    setRangeAnchor(null);
+    focusCell(target.row, target.col);
+  }
+
+  /**
+   * Navigation clavier. `extend` (Maj + flèche) déplace le coin opposé de la
+   * plage, la cellule active restant fixe (comme Excel) ; sinon la sélection
+   * redevient une cellule seule.
+   */
+  const moveSelection = useCallback(
+    (row: number, col: number, extend = false) => {
+      const next = {
+        row: Math.max(0, Math.min(ROWS - 1, row)),
+        col: Math.max(0, Math.min(COLS - 1, col)),
+      };
+      if (extend && selectedRef.current) {
+        const active = selectedRef.current;
+        setRangeAnchor(active.row === next.row && active.col === next.col ? null : next);
+        ensureVisible(next.row, next.col);
+        return;
+      }
+      setRangeAnchor(null);
+      setSelected(next);
+      focusCell(next.row, next.col);
+    },
+    [ensureVisible, focusCell],
+  );
+
+  /** Valeurs brutes d'une plage, ligne par ligne. */
+  const rangeValues = useCallback(
+    (range: CellRange) => {
+      const rows: string[][] = [];
+      for (let row = range.startRow; row <= range.endRow; row += 1) {
+        const line: string[] = [];
+        for (let col = range.startCol; col <= range.endCol; col += 1) {
+          line.push(activeMap.get(`${row}:${col}`) ?? "");
+        }
+        rows.push(line);
+      }
+      return rows;
+    },
+    [activeMap],
+  );
+
+  /** Copie (ou coupe) la cellule ou la plage active en TSV (TASK-004). */
+  const copySelection = useCallback(
+    async (cut = false) => {
+      const active = selectedRef.current;
+      const range = selectionRange ?? (active ? rangeFrom(active, active) : null);
+      if (!range) return;
+      const rows = rangeValues(range);
+      const count = (range.endRow - range.startRow + 1) * (range.endCol - range.startCol + 1);
+      const text = serializeTsv(rows);
+      clipboardRef.current = {
+        text,
+        origin: { row: range.startRow, col: range.startCol },
+        cut: cut ? range : null,
+      };
+      try {
+        if (!navigator.clipboard?.writeText) throw new Error("API presse-papiers indisponible");
+        await navigator.clipboard.writeText(text);
+        setError(null);
+        setAnnouncement(cut ? `${count} cellule(s) coupée(s).` : copySummary(count));
+      } catch (caught) {
+        setError(clipboardError("copy", caught));
+      }
+    },
+    [rangeValues, selectionRange],
+  );
+
+  /**
+   * Colle un TSV depuis le presse-papiers à partir de la cellule active
+   * (TASK-004). Collage interne : les formules voient leurs références
+   * relatives décalées ; après « Couper », la source est vidée. Une valeur
+   * seule collée sur une plage remplit toute la plage.
+   */
+  const pasteSelection = useCallback(async () => {
+    if (!canEditRef.current || !activeTabIdRef.current) return;
+    try {
+      if (!navigator.clipboard?.readText) throw new Error("API presse-papiers indisponible");
+      const text = await navigator.clipboard.readText();
+      let values = parseTsv(text);
+      if (values.length === 0) return;
+      const active = selectedRef.current ?? { row: 0, col: 0 };
+      const extent = rangeAnchorRef.current;
+      const range = extent ? rangeFrom(active, extent) : rangeFrom(active, active);
+      const origin = { row: range.startRow, col: range.startCol };
+      const internal = clipboardRef.current?.text === text ? clipboardRef.current : null;
+      const updates: { row: number; col: number; value: string }[] = [];
+      if (internal?.cut) {
+        // Déplacement : la source est vidée, les formules gardent leurs références.
+        for (let row = internal.cut.startRow; row <= internal.cut.endRow; row += 1) {
+          for (let col = internal.cut.startCol; col <= internal.cut.endCol; col += 1) {
+            updates.push({ row, col, value: "" });
+          }
+        }
+        clipboardRef.current = null;
+      } else if (internal) {
+        values = shiftPasted(
+          values,
+          origin.row - internal.origin.row,
+          origin.col - internal.origin.col,
+        );
+      }
+      const single = values.length === 1 && values[0]?.length === 1;
+      if (single && !isSingleCell(range)) {
+        const model = values[0]?.[0] ?? "";
+        for (let row = range.startRow; row <= range.endRow; row += 1) {
+          for (let col = range.startCol; col <= range.endCol; col += 1) {
+            const value =
+              internal && model.startsWith("=")
+                ? (shiftPasted([[model]], row - origin.row, col - origin.col)[0]?.[0] ?? model)
+                : model;
+            updates.push({ row, col, value });
+          }
+        }
+      } else {
+        for (const target of pasteTargets(values, origin, { rows: ROWS, cols: COLS })) {
+          updates.push(target);
+        }
+      }
+      // Les écritures de la cible l'emportent sur l'effacement de la source.
+      const merged = new Map(updates.map((update) => [`${update.row}:${update.col}`, update]));
+      commitCells([...merged.values()], "paste");
+      setError(null);
+      setAnnouncement(pasteSummary(merged.size));
+    } catch (caught) {
+      setError(clipboardError("paste", caught));
+    }
+  }, [commitCells]);
+
+  /** Efface le contenu de la sélection (Suppr / Retour arrière). */
+  const clearSelection = useCallback(() => {
+    const active = selectedRef.current;
+    if (!active || !canEditRef.current) return;
+    const range = rangeAnchorRef.current
+      ? rangeFrom(active, rangeAnchorRef.current)
+      : rangeFrom(active, active);
+    const updates: { row: number; col: number; value: string }[] = [];
+    for (const key of activeMap.keys()) {
+      const { row, col } = cellOfKey(key);
+      if (inRange(range, row, col)) updates.push({ row, col, value: "" });
+    }
+    const count = commitCells(updates, "clear");
+    if (count > 0) setAnnouncement(`${count} cellule(s) effacée(s).`);
+  }, [activeMap, commitCells]);
+
+  /** Recopie (poignée, Ctrl+D, Ctrl+R) : écrit la série et sélectionne la cible. */
+  const applyFill = useCallback(
+    (source: CellRange, target: CellRange) => {
+      const updates = fillRange(source, target, activeMap);
+      const count = commitCells(updates, "fill");
+      setSelected({ row: target.startRow, col: target.startCol });
+      setRangeAnchor(
+        target.startRow === target.endRow && target.startCol === target.endCol
+          ? null
+          : { row: target.endRow, col: target.endCol },
+      );
+      if (count > 0) setAnnouncement(`${count} cellule(s) recopiée(s).`);
+    },
+    [activeMap, commitCells],
+  );
+
+  /** Ctrl+D (vers le bas) et Ctrl+R (vers la droite) sur la sélection. */
+  const fillFromSelection = useCallback(
+    (direction: "down" | "right") => {
+      const active = selectedRef.current;
+      if (!active || !canEditRef.current) return;
+      const range = rangeAnchorRef.current ? rangeFrom(active, rangeAnchorRef.current) : null;
+      if (direction === "down") {
+        // Cellule seule : recopie la cellule du dessus, comme Excel.
+        const source =
+          range && range.endRow > range.startRow
+            ? { ...range, endRow: range.startRow }
+            : {
+                startRow: active.row - 1,
+                endRow: active.row - 1,
+                startCol: active.col,
+                endCol: active.col,
+              };
+        if (source.startRow < 0) return;
+        const target =
+          range && range.endRow > range.startRow ? range : { ...source, endRow: active.row };
+        const updates = fillRange(source, target, activeMap).map((update) => ({
+          ...update,
+          value: activeMap.get(`${source.startRow}:${update.col}`)?.startsWith("=")
+            ? update.value
+            : (activeMap.get(`${source.startRow}:${update.col}`) ?? ""),
+        }));
+        commitCells(updates, "fill");
+      } else {
+        const source =
+          range && range.endCol > range.startCol
+            ? { ...range, endCol: range.startCol }
+            : {
+                startRow: active.row,
+                endRow: active.row,
+                startCol: active.col - 1,
+                endCol: active.col - 1,
+              };
+        if (source.startCol < 0) return;
+        const target =
+          range && range.endCol > range.startCol ? range : { ...source, endCol: active.col };
+        const updates = fillRange(source, target, activeMap).map((update) => ({
+          ...update,
+          value: activeMap.get(`${update.row}:${source.startCol}`)?.startsWith("=")
+            ? update.value
+            : (activeMap.get(`${update.row}:${source.startCol}`) ?? ""),
+        }));
+        commitCells(updates, "fill");
+      }
+    },
+    [activeMap, commitCells],
+  );
+
+  /** Sélection d'une colonne ou d'une ligne entière (clic sur l'en-tête). */
+  const selectWhole = useCallback((kind: "row" | "col", index: number, extend: boolean) => {
+    setEditing(null);
+    const active = selectedRef.current;
+    if (kind === "col") {
+      if (extend && active) {
+        setSelected({ row: 0, col: active.col });
+        setRangeAnchor({ row: ROWS - 1, col: index });
+      } else {
+        setSelected({ row: 0, col: index });
+        setRangeAnchor({ row: ROWS - 1, col: index });
+      }
+    } else if (extend && active) {
+      setSelected({ row: active.row, col: 0 });
+      setRangeAnchor({ row: index, col: COLS - 1 });
+    } else {
+      setSelected({ row: index, col: 0 });
+      setRangeAnchor({ row: index, col: COLS - 1 });
+    }
+  }, []);
+
+  const onGridKeyDown = useCallback(
+    (event: ReactKeyboardEvent<HTMLElement>) => {
+      const pending = pendingEditRef.current;
+      if (
+        pending &&
+        pending.draft !== null &&
+        event.key.length === 1 &&
+        !event.ctrlKey &&
+        !event.metaKey &&
+        !isTypingTarget(event.target)
+      ) {
+        event.preventDefault();
+        startEditing(pending.row, pending.col, event.key);
+        return;
+      }
+      if (editing) return;
+      if (isTypingTarget(event.target)) return;
+      const mod = event.ctrlKey || event.metaKey;
+      const key = event.key.toLowerCase();
+      const current = selected ?? { row: 0, col: 0 };
+      // Presse-papiers : Ctrl+C copie, Ctrl+X coupe, Ctrl+V colle.
+      if (mod && !event.altKey && (key === "c" || key === "x" || key === "v")) {
+        event.preventDefault();
+        if (key === "v") void pasteSelection();
+        else void copySelection(key === "x");
+        return;
+      }
+      if (mod && !event.altKey && canEdit && (key === "b" || key === "i" || key === "u")) {
+        event.preventDefault();
+        toggleFlag(key === "b" ? "bold" : key === "i" ? "italic" : "underline");
+        return;
+      }
+      if (mod && !event.altKey && key === "a") {
+        event.preventDefault();
+        setSelected({ row: 0, col: 0 });
+        setRangeAnchor({ row: ROWS - 1, col: COLS - 1 });
+        return;
+      }
+      if (mod && !event.altKey && canEdit && (key === "d" || key === "r")) {
+        event.preventDefault();
+        fillFromSelection(key === "d" ? "down" : "right");
+        return;
+      }
+      if (mod && !event.altKey && event.key === ";" && canEdit && selected) {
+        // Ctrl+; : date du jour, comme dans Excel.
+        event.preventDefault();
+        commitCell(selected.row, selected.col, new Date().toLocaleDateString("fr-FR"));
+        return;
+      }
+      const deltas: Record<string, [number, number]> = {
+        ArrowUp: [-1, 0],
+        ArrowDown: [1, 0],
+        ArrowLeft: [0, -1],
+        ArrowRight: [0, 1],
+      };
+      const delta = deltas[event.key];
+      if (delta) {
+        event.preventDefault();
+        const base = event.shiftKey && rangeAnchorRef.current ? rangeAnchorRef.current : current;
+        // Ctrl (ou Cmd) + flèche : bord de la zone de données, comme Excel.
+        const target = mod
+          ? jumpTarget(activeMap, base, delta, { rows: ROWS, cols: COLS })
+          : { row: base.row + delta[0], col: base.col + delta[1] };
+        moveSelection(target.row, target.col, event.shiftKey);
+        return;
+      }
+      if (event.key === "Tab") {
+        event.preventDefault();
+        moveSelection(current.row, current.col + (event.shiftKey ? -1 : 1));
+        return;
+      }
+      if (event.key === "PageDown" || event.key === "PageUp") {
+        event.preventDefault();
+        const page = Math.max(1, Math.floor(viewport.height / ROW_HEIGHT) - 1);
+        moveSelection(
+          current.row + (event.key === "PageDown" ? page : -page),
+          current.col,
+          event.shiftKey,
+        );
+        return;
+      }
+      if (event.key === "Home" && mod) {
+        event.preventDefault();
+        moveSelection(0, 0);
+      } else if (event.key === "End" && mod) {
+        event.preventDefault();
+        let lastRow = 0;
+        let lastCol = 0;
+        for (const cellKeyValue of activeMap.keys()) {
+          const { row, col } = cellOfKey(cellKeyValue);
+          lastRow = Math.max(lastRow, row);
+          lastCol = Math.max(lastCol, col);
+        }
+        moveSelection(lastRow, lastCol);
+      } else if (event.key === "Home") {
+        event.preventDefault();
+        moveSelection(current.row, 0);
+      } else if ((event.key === "Enter" || event.key === "F2") && selected && canEdit) {
+        event.preventDefault();
+        startEditing(selected.row, selected.col, null);
+      } else if ((event.key === "Delete" || event.key === "Backspace") && canEdit) {
+        event.preventDefault();
+        clearSelection();
+      } else if (event.key === "Escape" && rangeAnchorRef.current) {
+        setRangeAnchor(null);
+      } else if (
+        canEdit &&
+        selected &&
+        !mod &&
+        !event.altKey &&
+        event.key.length === 1 &&
+        event.key !== " "
+      ) {
+        // Frappe directe : la saisie remplace le contenu (mode « saisie »).
+        event.preventDefault();
+        startEditing(selected.row, selected.col, event.key);
+      }
+    },
+    [
+      activeMap,
+      canEdit,
+      clearSelection,
+      commitCell,
+      copySelection,
+      editing,
+      fillFromSelection,
+      moveSelection,
+      pasteSelection,
+      selected,
+      startEditing,
+      toggleFlag,
+      viewport.height,
+    ],
+  );
+
   // -------------------------------------------------------------------------
   // Construction du menu contextuel (TASK-002)
   // -------------------------------------------------------------------------
@@ -1275,6 +2103,41 @@ export function SheetEditor({ fileId }: { fileId: string }) {
 
     const target = menu.target;
     if (target.kind === "cell") {
+      items.push({
+        type: "item",
+        id: "couper",
+        label: "Couper (Ctrl+X)",
+        disabled: !canEdit,
+        onSelect: () => void copySelection(true),
+      });
+      items.push({
+        type: "item",
+        id: "copier",
+        label: "Copier (Ctrl+C)",
+        onSelect: () => void copySelection(false),
+      });
+      items.push({
+        type: "item",
+        id: "coller",
+        label: "Coller (Ctrl+V)",
+        disabled: !canEdit,
+        onSelect: () => void pasteSelection(),
+      });
+      items.push({
+        type: "item",
+        id: "effacer-contenu",
+        label: "Effacer le contenu (Suppr)",
+        disabled: !canEdit,
+        onSelect: clearSelection,
+      });
+      items.push({
+        type: "item",
+        id: "recopier-bas",
+        label: "Recopier vers le bas (Ctrl+D)",
+        disabled: !canEdit,
+        onSelect: () => fillFromSelection("down"),
+      });
+      items.push({ type: "separator", id: "lignes" });
       items.push(insert("row", target.row, "Insérer une ligne au-dessus"));
       items.push(insert("row", target.row + 1, "Insérer une ligne en dessous"));
       items.push({ type: "separator", id: "colonnes" });
@@ -1344,6 +2207,17 @@ export function SheetEditor({ fileId }: { fileId: string }) {
         ),
       );
       items.push(
+        format(
+          "format-milliers",
+          "Séparateur de milliers",
+          selectedStyle?.format === "thousands",
+          () => toggleFormat("thousands"),
+        ),
+      );
+      items.push(
+        format("format-date", "Date", selectedStyle?.format === "date", () => toggleFormat("date")),
+      );
+      items.push(
         format("gauche", "Aligner à gauche", selectedStyle?.align === "left", () =>
           toggleAlign("left"),
         ),
@@ -1389,7 +2263,11 @@ export function SheetEditor({ fileId }: { fileId: string }) {
   }, [
     applyCellStyle,
     canEdit,
+    clearSelection,
+    copySelection,
+    fillFromSelection,
     menu,
+    pasteSelection,
     runSort,
     runStructure,
     selectedStyle,
@@ -1400,156 +2278,6 @@ export function SheetEditor({ fileId }: { fileId: string }) {
     toggleFlag,
     toggleFormat,
   ]);
-
-  function submitBarValue(value: string, move: MoveDirection) {
-    if (!selected) return;
-    if (value.length > MAX_CELL_CHARS) {
-      setError(`Cellule limitée à ${MAX_CELL_CHARS} caractères.`);
-      return;
-    }
-    commitCell(selected.row, selected.col, value);
-    if (move === "none") {
-      setEditing(null);
-      return;
-    }
-    const nextRow = move === "down" ? Math.min(selected.row + 1, ROWS - 1) : selected.row;
-    const nextCol = move === "right" ? Math.min(selected.col + 1, COLS - 1) : selected.col;
-    setEditing(null);
-    setSelected({ row: nextRow, col: nextCol });
-    setRangeAnchor(null);
-  }
-
-  function goToReference(reference: string) {
-    const target = parseKey(reference);
-    if (!target) {
-      setError(`Référence « ${reference} » invalide.`);
-      return;
-    }
-    if (target.row >= ROWS || target.col >= COLS) {
-      setError(
-        `Référence hors de la grille affichée (lignes 1 à ${ROWS}, colonnes A à ${COL_LETTERS[COLS - 1]}).`,
-      );
-      return;
-    }
-    setError(null);
-    setEditing(null);
-    setSelected({ row: target.row, col: target.col });
-    setRangeAnchor(null);
-    focusCell(target.row, target.col);
-  }
-
-  /** Donne le focus à une cellule de la grille (navigation clavier). */
-  const focusCell = useCallback((row: number, col: number) => {
-    const element = gridRef.current?.querySelector<HTMLButtonElement>(
-      `[data-cell-row="${row}"][data-cell-col="${col}"]`,
-    );
-    element?.focus();
-  }, []);
-
-  /**
-   * Navigation clavier. `extend` (Maj + flèche) étire la plage depuis l'ancre ;
-   * sinon la sélection redevient une cellule seule.
-   */
-  const moveSelection = useCallback(
-    (row: number, col: number, extend = false) => {
-      const next = {
-        row: Math.max(0, Math.min(ROWS - 1, row)),
-        col: Math.max(0, Math.min(COLS - 1, col)),
-      };
-      setRangeAnchor((current) => (extend ? (current ?? selectedRef.current) : null));
-      setSelected(next);
-      focusCell(next.row, next.col);
-    },
-    [focusCell],
-  );
-
-  /** Copie la cellule ou la plage active en TSV (TASK-004). */
-  const copySelection = useCallback(async () => {
-    const range = selectionRange;
-    if (!range) return;
-    const rows: string[][] = [];
-    for (let row = range.startRow; row <= range.endRow; row += 1) {
-      const line: string[] = [];
-      for (let col = range.startCol; col <= range.endCol; col += 1) {
-        line.push(activeMap.get(`${row}:${col}`) ?? "");
-      }
-      rows.push(line);
-    }
-    const count = (range.endRow - range.startRow + 1) * (range.endCol - range.startCol + 1);
-    try {
-      if (!navigator.clipboard?.writeText) throw new Error("API presse-papiers indisponible");
-      await navigator.clipboard.writeText(serializeTsv(rows));
-      setError(null);
-      setAnnouncement(copySummary(count));
-    } catch (caught) {
-      setError(clipboardError("copy", caught));
-    }
-  }, [activeMap, selectionRange]);
-
-  /** Colle un TSV depuis le presse-papiers à partir de la cellule active (TASK-004). */
-  const pasteSelection = useCallback(async () => {
-    if (!canEditRef.current || !activeTabIdRef.current) return;
-    try {
-      if (!navigator.clipboard?.readText) throw new Error("API presse-papiers indisponible");
-      const values = parseTsv(await navigator.clipboard.readText());
-      if (values.length === 0) return;
-      const origin = selectedRef.current ?? { row: 0, col: 0 };
-      const targets = pasteTargets(values, origin, { rows: ROWS, cols: COLS });
-      for (const target of targets) commitCell(target.row, target.col, target.value);
-      setError(null);
-      setAnnouncement(pasteSummary(targets.length));
-    } catch (caught) {
-      setError(clipboardError("paste", caught));
-    }
-  }, [commitCell]);
-
-  const onGridKeyDown = useCallback(
-    (event: ReactKeyboardEvent<HTMLDivElement>) => {
-      if (editing) return;
-      const mod = event.ctrlKey || event.metaKey;
-      // Presse-papiers : Ctrl+C copie la sélection, Ctrl+V la colle.
-      if (mod && (event.key === "c" || event.key === "C")) {
-        event.preventDefault();
-        void copySelection();
-        return;
-      }
-      if (mod && (event.key === "v" || event.key === "V")) {
-        event.preventDefault();
-        void pasteSelection();
-        return;
-      }
-      const deltas: Record<string, [number, number]> = {
-        ArrowUp: [-1, 0],
-        ArrowDown: [1, 0],
-        ArrowLeft: [0, -1],
-        ArrowRight: [0, 1],
-      };
-      const delta = deltas[event.key];
-      if (delta) {
-        event.preventDefault();
-        // Ctrl (ou Cmd) étend le pas d'une page entière de la grille visible.
-        const stride = mod ? 5 : 1;
-        const current = selected ?? { row: 0, col: 0 };
-        moveSelection(
-          current.row + delta[0] * stride,
-          current.col + delta[1] * stride,
-          event.shiftKey,
-        );
-        return;
-      }
-      if (event.key === "Home" && (event.ctrlKey || event.metaKey)) {
-        event.preventDefault();
-        moveSelection(0, 0);
-      } else if (event.key === "End" && (event.ctrlKey || event.metaKey)) {
-        event.preventDefault();
-        moveSelection(ROWS - 1, COLS - 1);
-      } else if (event.key === "Escape" && selected) {
-        setSelected(null);
-        setRangeAnchor(null);
-      }
-    },
-    [copySelection, editing, moveSelection, pasteSelection, selected],
-  );
 
   // Raccourcis d'historique, partout dans l'éditeur : Ctrl+Z annule,
   // Ctrl+Maj+Z et Ctrl+Y rétablissent. Les champs de saisie (édition de
@@ -1573,6 +2301,52 @@ export function SheetEditor({ fileId }: { fileId: string }) {
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [canEdit, doRedo, doUndo]);
+
+  /**
+   * Poignée de recopie : glisser depuis le petit carré du cadre, la cible suit
+   * la cellule survolée (direction dominante), le relâcher écrit la série.
+   */
+  function startFillDrag(event: React.PointerEvent<HTMLSpanElement>, source: CellRange) {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    let target = source;
+    setFillPreview(source);
+    const onMove = (move: PointerEvent) => {
+      const element = document
+        .elementFromPoint(move.clientX, move.clientY)
+        ?.closest<HTMLElement>("[data-cell-row]");
+      if (!element) return;
+      const row = Number(element.dataset.cellRow);
+      const col = Number(element.dataset.cellCol);
+      target = fillTarget(source, row, col);
+      setFillPreview(target);
+    };
+    const onUp = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      setFillPreview(null);
+      if (target !== source) applyFill(source, target);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  }
+
+  // Barre d'état : somme, moyenne et nombre de la plage sélectionnée.
+  const statusStats = (() => {
+    if (!selectionRange || isSingleCell(selectionRange)) return null;
+    const numbers: number[] = [];
+    let filled = 0;
+    for (const [key, raw] of activeMap) {
+      if (raw === "") continue;
+      const { row, col } = cellOfKey(key);
+      if (!inRange(selectionRange, row, col)) continue;
+      filled += 1;
+      const value = evaluated.get(cellKey(row, col));
+      if (value?.kind === "number") numbers.push(value.value);
+    }
+    return selectionStats(numbers, filled);
+  })();
 
   const freezeClass = freezeClasses(freeze);
 
@@ -1955,12 +2729,15 @@ export function SheetEditor({ fileId }: { fileId: string }) {
           />
 
           {/* La grille remplit la hauteur restante ; elle seule défile. */}
-          <div className="min-h-0 flex-1 overflow-auto">
+          <div ref={scrollRef} className="min-h-0 flex-1 overflow-auto">
             {/*
               Tableau natif (en-têtes de colonne et de ligne, cellules) disposé
               en grille CSS : `display: contents` sur les enveloppes fait des
               cellules les éléments de la grille, donc la mise en page reste
-              celle d'une grille et la sémantique celle d'un tableau.
+              celle d'une grille et la sémantique celle d'un tableau. Seules
+              les lignes visibles sont rendues (deux espaceurs encadrent la
+              fenêtre) ; le cadre de sélection et la poignée de recopie sont
+              posés en absolu sur les lignes de la grille.
             */}
             <table
               // biome-ignore lint/a11y/noNoninteractiveElementToInteractiveRole: rôle « grid » du motif ARIA, posé sur le tableau natif pour que les lecteurs d'écran annoncent une grille navigable.
@@ -1969,147 +2746,236 @@ export function SheetEditor({ fileId }: { fileId: string }) {
               aria-rowcount={ROWS + 1}
               aria-colcount={COLS + 1}
               aria-readonly={!canEdit}
-              className="grid"
+              aria-multiselectable
+              className="relative grid select-none"
               onKeyDown={onGridKeyDown}
               style={
                 {
                   "--sheet-gutter": "44px",
                   "--sheet-col-min": "96px",
                   gridTemplateColumns: `var(--sheet-gutter) ${columnTracks}`,
-                  gridTemplateRows: `auto ${rowTracks}`,
+                  gridTemplateRows: `auto ${topSpacer}px ${rowTracks} ${bottomSpacer}px`,
                   width: "max-content",
                   minWidth: "100%",
                 } as CSSProperties
               }
             >
               <caption className="sr-only">
-                Grille de la feuille — flèches pour parcourir les cellules, Entrée pour modifier,
-                Maj + flèche pour étendre la sélection, Ctrl+C et Ctrl+V pour copier et coller,
-                touche Menu pour les actions de la cellule.
+                Grille de la feuille — flèches pour parcourir les cellules, saisie directe pour
+                remplacer le contenu, Entrée ou F2 pour modifier, Maj + flèche ou glisser pour
+                étendre la sélection, Suppr pour effacer, Ctrl+C, Ctrl+X et Ctrl+V pour copier,
+                couper et coller, Ctrl+D pour recopier vers le bas, touche Menu pour les actions.
               </caption>
               <thead className="contents">
-                <tr className="contents">
+                <tr className="contents" aria-rowindex={1}>
                   <td
-                    className={cn(freezeClass.corner, "border-b border-r border-border bg-muted")}
-                  />
-                  {COL_LETTERS.map((letter, col) => (
-                    <th
-                      key={letter}
-                      scope="col"
-                      data-col-index={col}
-                      onContextMenu={(event) => {
-                        event.preventDefault();
-                        openMenu(
-                          { kind: "col", index: col },
-                          { left: event.clientX, top: event.clientY },
-                        );
+                    className={cn(
+                      freezeClass.corner,
+                      "border-b border-r border-border bg-muted p-0",
+                    )}
+                  >
+                    <button
+                      type="button"
+                      aria-label="Tout sélectionner"
+                      tabIndex={-1}
+                      onClick={() => {
+                        setEditing(null);
+                        setSelected({ row: 0, col: 0 });
+                        setRangeAnchor({ row: ROWS - 1, col: COLS - 1 });
                       }}
-                      className={cn(
-                        freezeClass.header,
-                        "border-b border-border bg-muted px-2 py-1 text-center text-[11px] font-medium text-muted-foreground",
-                        col < COLS - 1 && "border-r",
-                      )}
-                    >
-                      {letter}
-                      <ResizeHandle
-                        axis="col"
-                        index={col}
-                        label={`Redimensionner la colonne ${letter}`}
-                        current={sizeOf(colSizes, col, "col")}
-                        preview={
-                          preview?.axis === "col" && preview.index === col ? preview.size : null
-                        }
-                        disabled={!canEdit}
-                        onPreview={onPreviewSize}
-                        onCommit={commitSize}
-                        onSettle={onSettlePreview}
-                        onReset={resetSize}
-                      />
-                    </th>
-                  ))}
+                      className="block size-full"
+                    />
+                  </td>
+                  {COL_LETTERS.map((letter, col) => {
+                    const highlighted =
+                      selected !== null &&
+                      (selectionRange
+                        ? col >= selectionRange.startCol && col <= selectionRange.endCol
+                        : col === selected.col);
+                    return (
+                      <th
+                        key={letter}
+                        scope="col"
+                        data-col-index={col}
+                        onPointerDown={(event) => {
+                          if (event.button !== 0) return;
+                          if ((event.target as HTMLElement).closest("[data-resize-handle]")) return;
+                          selectWhole("col", col, event.shiftKey);
+                        }}
+                        onContextMenu={(event) => {
+                          event.preventDefault();
+                          openMenu(
+                            { kind: "col", index: col },
+                            { left: event.clientX, top: event.clientY },
+                          );
+                        }}
+                        className={cn(
+                          freezeClass.header,
+                          "cursor-pointer border-b border-border px-2 py-1 text-center text-[11px] font-medium text-muted-foreground",
+                          highlighted ? "bg-accent text-accent-foreground" : "bg-muted",
+                          col < COLS - 1 && "border-r",
+                        )}
+                      >
+                        {letter}
+                        <ResizeHandle
+                          axis="col"
+                          index={col}
+                          label={`Redimensionner la colonne ${letter}`}
+                          current={sizeOf(colSizes, col, "col")}
+                          preview={
+                            preview?.axis === "col" && preview.index === col ? preview.size : null
+                          }
+                          disabled={!canEdit}
+                          onPreview={onPreviewSize}
+                          onCommit={commitSize}
+                          onSettle={onSettlePreview}
+                          onReset={resetSize}
+                        />
+                      </th>
+                    );
+                  })}
                 </tr>
               </thead>
               <tbody className="contents">
-                {ROW_KEYS.map((rowKey, row) => (
-                  <tr key={rowKey} className="contents">
-                    <th
-                      scope="row"
-                      data-row-index={row}
-                      onContextMenu={(event) => {
-                        event.preventDefault();
-                        openMenu(
-                          { kind: "row", index: row },
-                          { left: event.clientX, top: event.clientY },
+                <tr aria-hidden className="contents">
+                  <td className="p-0" style={{ gridColumn: "1 / -1", height: topSpacer }} />
+                </tr>
+                {ROW_KEYS.slice(firstRow, lastRow + 1).map((rowKey, offset) => {
+                  const row = firstRow + offset;
+                  const rowHighlighted =
+                    selected !== null &&
+                    (selectionRange
+                      ? row >= selectionRange.startRow && row <= selectionRange.endRow
+                      : row === selected.row);
+                  return (
+                    <tr key={rowKey} className="contents" aria-rowindex={row + 2}>
+                      <th
+                        scope="row"
+                        data-row-index={row}
+                        onPointerDown={(event) => {
+                          if (event.button !== 0) return;
+                          if ((event.target as HTMLElement).closest("[data-resize-handle]")) return;
+                          selectWhole("row", row, event.shiftKey);
+                        }}
+                        onContextMenu={(event) => {
+                          event.preventDefault();
+                          openMenu(
+                            { kind: "row", index: row },
+                            { left: event.clientX, top: event.clientY },
+                          );
+                        }}
+                        className={cn(
+                          freezeClass.firstColumn,
+                          "cursor-pointer border-r border-border px-2 text-right text-[11px] font-normal leading-[23px] tabular-nums text-muted-foreground",
+                          rowHighlighted ? "bg-accent text-accent-foreground" : "bg-muted",
+                          row < ROWS - 1 && "border-b",
+                        )}
+                      >
+                        {row + 1}
+                        <ResizeHandle
+                          axis="row"
+                          index={row}
+                          label={`Redimensionner la ligne ${row + 1}`}
+                          current={sizeOf(rowSizes, row, "row")}
+                          preview={
+                            preview?.axis === "row" && preview.index === row ? preview.size : null
+                          }
+                          disabled={!canEdit}
+                          onPreview={onPreviewSize}
+                          onCommit={commitSize}
+                          onSettle={onSettlePreview}
+                          onReset={resetSize}
+                        />
+                      </th>
+                      {Array.from({ length: COLS }, (_, col) => {
+                        const key = cellKey(row, col);
+                        const raw = activeMap.get(`${row}:${col}`) ?? "";
+                        const value = evaluated.get(key);
+                        const isEditing = editing?.row === row && editing?.col === col;
+                        const isSelected = selected?.row === row && selected?.col === col;
+                        const cellStyle = activeStyles.get(`${row}:${col}`) ?? null;
+                        return (
+                          <td
+                            key={isEditing ? `${key}:edition` : key}
+                            className={cn(
+                              "min-w-0 p-0",
+                              isEditing ? "relative z-20 overflow-visible" : "overflow-hidden",
+                              !isEditing && row !== ROWS - 1 && "border-b border-border",
+                              !isEditing && col !== COLS - 1 && "border-r border-border",
+                              !isEditing && cellStyle?.background
+                                ? STYLE_BACKGROUND_CLASSES[cellStyle.background]
+                                : undefined,
+                            )}
+                          >
+                            <GridCell
+                              row={row}
+                              col={col}
+                              raw={raw}
+                              display={
+                                value
+                                  ? formatCellDisplay(
+                                      formatValue(value),
+                                      cellStyle?.format ?? "auto",
+                                    )
+                                  : ""
+                              }
+                              tone={toneOf(value)}
+                              cellStyle={cellStyle}
+                              selected={isSelected}
+                              inRange={selectionRange !== null && inRange(selectionRange, row, col)}
+                              canEdit={canEdit}
+                              editing={isEditing}
+                              initialDraft={isEditing ? (editing?.draft ?? null) : null}
+                              onPointerSelect={onPointerSelect}
+                              onPointerExtend={onPointerExtend}
+                              onEditRequest={onEditRequest}
+                              onCommit={commitEditing}
+                              onCancel={cancelEditing}
+                              onRequestMenu={requestCellMenu}
+                            />
+                          </td>
                         );
-                      }}
-                      className={cn(
-                        freezeClass.firstColumn,
-                        "border-r border-border bg-muted px-2 py-1 text-right text-[11px] font-normal tabular-nums text-muted-foreground",
-                        row < ROWS - 1 && "border-b",
-                      )}
-                    >
-                      {row + 1}
-                      <ResizeHandle
-                        axis="row"
-                        index={row}
-                        label={`Redimensionner la ligne ${row + 1}`}
-                        current={sizeOf(rowSizes, row, "row")}
-                        preview={
-                          preview?.axis === "row" && preview.index === row ? preview.size : null
-                        }
-                        disabled={!canEdit}
-                        onPreview={onPreviewSize}
-                        onCommit={commitSize}
-                        onSettle={onSettlePreview}
-                        onReset={resetSize}
-                      />
-                    </th>
-                    {Array.from({ length: COLS }, (_, col) => {
-                      const key = cellKey(row, col);
-                      const raw = activeMap.get(`${row}:${col}`) ?? "";
-                      const value = evaluated.get(key);
-                      const isEditing = editing?.row === row && editing?.col === col;
-                      const isSelected = selected?.row === row && selected?.col === col;
-                      const cellStyle = activeStyles.get(`${row}:${col}`) ?? null;
+                      })}
+                    </tr>
+                  );
+                })}
+                <tr aria-hidden className="contents">
+                  <td className="p-0" style={{ gridColumn: "1 / -1", height: bottomSpacer }} />
+                </tr>
+                {/* Cadre de la sélection et poignée de recopie (hors flux). */}
+                {selected && !editing
+                  ? (() => {
+                      const range = fillPreview ?? selectionRange ?? rangeFrom(selected, selected);
+                      const top = Math.max(range.startRow, firstRow);
+                      const bottom = Math.min(range.endRow, lastRow);
+                      if (top > bottom) return null;
                       return (
-                        <td
-                          key={isEditing ? `${key}:edition` : key}
-                          className={cn(
-                            "min-w-0 overflow-hidden p-0",
-                            !isEditing && row !== ROWS - 1 && "border-b border-border",
-                            !isEditing && col !== COLS - 1 && "border-r border-border",
-                            !isEditing && cellStyle?.background
-                              ? STYLE_BACKGROUND_CLASSES[cellStyle.background]
-                              : undefined,
-                          )}
-                        >
-                          <GridCell
-                            row={row}
-                            col={col}
-                            raw={raw}
-                            display={
-                              value
-                                ? formatCellDisplay(formatValue(value), cellStyle?.format ?? "auto")
-                                : ""
-                            }
-                            tone={toneOf(value)}
-                            cellStyle={cellStyle}
-                            selected={isSelected}
-                            inRange={selectionRange !== null && inRange(selectionRange, row, col)}
-                            canEdit={canEdit}
-                            editing={isEditing}
-                            onStart={startEditing}
-                            onCommit={commitEditing}
-                            onCancel={cancelEditing}
-                            onRequestMenu={requestCellMenu}
-                            data-cell-row={row}
-                            data-cell-col={col}
-                          />
-                        </td>
+                        <tr aria-hidden className="contents">
+                          <td
+                            className={cn(
+                              "pointer-events-none absolute inset-0 z-10 p-0",
+                              fillPreview
+                                ? "border-2 border-dashed border-primary"
+                                : "border-2 border-primary",
+                            )}
+                            style={{
+                              gridRow: `${3 + top - firstRow} / ${4 + bottom - firstRow}`,
+                              gridColumn: `${2 + range.startCol} / ${3 + range.endCol}`,
+                            }}
+                          >
+                            {canEdit && !fillPreview && range.endRow <= lastRow ? (
+                              <span
+                                data-fill-handle
+                                title="Recopier (glisser)"
+                                onPointerDown={(event) => startFillDrag(event, range)}
+                                className="pointer-events-auto absolute -right-1 -bottom-1 size-2 cursor-crosshair border border-card bg-primary"
+                              />
+                            ) : null}
+                          </td>
+                        </tr>
                       );
-                    })}
-                  </tr>
-                ))}
+                    })()
+                  : null}
               </tbody>
             </table>
           </div>
@@ -2140,6 +3006,21 @@ export function SheetEditor({ fileId }: { fileId: string }) {
                 </button>
               ))}
             </div>
+            {statusStats ? (
+              <p
+                aria-live="polite"
+                className="shrink-0 px-2 text-xs tabular-nums text-muted-foreground"
+              >
+                {statusStats.numeric > 0
+                  ? `Somme : ${formatValue({ kind: "number", value: statusStats.sum })} · Moyenne : ${
+                      statusStats.average === null
+                        ? "—"
+                        : formatValue({ kind: "number", value: statusStats.average })
+                    } · `
+                  : ""}
+                Nombre : {statusStats.count}
+              </p>
+            ) : null}
             {canEdit ? (
               <Button
                 size="sm"
@@ -2150,7 +3031,10 @@ export function SheetEditor({ fileId }: { fileId: string }) {
                   setTabDialog("add");
                 }}
               >
-                ＋ Onglet
+                <span aria-hidden className="mr-1 text-base leading-none">
+                  +
+                </span>
+                Onglet
               </Button>
             ) : null}
             {canEdit && activeTab ? (

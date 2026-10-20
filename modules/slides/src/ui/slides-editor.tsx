@@ -1,5 +1,23 @@
 // biome-ignore-all lint/correctness/useExhaustiveDependencies: effets volontairement liés aux seules valeurs stables (handlers recréés à chaque rendu) — arbitrage documenté dans la refonte Slides.
-import { Alert, Button, cn, Dialog, Input, LoadingState, Menu } from "@workspace/ui";
+import {
+  Alert,
+  Button,
+  ContextMenu,
+  type ContextMenuItem,
+  cn,
+  Dialog,
+  IconExpand,
+  IconLayoutGrid,
+  IconMinus,
+  IconPlus,
+  IconRedo,
+  IconRotate,
+  IconSlideNormal,
+  IconUndo,
+  Input,
+  LoadingState,
+  Menu,
+} from "@workspace/ui";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
@@ -34,8 +52,16 @@ import {
   SLIDE_ASPECT_IDS,
   type SlideAspectId,
 } from "../slide-aspect.ts";
+import {
+  fillLabel,
+  normalizeRotation,
+  rotateBy,
+  SLIDE_FILL_IDS,
+  type SlideFill,
+} from "../slide-fill.ts";
 import { HISTORY_LIMIT } from "../slide-history.ts";
 import {
+  DEFAULT_NEW_LAYOUT,
   layoutElements,
   layoutHint,
   layoutLabel,
@@ -49,7 +75,13 @@ import {
   slideNavigationTarget,
 } from "../slide-navigation.ts";
 import { formatElapsed } from "../slide-notes.ts";
-import { canMoveSlide, moveTarget, reorderSlides } from "../slide-order.ts";
+import { canMoveSlide, moveTarget, reorderSlides, sorterKeyAction } from "../slide-order.ts";
+import {
+  appendPastedText,
+  cleanPastedText,
+  pastedTextBox,
+  SLIDES_CLIPBOARD_MIME,
+} from "../slide-paste.ts";
 import {
   presentationExitMessage,
   presentationHelp,
@@ -66,6 +98,7 @@ import {
   shapeLabel,
   shapeVariant,
 } from "../slide-shapes.ts";
+import { editorShortcut } from "../slide-shortcuts.ts";
 import {
   bumpFontSize,
   isBulletList,
@@ -171,6 +204,8 @@ function freeElement(
     textColor: "default",
     placeholder: null,
     align: "left",
+    fill: "theme",
+    rotation: 0,
   };
 }
 
@@ -256,6 +291,18 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
   const lastPushRef = useRef<{ kind: string; at: number } | null>(null);
   /** Presse-papiers interne des éléments (Ctrl+C / Ctrl+V). */
   const clipboardRef = useRef<EditorElement[]>([]);
+  /** Ctrl+V reçu : sans évènement « paste » derrière, on colle l'interne. */
+  const pendingPasteRef = useRef(false);
+  /** Vue normale (diapositive + colonne) ou trieuse (grille de vignettes). */
+  const [view, setView] = useState<"normal" | "sorter">("normal");
+  /** Menu contextuel ouvert : élément(s), fond de diapositive ou vignette. */
+  const [menu, setMenu] = useState<{
+    kind: "element" | "canvas" | "slide";
+    x: number;
+    y: number;
+  } | null>(null);
+  /** Nombre de colonnes de la trieuse (mesuré, pour la navigation clavier). */
+  const sorterRef = useRef<HTMLOListElement>(null);
   /** Mode concentration : masque le rail et la barre haute de la suite. */
   const { active: focusActive, toggle: toggleFocus, exit: exitFocus } = useEditorFocus();
 
@@ -662,6 +709,73 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
     setAnnouncement("Sélection dupliquée.");
   }
 
+  /**
+   * Colle du texte venu d'ailleurs : il s'ajoute à la zone de texte
+   * sélectionnée, sinon une nouvelle zone est créée au centre (PowerPoint).
+   */
+  function pasteText(raw: string) {
+    if (!canEditRef.current) return;
+    const text = cleanPastedText(raw);
+    if (text.length === 0) return;
+    const slide = slidesRef.current[selectedSlide];
+    const target =
+      selectedKeys.length === 1
+        ? slide?.elements.find((element) => element.key === selectedKeys[0])
+        : undefined;
+    if (target && target.kind !== "image" && target.placeholder !== "image") {
+      pushHistory("paste-text");
+      updateElement(target.key, { text: appendPastedText(target.text, text) });
+      setAnnouncement("Texte collé dans la zone.");
+      return;
+    }
+    pushHistory("paste-text");
+    const box = pastedTextBox(text);
+    appendElement({
+      ...freeElement("text", { x: box.x, y: box.y, w: box.w, h: box.h }, text),
+      fontSize: box.fontSize,
+    });
+    setAnnouncement("Texte collé dans une nouvelle zone de texte.");
+  }
+
+  /** Remplissage de l'élément sélectionné (forme ou zone de texte). */
+  function setFill(fill: SlideFill) {
+    const key = selectedKeys.length === 1 ? selectedKeys[0] : undefined;
+    if (!key) return;
+    pushHistory("fill");
+    updateElement(key, { fill });
+    setAnnouncement(`Remplissage « ${fillLabel(fill)} ».`);
+  }
+
+  /** Rotation absolue (degrés) de l'élément sélectionné. */
+  function setRotation(degrees: number) {
+    const key = selectedKeys.length === 1 ? selectedKeys[0] : undefined;
+    if (!key) return;
+    pushHistory("rotation");
+    updateElement(key, { rotation: normalizeRotation(degrees) });
+  }
+
+  /** Fait pivoter toute la sélection de ± 90° (menu contextuel, barre). */
+  function rotateSelection(delta: number) {
+    if (selectedKeys.length === 0) return;
+    pushHistory("rotate");
+    setSlides((current) =>
+      current.map((slide, position) =>
+        position === selectedSlide
+          ? {
+              ...slide,
+              elements: slide.elements.map((element) =>
+                selectedKeys.includes(element.key)
+                  ? { ...element, rotation: rotateBy(element.rotation, delta) }
+                  : element,
+              ),
+            }
+          : slide,
+      ),
+    );
+    schedule();
+    setAnnouncement(delta > 0 ? "Rotation de 90° à droite." : "Rotation de 90° à gauche.");
+  }
+
   /** Déplace tous les éléments sélectionnés de un point (cinq avec Maj), en %. */
   function nudgeSelection(dx: number, dy: number) {
     if (selectedKeys.length === 0) return;
@@ -776,6 +890,8 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
       textColor: "default",
       placeholder: zone.placeholder,
       align: zone.align,
+      fill: "theme" as const,
+      rotation: 0,
     }));
     setSlides((current) => [
       ...current,
@@ -1032,23 +1148,108 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
         doRedo();
         return;
       }
-      if (key === "d" && !event.shiftKey) {
+      const shortcut = editorShortcut(
+        {
+          key: event.key,
+          ctrlKey: event.ctrlKey,
+          metaKey: event.metaKey,
+          shiftKey: event.shiftKey,
+          altKey: event.altKey,
+        },
+        elementSelectedRef.current,
+      );
+      if (shortcut?.kind === "duplicate-selection") {
         event.preventDefault();
         duplicateSelection();
+        return;
+      }
+      if (shortcut?.kind === "duplicate-slide") {
+        // Ctrl+D sans élément sélectionné : la diapositive, comme PowerPoint.
+        event.preventDefault();
+        duplicateSlide();
+        return;
+      }
+      if (shortcut?.kind === "new-slide") {
+        event.preventDefault();
+        addSlide(DEFAULT_NEW_LAYOUT);
         return;
       }
       if (key === "c") {
         copySelection();
         return;
       }
-      if (key === "v" && clipboardRef.current.length > 0) {
-        event.preventDefault();
-        pasteClipboard();
+      if (key === "v" && !event.shiftKey && !event.altKey) {
+        // Le vrai collage arrive par l'évènement « paste » (texte externe ou
+        // éléments copiés ici). À défaut (presse-papiers refusé), on colle
+        // les éléments du presse-papiers interne.
+        pendingPasteRef.current = true;
+        setTimeout(() => {
+          if (!pendingPasteRef.current) return;
+          pendingPasteRef.current = false;
+          if (clipboardRef.current.length > 0) pasteClipboard();
+        }, 0);
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [presenting, canEdit, doUndo, doRedo, duplicateSelection, copySelection, pasteClipboard]);
+  }, [
+    presenting,
+    canEdit,
+    doUndo,
+    doRedo,
+    duplicateSelection,
+    copySelection,
+    pasteClipboard,
+    selectedSlide,
+    slides.length,
+  ]);
+
+  // Presse-papiers système : la copie d'éléments y dépose leur texte (et une
+  // marque interne) ; le collage d'un texte venu d'ailleurs crée une zone de
+  // texte ou complète la zone sélectionnée.
+  useEffect(() => {
+    if (presenting || !canEdit) return;
+    const onCopy = (event: ClipboardEvent) => {
+      const target = event.target as Element | null;
+      if (isTypingTarget(target) || isInsideModal(target)) return;
+      const slide = slidesRef.current[selectedSlide];
+      const items = slide?.elements.filter((element) => selectedKeys.includes(element.key)) ?? [];
+      if (items.length === 0 || !event.clipboardData) return;
+      event.preventDefault();
+      clipboardRef.current = items.map((element) => ({ ...element }));
+      event.clipboardData.setData(
+        "text/plain",
+        items
+          .map((element) => element.text)
+          .filter((text) => text.length > 0)
+          .join("\n"),
+      );
+      event.clipboardData.setData(SLIDES_CLIPBOARD_MIME, String(items.length));
+    };
+    const onPaste = (event: ClipboardEvent) => {
+      const target = event.target as Element | null;
+      if (isTypingTarget(target) || isInsideModal(target)) return;
+      pendingPasteRef.current = false;
+      const data = event.clipboardData;
+      event.preventDefault();
+      if (data?.types.includes(SLIDES_CLIPBOARD_MIME) && clipboardRef.current.length > 0) {
+        pasteClipboard();
+        return;
+      }
+      const text = data?.getData("text/plain") ?? "";
+      if (text.trim().length > 0) {
+        pasteText(text);
+        return;
+      }
+      if (clipboardRef.current.length > 0) pasteClipboard();
+    };
+    window.addEventListener("copy", onCopy);
+    window.addEventListener("paste", onPaste);
+    return () => {
+      window.removeEventListener("copy", onCopy);
+      window.removeEventListener("paste", onPaste);
+    };
+  }, [presenting, canEdit, selectedKeys, selectedSlide]);
 
   // Clavier sur la sélection : ordre z (Ctrl/Cmd + ↑/↓, Maj pour les
   // extrémités, un seul élément), déplacement aux flèches (Maj : pas de 5 %),
@@ -1059,7 +1260,9 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
     const onKeyDown = (event: KeyboardEvent) => {
       const target = event.target as Element | null;
       if (isTypingTarget(target) || isInsideModal(target)) return;
-      if (target?.closest("button")) return;
+      // Un bouton de l'interface garde ses touches ; un élément de diapositive
+      // focalisé (Tab, clic) reçoit les flèches, Suppr, Entrée.
+      if (target?.closest("button") && !target.closest("[data-slide-element]")) return;
       const slide = slidesRef.current[selectedSlide];
       const primary = slide?.elements.find((item) => item.key === selectedKeys[0]);
       const move = primary
@@ -1127,19 +1330,20 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
         setSelectedKeys([]);
         return;
       }
-      const step = event.shiftKey ? 5 : 1;
-      if (event.key === "ArrowLeft") {
+      // Flèches : 1 %, Maj : 5 %, Alt : 0,1 % (ajustement fin).
+      const shortcut = editorShortcut(
+        {
+          key: event.key,
+          ctrlKey: event.ctrlKey,
+          metaKey: event.metaKey,
+          shiftKey: event.shiftKey,
+          altKey: event.altKey,
+        },
+        true,
+      );
+      if (shortcut?.kind === "nudge") {
         event.preventDefault();
-        nudgeSelection(-step, 0);
-      } else if (event.key === "ArrowRight") {
-        event.preventDefault();
-        nudgeSelection(step, 0);
-      } else if (event.key === "ArrowUp") {
-        event.preventDefault();
-        nudgeSelection(0, -step);
-      } else if (event.key === "ArrowDown") {
-        event.preventDefault();
-        nudgeSelection(0, step);
+        nudgeSelection(shortcut.dx, shortcut.dy);
       }
     };
     window.addEventListener("keydown", onKeyDown);
@@ -1258,6 +1462,182 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
     return () => window.removeEventListener("afterprint", clear);
   }, [printToken]);
 
+  /** Entrées du menu contextuel selon sa cible (élément, fond, vignette). */
+  function contextMenuItems(): ContextMenuItem[] {
+    if (!menu) return [];
+    const run = (action: () => void) => () => {
+      setMenu(null);
+      action();
+    };
+    const hasClipboard = clipboardRef.current.length > 0;
+    if (menu.kind === "element") {
+      const single = selectedKeys.length === 1;
+      const slide = slidesRef.current[selectedSlide];
+      const element = single
+        ? slide?.elements.find((item) => item.key === selectedKeys[0])
+        : undefined;
+      const index = element ? (slide?.elements.indexOf(element) ?? -1) : -1;
+      const count = slide?.elements.length ?? 0;
+      return [
+        {
+          type: "item",
+          id: "copy",
+          label: "Copier",
+          shortcut: "Ctrl+C",
+          onSelect: run(copySelection),
+        },
+        {
+          type: "item",
+          id: "cut",
+          label: "Couper",
+          shortcut: "Ctrl+X",
+          disabled: !canEdit,
+          onSelect: run(() => {
+            copySelection();
+            deleteSelection();
+          }),
+        },
+        {
+          type: "item",
+          id: "paste",
+          label: "Coller",
+          shortcut: "Ctrl+V",
+          disabled: !canEdit || !hasClipboard,
+          onSelect: run(() => pasteClipboard()),
+        },
+        {
+          type: "item",
+          id: "duplicate",
+          label: "Dupliquer",
+          shortcut: "Ctrl+D",
+          disabled: !canEdit,
+          onSelect: run(duplicateSelection),
+        },
+        { type: "separator", id: "sep-edit" },
+        {
+          type: "item",
+          id: "edit-text",
+          label: "Modifier le texte",
+          shortcut: "Entrée",
+          disabled: !canEdit || !element || element.kind === "image",
+          onSelect: run(() => element && startEdit(element.key)),
+        },
+        {
+          type: "item",
+          id: "rotate-right",
+          label: "Faire pivoter à droite de 90°",
+          disabled: !canEdit,
+          onSelect: run(() => rotateSelection(90)),
+        },
+        {
+          type: "item",
+          id: "rotate-left",
+          label: "Faire pivoter à gauche de 90°",
+          disabled: !canEdit,
+          onSelect: run(() => rotateSelection(-90)),
+        },
+        { type: "separator", id: "sep-z" },
+        ...Z_MOVE_ORDER.map(
+          (move): ContextMenuItem => ({
+            type: "item",
+            id: `z-${move}`,
+            label: zMoveLabel(move),
+            disabled: !canEdit || !single || !canMoveZ(index, move, count),
+            onSelect: run(() => zOrderSelected(move)),
+          }),
+        ),
+        { type: "separator", id: "sep-delete" },
+        {
+          type: "item",
+          id: "delete",
+          label: "Supprimer",
+          shortcut: "Suppr",
+          destructive: true,
+          disabled: !canEdit,
+          onSelect: run(deleteSelection),
+        },
+      ];
+    }
+    if (menu.kind === "canvas") {
+      return [
+        {
+          type: "item",
+          id: "paste",
+          label: "Coller",
+          shortcut: "Ctrl+V",
+          disabled: !canEdit || !hasClipboard,
+          onSelect: run(() => pasteClipboard()),
+        },
+        {
+          type: "item",
+          id: "add-text",
+          label: "Ajouter une zone de texte",
+          disabled: !canEdit,
+          onSelect: run(addText),
+        },
+        { type: "separator", id: "sep-slide" },
+        {
+          type: "item",
+          id: "new-slide",
+          label: "Nouvelle diapositive",
+          shortcut: "Ctrl+M",
+          disabled: !canEdit,
+          onSelect: run(() => addSlide(DEFAULT_NEW_LAYOUT)),
+        },
+        {
+          type: "item",
+          id: "layout",
+          label: "Choisir une mise en page…",
+          disabled: !canEdit,
+          onSelect: run(() => setLayoutOpen(true)),
+        },
+      ];
+    }
+    return [
+      {
+        type: "item",
+        id: "new-slide",
+        label: "Nouvelle diapositive",
+        shortcut: "Ctrl+M",
+        disabled: !canEdit,
+        onSelect: run(() => addSlide(DEFAULT_NEW_LAYOUT)),
+      },
+      {
+        type: "item",
+        id: "duplicate-slide",
+        label: "Dupliquer la diapositive",
+        shortcut: "Ctrl+D",
+        disabled: !canEdit,
+        onSelect: run(duplicateSlide),
+      },
+      { type: "separator", id: "sep-move" },
+      {
+        type: "item",
+        id: "move-up",
+        label: "Monter",
+        disabled: !canEdit || !canMoveSlide(selectedSlide, -1, slides.length),
+        onSelect: run(() => moveSlide(-1)),
+      },
+      {
+        type: "item",
+        id: "move-down",
+        label: "Descendre",
+        disabled: !canEdit || !canMoveSlide(selectedSlide, 1, slides.length),
+        onSelect: run(() => moveSlide(1)),
+      },
+      { type: "separator", id: "sep-delete" },
+      {
+        type: "item",
+        id: "delete-slide",
+        label: "Supprimer la diapositive",
+        shortcut: "Suppr",
+        destructive: true,
+        disabled: !canEdit || slides.length <= 1,
+        onSelect: run(deleteSlide),
+      },
+    ];
+  }
+
   // -------------------------------------------------------------------------
   // Rendu
   // -------------------------------------------------------------------------
@@ -1363,7 +1743,7 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
             }
             onClick={toggleFocus}
           >
-            ⛶
+            <IconExpand />
           </Button>
           <Button
             size="sm"
@@ -1420,7 +1800,7 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
               disabled={!canEdit || !canUndo}
               onClick={doUndo}
             >
-              ↺
+              <IconUndo />
             </Button>
             <Button
               size="sm"
@@ -1430,7 +1810,34 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
               disabled={!canEdit || !canRedo}
               onClick={doRedo}
             >
-              ↻
+              <IconRedo />
+            </Button>
+            <span aria-hidden className="mx-1 h-4 w-px shrink-0 bg-border" />
+
+            {/* Affichage : normal (une diapositive) ou trieuse (toutes, en grille). */}
+            <Button
+              size="sm"
+              variant={view === "normal" ? "secondary" : "ghost"}
+              aria-label="Affichage normal"
+              title="Affichage normal"
+              aria-pressed={view === "normal"}
+              onClick={() => setView("normal")}
+            >
+              <IconSlideNormal />
+            </Button>
+            <Button
+              size="sm"
+              variant={view === "sorter" ? "secondary" : "ghost"}
+              aria-label="Trieuse de diapositives"
+              title="Trieuse de diapositives"
+              aria-pressed={view === "sorter"}
+              onClick={() => {
+                setSelectedKeys([]);
+                setEditingKey(null);
+                setView("sorter");
+              }}
+            >
+              <IconLayoutGrid />
             </Button>
             <span aria-hidden className="mx-1 h-4 w-px shrink-0 bg-border" />
 
@@ -1457,7 +1864,7 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
               aria-label="Réduire le zoom"
               onClick={() => stepZoom(-1)}
             >
-              −
+              <IconMinus />
             </Button>
             <Button
               size="sm"
@@ -1465,7 +1872,7 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
               aria-label="Augmenter le zoom"
               onClick={() => stepZoom(1)}
             >
-              ＋
+              <IconPlus />
             </Button>
             <span aria-hidden className="mx-1 h-4 w-px shrink-0 bg-border" />
 
@@ -1475,10 +1882,12 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
               variant="ghost"
               className="font-medium"
               aria-label="Nouvelle diapositive"
+              title="Nouvelle diapositive (Ctrl+M)"
               disabled={!canEdit}
               onClick={() => setLayoutOpen(true)}
             >
-              ＋ Diapositive
+              <IconPlus />
+              Diapositive
             </Button>
             <Button
               size="sm"
@@ -1670,6 +2079,21 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
                     })}
                   </>
                 ) : null}
+                <span aria-hidden className="mx-1 h-4 w-px shrink-0 bg-border" />
+                <select
+                  aria-label="Remplissage"
+                  title="Remplissage"
+                  value={textElement.fill}
+                  disabled={!canEdit}
+                  onChange={(event) => setFill(event.target.value as SlideFill)}
+                  className={TOOLBAR_SELECT_CLASS}
+                >
+                  {SLIDE_FILL_IDS.map((fill) => (
+                    <option key={fill} value={fill}>
+                      {`Remplissage : ${fillLabel(fill)}`}
+                    </option>
+                  ))}
+                </select>
               </>
             ) : singleSelection?.kind === "image" ? (
               <>
@@ -1704,6 +2128,30 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
                     {`${selectedKeys.length} éléments`}
                   </span>
                 ) : null}
+                {singleSelection ? (
+                  <Input
+                    type="number"
+                    aria-label="Rotation (degrés)"
+                    title="Rotation (degrés)"
+                    min={0}
+                    max={359}
+                    step={1}
+                    value={singleSelection.rotation}
+                    disabled={!canEdit}
+                    onChange={(event) => setRotation(Number(event.target.value) || 0)}
+                    className="h-8 w-16"
+                  />
+                ) : null}
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  aria-label="Faire pivoter de 90° à droite"
+                  title="Faire pivoter de 90° à droite"
+                  disabled={!canEdit}
+                  onClick={() => rotateSelection(90)}
+                >
+                  <IconRotate />
+                </Button>
                 <Button
                   size="sm"
                   variant="ghost"
@@ -1815,6 +2263,19 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
                       onSelect: () => zOrderSelected(move),
                     })),
                     {
+                      id: "rotate-right",
+                      label: "Faire pivoter à droite de 90°",
+                      separated: true,
+                      disabled: !canEdit,
+                      onSelect: () => rotateSelection(90),
+                    },
+                    {
+                      id: "rotate-left",
+                      label: "Faire pivoter à gauche de 90°",
+                      disabled: !canEdit,
+                      onSelect: () => rotateSelection(-90),
+                    },
+                    {
                       id: "delete",
                       label: "Supprimer",
                       shortcut: "Suppr",
@@ -1887,8 +2348,130 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
             </Button>
           </div>
 
-          <section aria-label="Éditeur de diapositives" className="flex min-h-0 flex-1 print-hide">
+          {view === "sorter" ? (
+            <section
+              aria-label="Trieuse de diapositives"
+              className="min-h-0 flex-1 overflow-auto bg-muted/40 p-6 print-hide"
+            >
+              <ol
+                ref={sorterRef}
+                aria-label="Diapositives (trieuse)"
+                className="grid gap-5"
+                style={{ gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))" }}
+              >
+                {slides.map((slide, index) => {
+                  const selected = index === selectedSlide;
+                  return (
+                    <li key={slide.key} className="flex flex-col gap-1.5">
+                      <button
+                        type="button"
+                        data-sorter-thumb=""
+                        draggable={canEdit}
+                        aria-current={selected ? "true" : undefined}
+                        aria-label={`Diapositive ${index + 1} sur ${slides.length} : ${slideTitle(slide, index)}`}
+                        tabIndex={selected ? 0 : -1}
+                        onClick={() => selectSlide(index)}
+                        onDoubleClick={() => {
+                          selectSlide(index);
+                          setView("normal");
+                        }}
+                        onDragStart={(event) => {
+                          event.dataTransfer.setData("text/x-slide-index", String(index));
+                          event.dataTransfer.effectAllowed = "move";
+                        }}
+                        onDragOver={(event) => {
+                          if (canEdit) event.preventDefault();
+                        }}
+                        onDrop={(event) => {
+                          event.preventDefault();
+                          const from = Number(event.dataTransfer.getData("text/x-slide-index"));
+                          if (Number.isInteger(from) && from !== index) moveSlideTo(from, index);
+                        }}
+                        onContextMenu={(event) => {
+                          event.preventDefault();
+                          selectSlide(index);
+                          setMenu({ kind: "slide", x: event.clientX, y: event.clientY });
+                        }}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter") {
+                            event.preventDefault();
+                            setView("normal");
+                            return;
+                          }
+                          if ((event.key === "Delete" || event.key === "Backspace") && canEdit) {
+                            event.preventDefault();
+                            deleteSlide();
+                            return;
+                          }
+                          const list = sorterRef.current;
+                          const first = list?.children[0] as HTMLElement | undefined;
+                          const columns =
+                            list && first
+                              ? Math.max(
+                                  1,
+                                  Math.round(
+                                    list.clientWidth / (first.getBoundingClientRect().width || 1),
+                                  ),
+                                )
+                              : 1;
+                          const action = sorterKeyAction({
+                            key: event.key,
+                            altKey: event.altKey,
+                            current: index,
+                            count: slides.length,
+                            columns,
+                          });
+                          if (!action || (action.kind === "move" && !canEdit)) return;
+                          event.preventDefault();
+                          event.stopPropagation();
+                          if (action.kind === "move") moveSlideTo(index, action.index);
+                          else selectSlide(action.index);
+                          requestAnimationFrame(() =>
+                            sorterRef.current
+                              ?.querySelectorAll<HTMLButtonElement>("[data-sorter-thumb]")
+                              [action.index]?.focus(),
+                          );
+                        }}
+                        className={cn(
+                          "block overflow-hidden rounded-md border-2 bg-card text-left shadow-xs transition-[border-color,box-shadow] hover:shadow-soft focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
+                          selected
+                            ? "border-primary shadow-soft"
+                            : "border-border/60 hover:border-primary/50",
+                        )}
+                      >
+                        <SlideCanvas
+                          slide={slide}
+                          fileId={fileId}
+                          aspect={aspect}
+                          theme={theme}
+                          className="rounded-none border-0 shadow-none"
+                        />
+                      </button>
+                      <span
+                        aria-hidden
+                        className={cn(
+                          "truncate text-xs",
+                          selected ? "font-semibold text-primary" : "text-muted-foreground",
+                        )}
+                      >
+                        {`${index + 1}. ${slideTitle(slide, index)}`}
+                      </span>
+                    </li>
+                  );
+                })}
+              </ol>
+              <p className="mt-4 text-xs text-muted-foreground">
+                Glissez une vignette pour la déplacer (ou Alt + flèches), double-cliquez ou appuyez
+                sur Entrée pour l'ouvrir.
+              </p>
+            </section>
+          ) : null}
+          <section
+            aria-label="Éditeur de diapositives"
+            className={cn("flex min-h-0 flex-1 print-hide", view === "sorter" && "hidden")}
+          >
             <SlideFilmstrip
+              onSlideMenu={(_index, point) => setMenu({ kind: "slide", ...point })}
               slides={slides}
               selectedIndex={selectedSlide}
               canEdit={canEdit}
@@ -1912,7 +2495,40 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
                 className="mx-auto"
                 style={{ width: `${Math.round((SLIDE_BASE_WIDTH * zoom) / 100)}px` }}
               >
-                <div ref={previewRef}>
+                {/* biome-ignore lint/a11y/noStaticElementInteractions: le clic droit ouvre le menu contextuel, également accessible au clavier (touche Menu, Maj+F10) */}
+                <div
+                  ref={previewRef}
+                  onContextMenu={(event) => {
+                    event.preventDefault();
+                    const target = event.target as Element;
+                    const host = target.closest<HTMLElement>("[data-element-key]");
+                    const key = host?.dataset.elementKey ?? null;
+                    if (key) {
+                      if (!selectedKeys.includes(key)) {
+                        setSelectedKeys([key]);
+                        setEditingKey(null);
+                      }
+                      setMenu({ kind: "element", x: event.clientX, y: event.clientY });
+                    } else {
+                      setMenu({ kind: "canvas", x: event.clientX, y: event.clientY });
+                    }
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10"))
+                      return;
+                    const host = (event.target as Element).closest<HTMLElement>(
+                      "[data-element-key]",
+                    );
+                    if (!host) return;
+                    event.preventDefault();
+                    const rect = host.getBoundingClientRect();
+                    setMenu({
+                      kind: "element",
+                      x: rect.left + rect.width / 2,
+                      y: rect.top + rect.height / 2,
+                    });
+                  }}
+                >
                   <SlideCanvas
                     slide={current}
                     fileId={fileId}
@@ -1949,6 +2565,24 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
           ) : null}
         </>
       ) : null}
+
+      <ContextMenu
+        open={menu !== null}
+        x={menu?.x ?? 0}
+        y={menu?.y ?? 0}
+        label={
+          menu?.kind === "slide"
+            ? "Actions de la diapositive"
+            : menu?.kind === "element"
+              ? "Actions de l'élément"
+              : "Actions de la diapositive affichée"
+        }
+        items={contextMenuItems()}
+        onClose={() => setMenu(null)}
+        footer={
+          canEdit ? undefined : "Lecture seule : seules la copie et la navigation sont possibles."
+        }
+      />
 
       {/* Galerie des mises en page : aperçus générés depuis la vraie géométrie. */}
       <Dialog open={layoutOpen} onClose={() => setLayoutOpen(false)} title="Nouvelle diapositive">

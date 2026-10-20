@@ -1,4 +1,13 @@
-import { Button, cn, Kbd } from "@workspace/ui";
+import {
+  Button,
+  cn,
+  IconArrowDown,
+  IconArrowUp,
+  IconCopy,
+  IconPlus,
+  IconTrash,
+  Kbd,
+} from "@workspace/ui";
 import { useEffect, useId, useRef, useState } from "react";
 import type { EditorSlide } from "../editor-model.ts";
 import { DEFAULT_SLIDE_ASPECT, type SlideAspectId } from "../slide-aspect.ts";
@@ -44,6 +53,8 @@ export type SlideFilmstripProps = {
   canDelete?: boolean;
   canMoveUp?: boolean;
   canMoveDown?: boolean;
+  /** Clic droit (ou touche Menu) sur une vignette : menu contextuel de la diapositive. */
+  onSlideMenu?: (index: number, point: { x: number; y: number }) => void;
   /** Format et thème de la présentation : les vignettes sont fidèles au rendu. */
   aspect?: SlideAspectId;
   theme?: SlideThemeId;
@@ -75,6 +86,7 @@ export function SlideFilmstrip({
   canDelete = true,
   canMoveUp = true,
   canMoveDown = true,
+  onSlideMenu,
   aspect = DEFAULT_SLIDE_ASPECT,
   theme = DEFAULT_SLIDE_THEME,
 }: SlideFilmstripProps) {
@@ -234,18 +246,43 @@ export function SlideFilmstrip({
               onSelect(index);
             }}
             onPointerDown={(event) => startDrag(event, index)}
-            onKeyDown={(event) => onThumbKeyDown(event, index)}
+            onKeyDown={(event) => {
+              if (
+                onSlideMenu &&
+                (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10"))
+              ) {
+                event.preventDefault();
+                const rect = event.currentTarget.getBoundingClientRect();
+                onSelect(index);
+                onSlideMenu(index, {
+                  x: rect.left + rect.width / 2,
+                  y: rect.top + rect.height / 2,
+                });
+                return;
+              }
+              onThumbKeyDown(event, index);
+            }}
+            onContextMenu={(event) => {
+              if (!onSlideMenu) return;
+              event.preventDefault();
+              onSelect(index);
+              onSlideMenu(index, { x: event.clientX, y: event.clientY });
+            }}
             className={cn(
-              "relative block min-w-0 flex-1 rounded-md border bg-card p-0.5 text-left transition-[border-color,box-shadow] duration-150",
+              "relative block min-w-0 flex-1 overflow-hidden rounded-md border-2 bg-card text-left shadow-xs transition-[border-color,box-shadow] duration-150 hover:shadow-soft focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1",
               canEdit ? "cursor-grab" : "cursor-pointer",
               dragging && "cursor-grabbing",
               draggedIndex === index && "opacity-40",
-              selected
-                ? "border-primary ring-2 ring-primary/30"
-                : "border-transparent hover:border-primary/40",
+              selected ? "border-primary shadow-soft" : "border-border/60 hover:border-primary/50",
             )}
           >
-            <SlideCanvas slide={slide} fileId={fileId} aspect={aspect} theme={theme} />
+            <SlideCanvas
+              slide={slide}
+              fileId={fileId}
+              aspect={aspect}
+              theme={theme}
+              className="rounded-none border-0 shadow-none"
+            />
             {/* Pastille : la diapositive porte des notes du présentateur. */}
             {hasNotes ? (
               <span
@@ -261,7 +298,7 @@ export function SlideFilmstrip({
 
   if (slides.length === 0) {
     return (
-      <div className="flex w-44 shrink-0 flex-col gap-2 border-r border-border bg-muted/30 p-3 print-hide">
+      <div className="flex w-52 shrink-0 flex-col gap-2 border-r border-border bg-muted/30 p-3 print-hide">
         <p className="rounded-md border border-dashed border-border p-3 text-xs text-muted-foreground">
           Aucune diapositive.
         </p>
@@ -270,7 +307,7 @@ export function SlideFilmstrip({
   }
 
   return (
-    <div className="flex w-44 shrink-0 flex-col border-r border-border bg-muted/30 print-hide">
+    <div className="flex w-52 shrink-0 flex-col border-r border-border bg-muted/30 print-hide">
       <div className="flex items-baseline justify-between gap-2 px-3 pb-1 pt-3">
         <h2 className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">
           Diapositives
@@ -283,7 +320,7 @@ export function SlideFilmstrip({
         aria-label="Liste des diapositives"
         aria-describedby={hintId}
         className={cn(
-          "flex min-h-0 flex-1 flex-col gap-1.5 overflow-y-auto px-2 py-1",
+          "flex min-h-0 flex-1 flex-col gap-2.5 overflow-y-auto px-2 py-1.5",
           dragging && "select-none",
         )}
       >
@@ -310,7 +347,8 @@ export function SlideFilmstrip({
             aria-label="Ajouter une diapositive"
             onClick={onAdd}
           >
-            ＋ Diapositive
+            <IconPlus />
+            Diapositive
           </Button>
           <div className="flex items-center gap-1">
             <Button
@@ -322,7 +360,7 @@ export function SlideFilmstrip({
               disabled={onDuplicate === undefined}
               onClick={onDuplicate}
             >
-              ⧉
+              <IconCopy />
             </Button>
             <Button
               size="sm"
@@ -333,7 +371,7 @@ export function SlideFilmstrip({
               disabled={onDelete === undefined || !canDelete}
               onClick={onDelete}
             >
-              ✕
+              <IconTrash />
             </Button>
             <Button
               size="sm"
@@ -344,7 +382,7 @@ export function SlideFilmstrip({
               disabled={onMoveUp === undefined || !canMoveUp}
               onClick={onMoveUp}
             >
-              ↑
+              <IconArrowUp />
             </Button>
             <Button
               size="sm"
@@ -355,7 +393,7 @@ export function SlideFilmstrip({
               disabled={onMoveDown === undefined || !canMoveDown}
               onClick={onMoveDown}
             >
-              ↓
+              <IconArrowDown />
             </Button>
           </div>
         </div>
