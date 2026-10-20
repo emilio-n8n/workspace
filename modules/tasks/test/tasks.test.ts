@@ -635,7 +635,9 @@ describe("tasks — ordre du panneau des listes", () => {
 
     const rows = await getDb().select().from(auditEvents).where(eq(auditEvents.orgId, f.orgId));
     expect(rows.length - before).toBe(1);
-    expect(rows.at(-1)).toMatchObject({
+    // Sans ORDER BY, l'ordre des lignes n'est pas garanti (échec intermittent
+    // en CI) : on cherche la ligne par son action.
+    expect(rows.find((row) => row.action === "tasks.list.reorder")).toMatchObject({
       action: "tasks.list.reorder",
       resourceType: "task_list",
       result: "success",
@@ -943,7 +945,7 @@ describe("tasks — ordre manuel des tâches", () => {
 
     expect(await countAuditRows(f.orgId)).toBe(before + 1);
     const rows = await getDb().select().from(auditEvents).where(eq(auditEvents.orgId, f.orgId));
-    expect(rows.at(-1)).toMatchObject({
+    expect(rows.find((row) => row.action === "tasks.task.reorder")).toMatchObject({
       action: "tasks.task.reorder",
       resourceType: "task_list",
       resourceId: list.id,
