@@ -1,27 +1,53 @@
+import { Extension } from "@tiptap/core";
 import { Collaboration } from "@tiptap/extension-collaboration";
 import { CollaborationCaret } from "@tiptap/extension-collaboration-caret";
 import { Highlight } from "@tiptap/extension-highlight";
 import { Image } from "@tiptap/extension-image";
+import { TaskItem, TaskList } from "@tiptap/extension-list";
 import { TableKit } from "@tiptap/extension-table";
 import { TextAlign } from "@tiptap/extension-text-align";
 import { TextStyleKit } from "@tiptap/extension-text-style";
 import { NodeSelection } from "@tiptap/pm/state";
 import { type Editor, EditorContent, type JSONContent, useEditor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
-import { Alert, Button, cn, Dialog, Input, Label, LoadingState, Menu } from "@workspace/ui";
+import {
+  Alert,
+  Button,
+  ContextMenu,
+  type ContextMenuItem,
+  cn,
+  Dialog,
+  Input,
+  Label,
+  LoadingState,
+  Menu,
+  type MenuItem,
+} from "@workspace/ui";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { type CollabSession, createCollabSession } from "../collab-client.ts";
 import {
+  DOC_FONT_FAMILIES,
   DOC_FONT_SIZES,
   DOC_HIGHLIGHTS,
   DOC_TEXT_COLORS,
+  fontFamilyIdOf,
   normalizeDocFontSize,
   PARAGRAPH_STYLES,
   type ParagraphStyleId,
 } from "../doc-format.ts";
 import { type DocumentStats, documentStats, formatStats } from "../document-stats.ts";
+import {
+  LINE_HEIGHTS,
+  normalizeLineHeight,
+  PagedDocument,
+  ParagraphFormat,
+  Subscript,
+  Superscript,
+  WordShortcuts,
+} from "../editor-extensions.ts";
 import { toPlainText } from "../export.ts";
 import { PageBreak } from "../page-break.ts";
+import { normalizePageSetup, pageGeometry, printPageRule } from "../page-setup.ts";
 import { saveDocumentFn } from "../server.ts";
 import { DocumentSearch } from "./document-search.tsx";
 import { FORMAT_ACTIONS, type FormatActionId, matchFormatAction } from "./format-actions.ts";
@@ -30,17 +56,32 @@ import {
   AlignJustifyIcon,
   AlignLeftIcon,
   AlignRightIcon,
+  BulletListIcon,
+  ClearFormatIcon,
+  CommentIcon,
   FocusIcon,
   ImageIcon,
+  IndentIcon,
   LinkIcon,
+  OrderedListIcon,
+  OutdentIcon,
   OutlineIcon,
   PageBreakIcon,
+  RedoIcon,
   SearchIcon,
   TableIcon,
+  TaskListIcon,
+  UndoIcon,
 } from "./icons.tsx";
 import { OutlinePanel } from "./outline-panel.tsx";
+import { type DocMenu, DocMenuBar, DocRuler, PageSetupDialog } from "./page-layout.tsx";
 import { SearchHighlight } from "./search-plugin.ts";
-import { onToolbarArrowKeys, ToolbarButton, ToolbarSeparator } from "./toolbar.tsx";
+import {
+  onToolbarArrowKeys,
+  ToolbarButton,
+  ToolbarSeparator,
+  useFormatModifier,
+} from "./toolbar.tsx";
 import { useFocusMode } from "./use-focus-mode.ts";
 
 type Props = {
@@ -56,12 +97,23 @@ type Props = {
    * strictement local — comportement historique inchangé.
    */
   collab?: { url: string; room: string; token: string; userName: string } | null;
+  /**
+   * Actions de la page hôte reprises dans la barre de menus (Fichier,
+   * Insertion) : exports et panneau de commentaires.
+   */
+  host?: {
+    exportHref?: (format: "md" | "html") => string;
+    onToggleComments?: () => void;
+  };
 };
 
 type SaveStatus = "idle" | "saving" | "saved" | "error" | "conflict";
 type SaveMode = "replace-latest" | "append";
 
 const AUTOSAVE_DELAY_MS = 1200;
+
+/** Paliers de zoom (Affichage › Zoom et pied de page). */
+const ZOOM_LEVELS = [50, 75, 90, 100, 125, 150, 200] as const;
 
 /** Fragment Yjs synchronisé (voir `Collaboration.configure({ field })`). */
 const COLLAB_FIELD = "content";
@@ -199,6 +251,66 @@ function errorMessage(error: unknown): string {
   return "";
 }
 
+/**
+ * Pont clavier éditeur → interface : Ctrl+K ouvre le dialogue de lien depuis
+ * le texte (comme Word et Google Docs). ProseMirror consomme la touche, donc
+ * la palette ⌘K de la suite ne s'ouvre pas en même temps.
+ */
+const EditorCommandBridge = Extension.create<{ onLink: () => void }>({
+  name: "editorCommandBridge",
+  addOptions() {
+    return { onLink: () => undefined };
+  },
+  addKeyboardShortcuts() {
+    return {
+      "Mod-k": () => {
+        if (!this.editor.isEditable) return false;
+        this.options.onLink();
+        return true;
+      },
+    };
+  },
+});
+
+/**
+ * Préférence d'affichage mémorisée (localStorage) : lue après le montage pour
+ * que le rendu serveur et le premier rendu client restent identiques.
+ */
+function useViewPreference(key: string, fallback: boolean): [boolean, (value: boolean) => void] {
+  const [value, setValue] = useState(fallback);
+  useEffect(() => {
+    try {
+      const stored = window.localStorage.getItem(key);
+      if (stored === "1" || stored === "0") setValue(stored === "1");
+    } catch {
+      // Stockage indisponible (navigation privée) : défaut.
+    }
+  }, [key]);
+  const update = useCallback(
+    (next: boolean) => {
+      setValue(next);
+      try {
+        window.localStorage.setItem(key, next ? "1" : "0");
+      } catch {
+        // Préférence non mémorisée : sans conséquence.
+      }
+    },
+    [key],
+  );
+  return [value, update];
+}
+
+/** Police active : identifiant du catalogue, « custom » pour une police collée. */
+function activeFontFamily(editor: WorkspaceEditor): string {
+  return fontFamilyIdOf(editor.getAttributes("textStyle").fontFamily) ?? "custom";
+}
+
+/** Interligne du bloc sous le curseur (`null` = défaut du document). */
+function activeLineHeight(editor: WorkspaceEditor): string | null {
+  const block = editor.isActive("heading") ? "heading" : "paragraph";
+  return normalizeLineHeight(editor.getAttributes(block).lineHeight);
+}
+
 /** Le service signale un conflit d'autosave par ce message. */
 const isConflictError = (error: unknown): boolean =>
   errorMessage(error).includes("modifié ailleurs");
@@ -263,6 +375,7 @@ function EditorSurface({
   initialRevision,
   onReload,
   collab,
+  host,
   session = null,
 }: SurfaceProps) {
   const [status, setStatus] = useState<SaveStatus>("idle");
@@ -302,6 +415,21 @@ function EditorSurface({
   const [linkOpen, setLinkOpen] = useState(false);
   const [linkUrl, setLinkUrl] = useState("");
   const [linkError, setLinkError] = useState<string | null>(null);
+  /** Ligne « Remplacer par » de la recherche (Ctrl+H). */
+  const [replaceOpen, setReplaceOpen] = useState(false);
+  /** Dialogues « Mise en page » et « Nombre de mots ». */
+  const [pageSetupOpen, setPageSetupOpen] = useState(false);
+  const [wordCountOpen, setWordCountOpen] = useState(false);
+  /** Menu contextuel (clic droit dans le document), en coordonnées d'écran. */
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
+  /** Message quand le navigateur refuse l'accès au presse-papiers. */
+  const [clipboardNote, setClipboardNote] = useState<string | null>(null);
+  /** Affichage : page de type « Mise en page d'impression » et règle (préférences locales). */
+  const [pageView, setPageView] = useViewPreference("workspace.docs.pageView", true);
+  const [showRuler, setShowRuler] = useViewPreference("workspace.docs.ruler", true);
+  const modifier = useFormatModifier();
+  /** Ouverture du dialogue de lien — lue par le raccourci Ctrl+K de l'éditeur. */
+  const openLinkRef = useRef<() => void>(() => undefined);
 
   /** Étiquette du curseur distant — purement cosmétique. */
   const collabUserName = collab?.userName ?? "Vous";
@@ -377,26 +505,39 @@ function EditorSurface({
   );
 
   const editor = useEditor({
+    // Les états actifs de la barre (gras, style, police…) suivent le curseur.
+    shouldRerenderOnTransaction: true,
     extensions: [
       // La collaboration gère son propre historique : celui de StarterKit est
-      // désactivé pour éviter deux gestionnaires concurrents.
+      // désactivé pour éviter deux gestionnaires concurrents. Le nœud racine
+      // vient de `PagedDocument` (il porte la mise en page).
+      PagedDocument,
       ...(session
         ? [
-            StarterKit.configure({ undoRedo: false }),
+            StarterKit.configure({ undoRedo: false, document: false }),
             Collaboration.configure({ document: session.doc, field: COLLAB_FIELD }),
             CollaborationCaret.configure({
               provider: session.provider,
               user: { name: collabUserName, color: COLLAB_CURSOR_COLOR },
             }),
           ]
-        : [StarterKit]),
+        : [StarterKit.configure({ document: false })]),
       // Mise en forme avancée, commune aux deux modes : couleurs et tailles
       // (marque TextStyle), surlignage multicolore, alignement des paragraphes
       // et des titres, tableaux, images https et saut de page.
-      TextStyleKit.configure({ backgroundColor: false, fontFamily: false, lineHeight: false }),
+      TextStyleKit.configure({ backgroundColor: false, lineHeight: false }),
       Highlight.configure({ multicolor: true }),
       TextAlign.configure({ types: ["heading", "paragraph"] }),
-      TableKit.configure({ table: { resizable: false } }),
+      TableKit.configure({ table: { resizable: true, cellMinWidth: 48 } }),
+      // Traitement de texte v3 : interligne et retrait, exposant / indice,
+      // listes de tâches, raccourcis Word (Ctrl+\, Ctrl+], Ctrl+[…).
+      ParagraphFormat,
+      Superscript,
+      Subscript,
+      TaskList,
+      TaskItem.configure({ nested: true }),
+      WordShortcuts,
+      EditorCommandBridge.configure({ onLink: () => openLinkRef.current() }),
       Image.configure({ allowBase64: false }),
       PageBreak,
       // Recherche : décorations de vue seulement, sans effet sur le document.
@@ -468,25 +609,41 @@ function EditorSurface({
 
   // Ctrl/⌘ + F ouvre la recherche du document — la recherche du navigateur
   // n'a pas accès au texte d'un éditeur riche.
+  // Ctrl+H ouvre le rechercher-remplacer, Ctrl+S enregistre une version,
+  // Ctrl+Maj+C affiche le nombre de mots (raccourcis de Google Docs / Word).
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
-      if ((event.ctrlKey || event.metaKey) && (event.key === "f" || event.key === "F")) {
+      if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
+      const key = event.key.toLowerCase();
+      if (key === "f" && !event.shiftKey) {
         event.preventDefault();
         setSearchOpen(true);
+      } else if (key === "h" && !event.shiftKey) {
+        event.preventDefault();
+        setSearchOpen(true);
+        if (canEdit) setReplaceOpen(true);
+      } else if (key === "s" && !event.shiftKey) {
+        event.preventDefault();
+        if (canEdit && editor && !conflictRef.current) void persist(editor.getJSON(), "append");
+      } else if (key === "c" && event.shiftKey) {
+        event.preventDefault();
+        setWordCountOpen(true);
       }
     }
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, []);
+  }, [canEdit, editor, persist]);
 
   // Échap : la recherche d'abord, puis le mode focus. Sortie progressive, dans
   // l'ordre inverse de ce que l'utilisateur a ouvert.
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
       if (event.key !== "Escape") return;
+      if (contextMenu) return;
       if (searchOpen) {
         setSearchOpen(false);
+        setReplaceOpen(false);
         return;
       }
       if (focusActive) exitFocus();
@@ -494,7 +651,7 @@ function EditorSurface({
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [searchOpen, focusActive, exitFocus]);
+  }, [searchOpen, focusActive, exitFocus, contextMenu]);
 
   // Fermeture de l'onglet : avertissement tant que des modifications ne sont pas enregistrées.
   useEffect(() => {
@@ -555,8 +712,569 @@ function EditorSurface({
                 : "Aucune modification"
               : "Lecture seule";
 
+  const pageSetup = normalizePageSetup(editor.state.doc.attrs.pageSetup);
+  const geometry = pageGeometry(pageSetup);
+  const shortcut = (keys: string) =>
+    modifier === "⌘" ? keys.replace(/Ctrl\+/g, "⌘").replace(/Maj\+/g, "⇧") : keys;
+  const inTable = editor.isActive("table");
+  const lineHeight = activeLineHeight(editor);
+
+  function openLinkDialog() {
+    if (!editor || !canEdit) return;
+    const current = editor.getAttributes("link").href;
+    setLinkUrl(typeof current === "string" ? current : "");
+    setLinkError(null);
+    setLinkOpen(true);
+  }
+  openLinkRef.current = openLinkDialog;
+
+  function openImageDialog() {
+    setImageUrl("");
+    setImageAlt("");
+    setImageError(null);
+    setImageOpen(true);
+  }
+
+  function insertPageBreak() {
+    if (!editor) return;
+    const { selection } = editor.state;
+    // Un nœud sélectionné (par exemple un saut précédent) serait remplacé par
+    // la nouvelle insertion : le saut s'ajoute alors juste après lui.
+    if (selection instanceof NodeSelection) {
+      editor.chain().focus().insertContentAt(selection.to, { type: "pageBreak" }).run();
+    } else {
+      editor.chain().focus().insertContent({ type: "pageBreak" }).run();
+    }
+  }
+
+  /** Couper / copier : commande native, la sélection ProseMirror suit. */
+  function clipboardCommand(command: "cut" | "copy") {
+    if (!editor) return;
+    editor.view.focus();
+    const ok = document.execCommand(command);
+    if (!ok) {
+      setClipboardNote(
+        `Le navigateur bloque cette commande : utilisez ${shortcut(command === "cut" ? "Ctrl+X" : "Ctrl+C")}.`,
+      );
+    }
+  }
+
+  /** Coller (avec ou sans mise en forme) via l'API presse-papiers asynchrone. */
+  async function pasteFromClipboard(plain: boolean) {
+    if (!editor || !canEdit) return;
+    try {
+      if (!plain && typeof navigator.clipboard?.read === "function") {
+        const items = await navigator.clipboard.read();
+        for (const item of items) {
+          if (item.types.includes("text/html")) {
+            const html = await (await item.getType("text/html")).text();
+            editor.view.focus();
+            editor.view.pasteHTML(html);
+            return;
+          }
+        }
+      }
+      const text = await navigator.clipboard.readText();
+      editor.view.focus();
+      editor.view.pasteText(text);
+    } catch {
+      setClipboardNote(
+        `Le navigateur bloque l'accès au presse-papiers : utilisez ${shortcut(plain ? "Ctrl+Maj+V" : "Ctrl+V")}.`,
+      );
+    }
+  }
+
+  const exportHref = host?.exportHref;
+  const toggleComments = host?.onToggleComments;
+
+  const menus: DocMenu[] = [
+    {
+      id: "fichier",
+      label: "Fichier",
+      items: [
+        {
+          id: "save-version",
+          label: "Enregistrer une version",
+          shortcut: shortcut("Ctrl+S"),
+          disabled: !canEdit || status === "conflict",
+          onSelect: () => void persist(editor.getJSON(), "append"),
+        },
+        {
+          id: "page-setup",
+          label: "Mise en page…",
+          separated: true,
+          disabled: !canEdit,
+          onSelect: () => setPageSetupOpen(true),
+        },
+        {
+          id: "print",
+          label: "Imprimer",
+          shortcut: shortcut("Ctrl+P"),
+          onSelect: () => window.print(),
+        },
+        ...(exportHref
+          ? ([
+              {
+                id: "export-md",
+                label: "Télécharger en Markdown (.md)",
+                separated: true,
+                onSelect: () => window.location.assign(exportHref("md")),
+              },
+              {
+                id: "export-html",
+                label: "Télécharger en page web (.html)",
+                onSelect: () => window.location.assign(exportHref("html")),
+              },
+            ] satisfies MenuItem[])
+          : []),
+      ],
+    },
+    {
+      id: "edition",
+      label: "Édition",
+      items: [
+        {
+          id: "undo",
+          label: "Annuler",
+          shortcut: shortcut("Ctrl+Z"),
+          disabled: !canEdit || !editor.can().undo(),
+          onSelect: () => editor.chain().focus().undo().run(),
+        },
+        {
+          id: "redo",
+          label: "Rétablir",
+          shortcut: shortcut("Ctrl+Y"),
+          disabled: !canEdit || !editor.can().redo(),
+          onSelect: () => editor.chain().focus().redo().run(),
+        },
+        {
+          id: "cut",
+          label: "Couper",
+          shortcut: shortcut("Ctrl+X"),
+          separated: true,
+          disabled: !canEdit,
+          onSelect: () => clipboardCommand("cut"),
+        },
+        {
+          id: "copy",
+          label: "Copier",
+          shortcut: shortcut("Ctrl+C"),
+          onSelect: () => clipboardCommand("copy"),
+        },
+        {
+          id: "paste",
+          label: "Coller",
+          shortcut: shortcut("Ctrl+V"),
+          disabled: !canEdit,
+          onSelect: () => void pasteFromClipboard(false),
+        },
+        {
+          id: "paste-plain",
+          label: "Coller sans mise en forme",
+          shortcut: shortcut("Ctrl+Maj+V"),
+          disabled: !canEdit,
+          onSelect: () => void pasteFromClipboard(true),
+        },
+        {
+          id: "select-all",
+          label: "Tout sélectionner",
+          shortcut: shortcut("Ctrl+A"),
+          separated: true,
+          onSelect: () => editor.chain().focus().selectAll().run(),
+        },
+        {
+          id: "find",
+          label: "Rechercher",
+          shortcut: shortcut("Ctrl+F"),
+          separated: true,
+          onSelect: () => setSearchOpen(true),
+        },
+        {
+          id: "replace",
+          label: "Rechercher et remplacer",
+          shortcut: shortcut("Ctrl+H"),
+          disabled: !canEdit,
+          onSelect: () => {
+            setSearchOpen(true);
+            setReplaceOpen(true);
+          },
+        },
+      ],
+    },
+    {
+      id: "affichage",
+      label: "Affichage",
+      items: [
+        {
+          id: "page-view",
+          label: pageView ? "✓ Mise en page d'impression" : "Mise en page d'impression",
+          onSelect: () => setPageView(!pageView),
+        },
+        {
+          id: "ruler",
+          label: showRuler ? "✓ Règle" : "Règle",
+          disabled: !pageView,
+          onSelect: () => setShowRuler(!showRuler),
+        },
+        {
+          id: "outline",
+          label: outlineOpen ? "✓ Plan du document" : "Plan du document",
+          onSelect: () => setOutlineOpen((current) => !current),
+        },
+        {
+          id: "focus",
+          label: focusActive ? "✓ Mode focus" : "Mode focus",
+          onSelect: toggleFocus,
+        },
+        ...ZOOM_LEVELS.map(
+          (level, index): MenuItem => ({
+            id: `zoom-${level}`,
+            label: `${zoom === level ? "✓ " : ""}${level} %`,
+            separated: index === 0,
+            onSelect: () => setZoom(level),
+          }),
+        ),
+      ],
+    },
+    {
+      id: "insertion",
+      label: "Insertion",
+      items: [
+        {
+          id: "insert-image",
+          label: "Image…",
+          icon: <ImageIcon />,
+          disabled: !canEdit,
+          onSelect: openImageDialog,
+        },
+        {
+          id: "insert-table",
+          label: "Tableau…",
+          icon: <TableIcon />,
+          disabled: !canEdit,
+          onSelect: () => setTableOpen(true),
+        },
+        {
+          id: "insert-link",
+          label: "Lien…",
+          icon: <LinkIcon />,
+          shortcut: shortcut("Ctrl+K"),
+          disabled: !canEdit,
+          onSelect: openLinkDialog,
+        },
+        {
+          id: "insert-task",
+          label: "Liste de tâches",
+          icon: <TaskListIcon />,
+          shortcut: shortcut("Ctrl+Maj+9"),
+          disabled: !canEdit,
+          onSelect: () => editor.chain().focus().toggleTaskList().run(),
+        },
+        {
+          id: "insert-hr",
+          label: "Ligne horizontale",
+          separated: true,
+          disabled: !canEdit,
+          onSelect: () => editor.chain().focus().setHorizontalRule().run(),
+        },
+        {
+          id: "insert-break",
+          label: "Saut de page (insertion)",
+          icon: <PageBreakIcon />,
+          shortcut: shortcut("Ctrl+Entrée"),
+          disabled: !canEdit,
+          onSelect: insertPageBreak,
+        },
+        {
+          id: "insert-date",
+          label: "Date du jour",
+          disabled: !canEdit,
+          onSelect: () =>
+            editor
+              .chain()
+              .focus()
+              .insertContent(
+                new Date().toLocaleDateString("fr-FR", {
+                  day: "numeric",
+                  month: "long",
+                  year: "numeric",
+                }),
+              )
+              .run(),
+        },
+        ...(toggleComments
+          ? ([
+              {
+                id: "insert-comment",
+                label: "Commentaire",
+                icon: <CommentIcon />,
+                separated: true,
+                onSelect: toggleComments,
+              },
+            ] satisfies MenuItem[])
+          : []),
+      ],
+    },
+    {
+      id: "format",
+      label: "Format",
+      items: [
+        {
+          id: "bold",
+          label: "Gras",
+          shortcut: shortcut("Ctrl+B"),
+          disabled: !canEdit,
+          onSelect: () => editor.chain().focus().toggleBold().run(),
+        },
+        {
+          id: "italic",
+          label: "Italique",
+          shortcut: shortcut("Ctrl+I"),
+          disabled: !canEdit,
+          onSelect: () => editor.chain().focus().toggleItalic().run(),
+        },
+        {
+          id: "underline",
+          label: "Souligné",
+          shortcut: shortcut("Ctrl+U"),
+          disabled: !canEdit,
+          onSelect: () => editor.chain().focus().toggleUnderline().run(),
+        },
+        {
+          id: "strike",
+          label: "Barré",
+          shortcut: shortcut("Ctrl+Maj+S"),
+          disabled: !canEdit,
+          onSelect: () => editor.chain().focus().toggleStrike().run(),
+        },
+        {
+          id: "superscript",
+          label: editor.isActive("superscript") ? "✓ Exposant" : "Exposant",
+          shortcut: shortcut("Ctrl+."),
+          disabled: !canEdit,
+          onSelect: () => editor.chain().focus().toggleSuperscript().run(),
+        },
+        {
+          id: "subscript",
+          label: editor.isActive("subscript") ? "✓ Indice" : "Indice",
+          shortcut: shortcut("Ctrl+,"),
+          disabled: !canEdit,
+          onSelect: () => editor.chain().focus().toggleSubscript().run(),
+        },
+        ...PARAGRAPH_STYLES.slice(0, 4).map(
+          (style, index): MenuItem => ({
+            id: `style-${style.id}`,
+            label: style.label,
+            separated: index === 0,
+            shortcut: shortcut(style.id === "paragraph" ? "Ctrl+Alt+0" : `Ctrl+Alt+${index}`),
+            disabled: !canEdit,
+            onSelect: () => applyParagraphStyle(editor, style.id),
+          }),
+        ),
+        {
+          id: "align-left",
+          label: "Aligner à gauche",
+          separated: true,
+          shortcut: shortcut("Ctrl+Maj+L"),
+          disabled: !canEdit,
+          onSelect: () => editor.chain().focus().setTextAlign("left").run(),
+        },
+        {
+          id: "align-center",
+          label: "Centrer",
+          shortcut: shortcut("Ctrl+Maj+E"),
+          disabled: !canEdit,
+          onSelect: () => editor.chain().focus().setTextAlign("center").run(),
+        },
+        {
+          id: "align-right",
+          label: "Aligner à droite",
+          shortcut: shortcut("Ctrl+Maj+R"),
+          disabled: !canEdit,
+          onSelect: () => editor.chain().focus().setTextAlign("right").run(),
+        },
+        {
+          id: "align-justify",
+          label: "Justifier",
+          shortcut: shortcut("Ctrl+Maj+J"),
+          disabled: !canEdit,
+          onSelect: () => editor.chain().focus().setTextAlign("justify").run(),
+        },
+        {
+          id: "indent",
+          label: "Augmenter le retrait",
+          separated: true,
+          shortcut: shortcut("Ctrl+]"),
+          disabled: !canEdit,
+          onSelect: () => editor.chain().focus().indent().run(),
+        },
+        {
+          id: "outdent",
+          label: "Diminuer le retrait",
+          shortcut: shortcut("Ctrl+["),
+          disabled: !canEdit,
+          onSelect: () => editor.chain().focus().outdent().run(),
+        },
+        {
+          id: "clear-format",
+          label: "Effacer la mise en forme",
+          separated: true,
+          shortcut: shortcut("Ctrl+\\"),
+          disabled: !canEdit,
+          onSelect: () => editor.chain().focus().unsetAllMarks().unsetTextAlign().run(),
+        },
+      ],
+    },
+    {
+      id: "outils",
+      label: "Outils",
+      items: [
+        {
+          id: "word-count",
+          label: "Nombre de mots",
+          shortcut: shortcut("Ctrl+Maj+C"),
+          onSelect: () => setWordCountOpen(true),
+        },
+        {
+          id: "tools-outline",
+          label: "Plan du document",
+          onSelect: () => setOutlineOpen(true),
+        },
+      ],
+    },
+  ];
+
+  const tableMenuItems: ContextMenuItem[] = inTable
+    ? [
+        { type: "separator", id: "sep-table" },
+        {
+          type: "item",
+          id: "row-before",
+          label: "Insérer une ligne au-dessus",
+          disabled: !canEdit,
+          onSelect: () => editor.chain().focus().addRowBefore().run(),
+        },
+        {
+          type: "item",
+          id: "row-after",
+          label: "Insérer une ligne en dessous",
+          disabled: !canEdit,
+          onSelect: () => editor.chain().focus().addRowAfter().run(),
+        },
+        {
+          type: "item",
+          id: "col-before",
+          label: "Insérer une colonne à gauche",
+          disabled: !canEdit,
+          onSelect: () => editor.chain().focus().addColumnBefore().run(),
+        },
+        {
+          type: "item",
+          id: "col-after",
+          label: "Insérer une colonne à droite",
+          disabled: !canEdit,
+          onSelect: () => editor.chain().focus().addColumnAfter().run(),
+        },
+        {
+          type: "item",
+          id: "row-delete",
+          label: "Supprimer la ligne",
+          destructive: true,
+          disabled: !canEdit,
+          onSelect: () => editor.chain().focus().deleteRow().run(),
+        },
+        {
+          type: "item",
+          id: "col-delete",
+          label: "Supprimer la colonne",
+          destructive: true,
+          disabled: !canEdit,
+          onSelect: () => editor.chain().focus().deleteColumn().run(),
+        },
+        {
+          type: "item",
+          id: "table-delete",
+          label: "Supprimer le tableau",
+          destructive: true,
+          disabled: !canEdit,
+          onSelect: () => editor.chain().focus().deleteTable().run(),
+        },
+      ]
+    : [];
+
+  const contextItems: ContextMenuItem[] = [
+    {
+      type: "item",
+      id: "ctx-cut",
+      label: "Couper",
+      shortcut: shortcut("Ctrl+X"),
+      disabled: !canEdit || editor.state.selection.empty,
+      onSelect: () => clipboardCommand("cut"),
+    },
+    {
+      type: "item",
+      id: "ctx-copy",
+      label: "Copier",
+      shortcut: shortcut("Ctrl+C"),
+      disabled: editor.state.selection.empty,
+      onSelect: () => clipboardCommand("copy"),
+    },
+    {
+      type: "item",
+      id: "ctx-paste",
+      label: "Coller",
+      shortcut: shortcut("Ctrl+V"),
+      disabled: !canEdit,
+      onSelect: () => void pasteFromClipboard(false),
+    },
+    {
+      type: "item",
+      id: "ctx-paste-plain",
+      label: "Coller sans mise en forme",
+      shortcut: shortcut("Ctrl+Maj+V"),
+      disabled: !canEdit,
+      onSelect: () => void pasteFromClipboard(true),
+    },
+    { type: "separator", id: "sep-insert" },
+    {
+      type: "item",
+      id: "ctx-link",
+      label: editor.isActive("link") ? "Modifier le lien" : "Insérer un lien",
+      shortcut: shortcut("Ctrl+K"),
+      disabled: !canEdit,
+      onSelect: openLinkDialog,
+    },
+    ...(toggleComments
+      ? ([
+          {
+            type: "item",
+            id: "ctx-comment",
+            label: "Commenter",
+            onSelect: toggleComments,
+          },
+        ] satisfies ContextMenuItem[])
+      : []),
+    {
+      type: "item",
+      id: "ctx-clear",
+      label: "Effacer la mise en forme",
+      shortcut: shortcut("Ctrl+\\"),
+      disabled: !canEdit,
+      onSelect: () => editor.chain().focus().unsetAllMarks().run(),
+    },
+    ...tableMenuItems,
+  ];
+
+  const selectionText = editor.state.selection.empty
+    ? ""
+    : editor.state.doc.textBetween(editor.state.selection.from, editor.state.selection.to, "\n");
+  const selectionStats = selectionText ? documentStats(selectionText) : null;
+
   return (
-    <div className="flex min-h-0 flex-1 flex-row">
+    <div className="flex min-h-0 min-w-0 flex-1 flex-row">
+      {/* Impression : la mise en page du document devient la règle @page. */}
+      <style media="print">{printPageRule(pageSetup)}</style>
+
       {outlineOpen ? (
         <OutlinePanel
           editor={editor}
@@ -566,7 +1284,38 @@ function EditorSurface({
         />
       ) : null}
 
-      <div className="flex min-h-0 flex-1 flex-col">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+        {/* Barre de menus + état d'enregistrement, comme Word / Google Docs. */}
+        <div className="print-hide flex items-center gap-2 border-b border-border bg-card px-1.5 py-0.5">
+          <DocMenuBar menus={menus} />
+          <div className="ml-auto flex shrink-0 items-center gap-2 pr-1">
+            {session ? (
+              <span role="status" className="text-xs text-muted-foreground">
+                Collaboration active
+              </span>
+            ) : null}
+            <span
+              className={cn(
+                "text-xs text-muted-foreground",
+                (status === "error" || status === "conflict") && "text-destructive",
+              )}
+              role="status"
+            >
+              {statusLabel}
+            </span>
+            {status === "error" && canEdit ? (
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-6 px-2 text-xs"
+                onClick={() => void persist(editor.getJSON(), "replace-latest")}
+              >
+                Réessayer
+              </Button>
+            ) : null}
+          </div>
+        </div>
+
         <div
           role="toolbar"
           aria-label="Mise en forme du document"
@@ -600,22 +1349,24 @@ function EditorSurface({
 
             <ToolbarButton
               label="Annuler"
+              shortcutKey="z"
               disabled={!canEdit || !editor.can().undo()}
               onClick={() => editor.chain().focus().undo().run()}
             >
-              ↺
+              <UndoIcon />
             </ToolbarButton>
             <ToolbarButton
               label="Rétablir"
+              shortcutKey="y"
               disabled={!canEdit || !editor.can().redo()}
               onClick={() => editor.chain().focus().redo().run()}
             >
-              ↻
+              <RedoIcon />
             </ToolbarButton>
 
             <ToolbarSeparator />
 
-            {/* Styles de paragraphe et taille de police — deux sélecteurs
+            {/* Style de paragraphe, police et taille — trois sélecteurs
                 compacts, comme dans un traitement de texte. */}
             <select
               aria-label="Style de paragraphe"
@@ -631,6 +1382,27 @@ function EditorSurface({
                   {style.label}
                 </option>
               ))}
+            </select>
+            <select
+              aria-label="Police"
+              value={activeFontFamily(editor)}
+              disabled={!canEdit}
+              onChange={(event) => {
+                const option = DOC_FONT_FAMILIES.find((font) => font.id === event.target.value);
+                if (!option) return;
+                if (option.css === null) editor.chain().focus().unsetFontFamily().run();
+                else editor.chain().focus().setFontFamily(option.css).run();
+              }}
+              className={cn(TOOLBAR_SELECT_CLASS, "w-36")}
+            >
+              {DOC_FONT_FAMILIES.map((font) => (
+                <option key={font.id} value={font.id}>
+                  {font.label}
+                </option>
+              ))}
+              <option value="custom" disabled>
+                Autre police
+              </option>
             </select>
             <select
               aria-label="Taille de police"
@@ -663,9 +1435,6 @@ function EditorSurface({
                 <span className={action.glyphClassName}>{action.glyph}</span>
               </ToolbarButton>
             ))}
-
-            <ToolbarSeparator />
-
             <ToolbarButton
               label="Barré"
               pressed={editor.isActive("strike")}
@@ -711,24 +1480,14 @@ function EditorSurface({
                 </option>
               ))}
             </select>
-
-            <ToolbarSeparator />
-
             <ToolbarButton
-              label="Liste à puces"
-              pressed={editor.isActive("bulletList")}
+              label="Lien"
+              shortcutKey="k"
+              pressed={editor.isActive("link")}
               disabled={!canEdit}
-              onClick={() => editor.chain().focus().toggleBulletList().run()}
+              onClick={openLinkDialog}
             >
-              •
-            </ToolbarButton>
-            <ToolbarButton
-              label="Liste numérotée"
-              pressed={editor.isActive("orderedList")}
-              disabled={!canEdit}
-              onClick={() => editor.chain().focus().toggleOrderedList().run()}
-            >
-              1.
+              <LinkIcon />
             </ToolbarButton>
 
             <ToolbarSeparator />
@@ -765,6 +1524,78 @@ function EditorSurface({
             >
               <AlignJustifyIcon />
             </ToolbarButton>
+            <select
+              aria-label="Interligne"
+              title="Interligne"
+              value={lineHeight ?? ""}
+              disabled={!canEdit}
+              onChange={(event) =>
+                editor
+                  .chain()
+                  .focus()
+                  .setLineHeight(event.target.value === "" ? null : event.target.value)
+                  .run()
+              }
+              className={cn(TOOLBAR_SELECT_CLASS, "w-24")}
+            >
+              <option value="">Interligne</option>
+              {LINE_HEIGHTS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+
+            <ToolbarSeparator />
+
+            <ToolbarButton
+              label="Liste à puces"
+              pressed={editor.isActive("bulletList")}
+              disabled={!canEdit}
+              onClick={() => editor.chain().focus().toggleBulletList().run()}
+            >
+              <BulletListIcon />
+            </ToolbarButton>
+            <ToolbarButton
+              label="Liste numérotée"
+              pressed={editor.isActive("orderedList")}
+              disabled={!canEdit}
+              onClick={() => editor.chain().focus().toggleOrderedList().run()}
+            >
+              <OrderedListIcon />
+            </ToolbarButton>
+            <ToolbarButton
+              label="Liste de tâches"
+              pressed={editor.isActive("taskList")}
+              disabled={!canEdit}
+              onClick={() => editor.chain().focus().toggleTaskList().run()}
+            >
+              <TaskListIcon />
+            </ToolbarButton>
+            <ToolbarButton
+              label="Diminuer le retrait"
+              disabled={!canEdit}
+              onClick={() => {
+                const chain = editor.chain().focus();
+                if (editor.isActive("listItem")) chain.liftListItem("listItem").run();
+                else if (editor.isActive("taskItem")) chain.liftListItem("taskItem").run();
+                else chain.outdent().run();
+              }}
+            >
+              <OutdentIcon />
+            </ToolbarButton>
+            <ToolbarButton
+              label="Augmenter le retrait"
+              disabled={!canEdit}
+              onClick={() => {
+                const chain = editor.chain().focus();
+                if (editor.isActive("listItem")) chain.sinkListItem("listItem").run();
+                else if (editor.isActive("taskItem")) chain.sinkListItem("taskItem").run();
+                else chain.indent().run();
+              }}
+            >
+              <IndentIcon />
+            </ToolbarButton>
 
             <ToolbarSeparator />
 
@@ -775,22 +1606,15 @@ function EditorSurface({
             >
               <TableIcon />
             </ToolbarButton>
-            <ToolbarButton
-              label="Saut de page"
-              disabled={!canEdit}
-              onClick={() => {
-                const { selection } = editor.state;
-                // Un nœud sélectionné (par exemple un saut précédent) serait
-                // remplacé par la nouvelle insertion : le saut s'ajoute alors
-                // juste après lui, jamais à sa place.
-                if (selection instanceof NodeSelection) {
-                  editor.chain().focus().insertContentAt(selection.to, { type: "pageBreak" }).run();
-                } else {
-                  editor.chain().focus().insertContent({ type: "pageBreak" }).run();
-                }
-              }}
-            >
+            <ToolbarButton label="Saut de page" disabled={!canEdit} onClick={insertPageBreak}>
               <PageBreakIcon />
+            </ToolbarButton>
+            <ToolbarButton
+              label="Effacer la mise en forme"
+              disabled={!canEdit}
+              onClick={() => editor.chain().focus().unsetAllMarks().run()}
+            >
+              <ClearFormatIcon />
             </ToolbarButton>
           </div>
 
@@ -809,24 +1633,28 @@ function EditorSurface({
                 label: "Insérer une image",
                 icon: <ImageIcon />,
                 disabled: !canEdit,
-                onSelect: () => {
-                  setImageUrl("");
-                  setImageAlt("");
-                  setImageError(null);
-                  setImageOpen(true);
-                },
+                onSelect: openImageDialog,
               },
               {
                 id: "insert-link",
                 label: "Insérer un lien",
                 icon: <LinkIcon />,
                 disabled: !canEdit,
-                onSelect: () => {
-                  const current = editor.getAttributes("link").href;
-                  setLinkUrl(typeof current === "string" ? current : "");
-                  setLinkError(null);
-                  setLinkOpen(true);
-                },
+                onSelect: openLinkDialog,
+              },
+              {
+                id: "insert-sup",
+                label: "Exposant",
+                shortcut: shortcut("Ctrl+."),
+                disabled: !canEdit,
+                onSelect: () => editor.chain().focus().toggleSuperscript().run(),
+              },
+              {
+                id: "insert-sub",
+                label: "Indice",
+                shortcut: shortcut("Ctrl+,"),
+                disabled: !canEdit,
+                onSelect: () => editor.chain().focus().toggleSubscript().run(),
               },
               {
                 id: "insert-rule",
@@ -837,48 +1665,22 @@ function EditorSurface({
               },
             ]}
           />
-
-          <div className="flex shrink-0 items-center gap-2">
-            {session ? (
-              <span role="status" className="text-xs text-muted-foreground">
-                Collaboration active
-              </span>
-            ) : null}
-            <span
-              className={cn(
-                "text-xs text-muted-foreground",
-                (status === "error" || status === "conflict") && "text-destructive",
-              )}
-              role="status"
+          {canEdit ? (
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-8 shrink-0 px-2 text-xs"
+              disabled={status === "conflict"}
+              onClick={() => void persist(editor.getJSON(), "append")}
             >
-              {statusLabel}
-            </span>
-            {status === "error" && canEdit ? (
-              <Button
-                size="sm"
-                variant="ghost"
-                className="h-6 px-2 text-xs"
-                onClick={() => void persist(editor.getJSON(), "replace-latest")}
-              >
-                Réessayer
-              </Button>
-            ) : null}
-            {canEdit ? (
-              <Button
-                size="sm"
-                variant="outline"
-                disabled={status === "conflict"}
-                onClick={() => void persist(editor.getJSON(), "append")}
-              >
-                Enregistrer une version
-              </Button>
-            ) : null}
-          </div>
+              Enregistrer une version
+            </Button>
+          ) : null}
         </div>
 
         {/* Outils du tableau : visibles seulement quand le curseur est dans
             un tableau, comme la barre contextuelle d'un traitement de texte. */}
-        {editor.isActive("table") ? (
+        {inTable ? (
           <div
             role="toolbar"
             aria-label="Outils du tableau"
@@ -886,6 +1688,13 @@ function EditorSurface({
             className="print-hide flex flex-nowrap items-center gap-0.5 overflow-x-auto border-b border-border bg-card px-2 py-1 [&>*]:shrink-0"
           >
             <span className="pr-1 text-xs font-medium text-muted-foreground">Tableau</span>
+            <ToolbarButton
+              label="Ajouter une ligne au-dessus"
+              disabled={!canEdit}
+              onClick={() => editor.chain().focus().addRowBefore().run()}
+            >
+              ↑ ligne
+            </ToolbarButton>
             <ToolbarButton
               label="Ajouter une ligne"
               disabled={!canEdit}
@@ -900,6 +1709,14 @@ function EditorSurface({
             >
               − ligne
             </ToolbarButton>
+            <ToolbarSeparator />
+            <ToolbarButton
+              label="Ajouter une colonne à gauche"
+              disabled={!canEdit}
+              onClick={() => editor.chain().focus().addColumnBefore().run()}
+            >
+              ← colonne
+            </ToolbarButton>
             <ToolbarButton
               label="Ajouter une colonne"
               disabled={!canEdit}
@@ -913,6 +1730,15 @@ function EditorSurface({
               onClick={() => editor.chain().focus().deleteColumn().run()}
             >
               − colonne
+            </ToolbarButton>
+            <ToolbarSeparator />
+            <ToolbarButton
+              label="Ligne d'en-tête"
+              pressed={editor.isActive("tableHeader")}
+              disabled={!canEdit}
+              onClick={() => editor.chain().focus().toggleHeaderRow().run()}
+            >
+              En-tête
             </ToolbarButton>
             <ToolbarButton
               label="Fusionner ou scinder les cellules"
@@ -931,7 +1757,17 @@ function EditorSurface({
           </div>
         ) : null}
 
-        <DocumentSearch editor={editor} open={searchOpen} onOpenChange={setSearchOpen} />
+        <DocumentSearch
+          editor={editor}
+          open={searchOpen}
+          onOpenChange={(next) => {
+            setSearchOpen(next);
+            if (!next) setReplaceOpen(false);
+          }}
+          replaceOpen={replaceOpen}
+          onReplaceOpenChange={setReplaceOpen}
+          canEdit={canEdit}
+        />
 
         {status === "conflict" ? (
           <div className="border-b border-border px-3 py-2">
@@ -956,10 +1792,70 @@ function EditorSurface({
           </div>
         ) : null}
 
-        <div ref={scrollRef} className="workspace-editor-scroll min-h-0 flex-1 overflow-y-auto">
+        {clipboardNote ? (
+          <div className="print-hide border-b border-border px-3 py-2">
+            <Alert tone="info" className="flex items-center gap-3 py-1.5 text-xs">
+              <span className="flex-1">{clipboardNote}</span>
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                className="h-6 px-2 text-xs"
+                onClick={() => setClipboardNote(null)}
+              >
+                Fermer
+              </Button>
+            </Alert>
+          </div>
+        ) : null}
+
+        {/* biome-ignore lint/a11y/noStaticElementInteractions: le clic droit ouvre le menu contextuel de l'éditeur ; le clavier y accède par la barre de menus. */}
+        <div
+          ref={scrollRef}
+          className={cn(
+            "workspace-editor-scroll min-h-0 flex-1 overflow-auto",
+            pageView && "workspace-editor-desk",
+          )}
+          onContextMenu={(event) => {
+            // Maj + clic droit : menu natif du navigateur (correcteur
+            // orthographique, extensions), comme dans Google Docs.
+            if (event.shiftKey) return;
+            if (!(event.target instanceof Node) || !editor.view.dom.contains(event.target)) return;
+            event.preventDefault();
+            const position = editor.view.posAtCoords({ left: event.clientX, top: event.clientY });
+            const { from, to } = editor.state.selection;
+            if (position && (position.pos < from || position.pos > to)) {
+              editor.commands.setTextSelection(position.pos);
+            }
+            setContextMenu({ x: event.clientX, y: event.clientY });
+          }}
+        >
+          {pageView && showRuler ? (
+            <div className="print-hide sticky top-0 z-10 px-6 pb-1 pt-2 workspace-editor-desk">
+              <DocRuler setup={pageSetup} scale={zoom / 100} />
+            </div>
+          ) : null}
           <div
-            className="workspace-editor-page mx-auto w-full max-w-3xl px-6 py-8"
-            style={{ zoom: zoom / 100 }}
+            data-page-view={pageView ? "true" : undefined}
+            className={cn(
+              "workspace-editor-page mx-auto",
+              pageView
+                ? "workspace-editor-sheet my-6 border border-border bg-card shadow-sm"
+                : "w-full max-w-3xl px-6 py-8",
+            )}
+            style={
+              pageView
+                ? {
+                    zoom: zoom / 100,
+                    width: geometry.width,
+                    minHeight: geometry.height,
+                    padding: `${geometry.padding.top}px ${geometry.padding.right}px ${geometry.padding.bottom}px ${geometry.padding.left}px`,
+                    // Repère de fin de page tous les `height` pixels : une
+                    // pagination visuelle, l'impression coupe au même endroit.
+                    backgroundImage: `repeating-linear-gradient(to bottom, transparent 0, transparent ${geometry.height - 1}px, var(--border) ${geometry.height - 1}px, var(--border) ${geometry.height}px)`,
+                  }
+                : { zoom: zoom / 100 }
+            }
           >
             <EditorContent editor={editor} />
           </div>
@@ -970,7 +1866,13 @@ function EditorSurface({
             frappé. Le compteur qui demande une annonce est celui de la
             recherche, qui ne change que sur action explicite. */}
         <div className="print-hide flex items-center justify-between gap-3 border-t border-border px-3 py-1.5">
-          <p className="text-xs text-muted-foreground">{formatStats(stats)}</p>
+          <button
+            type="button"
+            className="text-xs text-muted-foreground hover:text-foreground"
+            onClick={() => setWordCountOpen(true)}
+          >
+            {formatStats(stats)}
+          </button>
           <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
             <span>Zoom</span>
             <select
@@ -979,7 +1881,7 @@ function EditorSurface({
               onChange={(event) => setZoom(Number(event.target.value))}
               className="h-6 rounded-md border border-input bg-background px-1 text-xs"
             >
-              {[75, 100, 125, 150].map((value) => (
+              {ZOOM_LEVELS.map((value) => (
                 <option key={value} value={value}>
                   {value} %
                 </option>
@@ -988,6 +1890,61 @@ function EditorSurface({
           </label>
         </div>
       </div>
+
+      <ContextMenu
+        open={contextMenu !== null}
+        x={contextMenu?.x ?? 0}
+        y={contextMenu?.y ?? 0}
+        label="Menu contextuel du document"
+        items={contextItems}
+        onClose={() => setContextMenu(null)}
+      />
+
+      <PageSetupDialog
+        open={pageSetupOpen}
+        value={pageSetup}
+        onClose={() => setPageSetupOpen(false)}
+        onApply={(setup) => editor.chain().focus().setPageSetup(setup).run()}
+      />
+
+      <Dialog open={wordCountOpen} onClose={() => setWordCountOpen(false)} title="Nombre de mots">
+        <div className="flex flex-col gap-4">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-left text-xs text-muted-foreground">
+                <th className="py-1 font-medium" />
+                <th className="py-1 text-right font-medium">Document</th>
+                {selectionStats ? <th className="py-1 text-right font-medium">Sélection</th> : null}
+              </tr>
+            </thead>
+            <tbody className="tabular-nums">
+              {(
+                [
+                  ["Mots", "words"],
+                  ["Caractères", "characters"],
+                  ["Caractères (espaces exclus)", "charactersWithoutSpaces"],
+                  ["Temps de lecture (min)", "readingMinutes"],
+                ] as const
+              ).map(([label, key]) => (
+                <tr key={key} className="border-t border-border">
+                  <td className="py-1.5">{label}</td>
+                  <td className="py-1.5 text-right">{stats[key].toLocaleString("fr-FR")}</td>
+                  {selectionStats ? (
+                    <td className="py-1.5 text-right">
+                      {selectionStats[key].toLocaleString("fr-FR")}
+                    </td>
+                  ) : null}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <div className="flex justify-end">
+            <Button type="button" onClick={() => setWordCountOpen(false)}>
+              Fermer
+            </Button>
+          </div>
+        </div>
+      </Dialog>
 
       {/* Insertion : tableau, image et lien — trois dialogues simples, comme
           les boîtes d'insertion d'un traitement de texte. */}

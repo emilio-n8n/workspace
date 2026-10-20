@@ -11,6 +11,12 @@ export {
   CardTitle,
 } from "./components/card.tsx";
 export { ConfirmDialog, type ConfirmDialogProps } from "./components/confirm-dialog.tsx";
+export {
+  ContextMenu,
+  type ContextMenuItem,
+  type ContextMenuProps,
+  type ContextMenuSeparator,
+} from "./components/context-menu.tsx";
 export * from "./components/count-badge.tsx";
 export { Dialog, type DialogProps } from "./components/dialog.tsx";
 export { EmptyState, type EmptyStateProps } from "./components/empty-state.tsx";

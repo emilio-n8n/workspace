@@ -200,3 +200,8 @@ export function formatNoMatch(query: string): string {
   if (trimmed.length === 0) return "";
   return `Aucune occurrence pour « ${trimmed} »`;
 }
+
+/** « 3 remplacements effectués » — compteur annoncé après un remplacement. */
+export function formatReplaced(count: number): string {
+  return count <= 1 ? `${count} remplacement effectué` : `${count} remplacements effectués`;
+}

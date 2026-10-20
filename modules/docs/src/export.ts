@@ -39,6 +39,8 @@ const SAFE_CSS_COLOR = /^(?:var\(--[a-z0-9-]+\)|#[0-9a-f]{3,8})$/i;
 
 /** Tailles de police acceptées à l'export (nombre + unité CSS courte). */
 const SAFE_FONT_SIZE = /^\d+(?:\.\d+)?(?:px|pt|em|rem|%)$/;
+/** Pile de polices sûre : lettres, chiffres, espaces, virgules, guillemets et tirets uniquement. */
+const SAFE_FONT_FAMILY = /^[\w\s,"'-]{1,120}$/;
 
 /**
  * Valeur de couleur sûre pour l'export HTML : jeton sémantique ou hexadécimal.
@@ -123,6 +125,14 @@ function blockMarkdown(node: PmNode, depth = 0): string {
         .map((item, index) => `${indent}${index + 1}. ${listItemMarkdown(item, depth + 1)}`)
         .join("\n")}\n\n`;
 
+    case "taskList":
+      return `${children
+        .map(
+          (item) =>
+            `${indent}- [${item.attrs?.checked === true ? "x" : " "}] ${listItemMarkdown(item, depth + 1)}`,
+        )
+        .join("\n")}\n\n`;
+
     case "blockquote": {
       const inner = children
         .map((child) => blockMarkdown(child))
@@ -202,6 +212,9 @@ function inlineHtml(node: PmNode): string {
       else if (mark.type === "italic") text = `<em>${text}</em>`;
       else if (mark.type === "code") text = `<code>${text}</code>`;
       else if (mark.type === "strike") text = `<s>${text}</s>`;
+      else if (mark.type === "underline") text = `<u>${text}</u>`;
+      else if (mark.type === "superscript") text = `<sup>${text}</sup>`;
+      else if (mark.type === "subscript") text = `<sub>${text}</sub>`;
       else if (mark.type === "link") {
         const href = linkHref(node);
         const safe = href ? sanitizeUrl(href) : null;
@@ -215,9 +228,15 @@ function inlineHtml(node: PmNode): string {
           typeof rawSize === "string" && SAFE_FONT_SIZE.test(rawSize.trim())
             ? rawSize.trim()
             : null;
+        const rawFamily = mark.attrs?.fontFamily;
+        const fontFamily =
+          typeof rawFamily === "string" && SAFE_FONT_FAMILY.test(rawFamily.trim())
+            ? rawFamily.trim()
+            : null;
         const styles = [
           color ? `color: ${color}` : null,
           fontSize ? `font-size: ${fontSize}` : null,
+          fontFamily ? `font-family: ${fontFamily}` : null,
         ]
           .filter((value): value is string => value !== null)
           .join("; ");
@@ -258,6 +277,14 @@ function blockHtml(node: PmNode): string {
       return `<ol>\n${children
         .map((item) => `  <li>${listItemHtml(item)}</li>`)
         .join("\n")}\n</ol>`;
+
+    case "taskList":
+      return `<ul class="task-list">\n${children
+        .map(
+          (item) =>
+            `  <li><input type="checkbox" disabled${item.attrs?.checked === true ? " checked" : ""} /> ${listItemHtml(item)}</li>`,
+        )
+        .join("\n")}\n</ul>`;
 
     case "blockquote":
       return `<blockquote>\n${children.map(blockHtml).join("\n")}\n</blockquote>`;
@@ -325,7 +352,12 @@ export function toPlainText(doc: PmNode): string {
       return;
     }
     for (const child of node.content ?? []) walk(child);
-    if (node.type === "paragraph" || node.type === "heading" || node.type === "listItem") {
+    if (
+      node.type === "paragraph" ||
+      node.type === "heading" ||
+      node.type === "listItem" ||
+      node.type === "taskItem"
+    ) {
       parts.push("\n");
     }
   };

@@ -5,10 +5,11 @@ import {
   clampMatchIndex,
   formatMatchCounter,
   formatNoMatch,
+  formatReplaced,
   nextMatchIndex,
   type SearchMatch,
 } from "../search-text.ts";
-import { EMPTY_SEARCH, matchesIn, setSearch } from "./search-plugin.ts";
+import { EMPTY_SEARCH, matchesIn, replaceMatches, setSearch } from "./search-plugin.ts";
 
 export type DocumentSearchProps = {
   /** Éditeur dans lequel chercher et surligner. */
@@ -16,6 +17,11 @@ export type DocumentSearchProps = {
   /** Barre ouverte ou fermée. */
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  /** Ligne « Remplacer par » affichée (Ctrl+H, Édition › Rechercher et remplacer). */
+  replaceOpen?: boolean;
+  onReplaceOpenChange?: (open: boolean) => void;
+  /** Remplacement autorisé (droit d'écriture). */
+  canEdit?: boolean;
 };
 
 /**
@@ -32,8 +38,18 @@ export type DocumentSearchProps = {
  * Les occurrences sont recalculées quand le document change : un collaborateur
  * qui tape fait apparaître ou disparaître des résultats.
  */
-export function DocumentSearch({ editor, open, onOpenChange }: DocumentSearchProps) {
+export function DocumentSearch({
+  editor,
+  open,
+  onOpenChange,
+  replaceOpen = false,
+  onReplaceOpenChange,
+  canEdit = false,
+}: DocumentSearchProps) {
   const [query, setQuery] = useState("");
+  const [replacement, setReplacement] = useState("");
+  const [caseSensitive, setCaseSensitive] = useState(false);
+  const [replacedCount, setReplacedCount] = useState<number | null>(null);
   const [activeIndex, setActiveIndex] = useState(0);
   const [matches, setMatches] = useState<readonly SearchMatch[]>([]);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -50,6 +66,8 @@ export function DocumentSearch({ editor, open, onOpenChange }: DocumentSearchPro
       return;
     }
     setQuery("");
+    setReplacement("");
+    setReplacedCount(null);
     setActiveIndex(0);
     setSearch(editor, EMPTY_SEARCH);
   }, [open, editor]);
@@ -57,20 +75,35 @@ export function DocumentSearch({ editor, open, onOpenChange }: DocumentSearchPro
   // Publication de la recherche : une méta de transaction, jamais une écriture.
   useEffect(() => {
     if (!open) return;
-    setSearch(editor, { query, activeIndex: active });
-  }, [open, editor, query, active]);
+    setSearch(editor, { query, activeIndex: active, caseSensitive });
+  }, [open, editor, query, active, caseSensitive]);
 
   // Occurrences affichées : recalculées à la requête, puis à chaque changement
   // de document (frappe locale comme collaborateur distant).
   useEffect(() => {
     if (!open) return;
-    setMatches(matchesIn(editor, query));
-    const sync = () => setMatches(matchesIn(editor, query));
+    setMatches(matchesIn(editor, query, caseSensitive));
+    const sync = () => setMatches(matchesIn(editor, query, caseSensitive));
     editor.on("update", sync);
     return () => {
       editor.off("update", sync);
     };
-  }, [open, editor, query]);
+  }, [open, editor, query, caseSensitive]);
+
+  /** Remplace l'occurrence active, puis passe à la suivante (comme Word). */
+  const replaceCurrent = useCallback(() => {
+    const match = matches[active];
+    if (!canEdit || !match) return;
+    replaceMatches(editor, [match], replacement);
+    setReplacedCount(1);
+  }, [active, canEdit, editor, matches, replacement]);
+
+  /** Remplace toutes les occurrences en une seule étape d'annulation. */
+  const replaceAll = useCallback(() => {
+    if (!canEdit || matches.length === 0) return;
+    setReplacedCount(replaceMatches(editor, matches, replacement));
+    setActiveIndex(0);
+  }, [canEdit, editor, matches, replacement]);
 
   const goto = useCallback(
     (step: number) => {
@@ -129,10 +162,22 @@ export function DocumentSearch({ editor, open, onOpenChange }: DocumentSearchPro
           hasQuery && matches.length === 0 ? "text-destructive" : "text-muted-foreground",
         )}
       >
-        {hasQuery && matches.length === 0
-          ? formatNoMatch(query)
-          : formatMatchCounter(active, matches.length)}
+        {replacedCount !== null && matches.length === 0
+          ? formatReplaced(replacedCount)
+          : hasQuery && matches.length === 0
+            ? formatNoMatch(query)
+            : formatMatchCounter(active, matches.length)}
       </span>
+
+      <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
+        <input
+          type="checkbox"
+          checked={caseSensitive}
+          onChange={(event) => setCaseSensitive(event.target.checked)}
+          className="size-3.5 accent-[var(--primary)]"
+        />
+        Respecter la casse
+      </label>
 
       <div className="ml-auto flex items-center gap-1">
         <Button
@@ -155,6 +200,17 @@ export function DocumentSearch({ editor, open, onOpenChange }: DocumentSearchPro
         >
           ↓
         </Button>
+        {canEdit ? (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            aria-pressed={replaceOpen}
+            onClick={() => onReplaceOpenChange?.(!replaceOpen)}
+          >
+            Remplacer…
+          </Button>
+        ) : null}
         <Button
           type="button"
           variant="ghost"
@@ -165,6 +221,51 @@ export function DocumentSearch({ editor, open, onOpenChange }: DocumentSearchPro
           <IconClose />
         </Button>
       </div>
+
+      {replaceOpen && canEdit ? (
+        <div className="flex w-full flex-wrap items-center gap-2 pl-6">
+          <Input
+            type="text"
+            value={replacement}
+            onChange={(event) => {
+              setReplacement(event.target.value);
+              setReplacedCount(null);
+            }}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                if (event.ctrlKey || event.metaKey) replaceAll();
+                else replaceCurrent();
+              } else if (event.key === "Escape") {
+                event.preventDefault();
+                onOpenChange(false);
+              }
+            }}
+            aria-label="Remplacer par"
+            placeholder="Remplacer par…"
+            autoComplete="off"
+            className="h-8 w-56"
+          />
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={matches.length === 0}
+            onClick={replaceCurrent}
+          >
+            Remplacer
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={matches.length === 0}
+            onClick={replaceAll}
+          >
+            Tout remplacer
+          </Button>
+        </div>
+      ) : null}
     </search>
   );
 }

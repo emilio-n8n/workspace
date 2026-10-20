@@ -81,3 +81,42 @@ export function normalizeDocFontSize(value: unknown): string | null {
   if (!digits) return null;
   return (DOC_FONT_SIZES as readonly string[]).includes(digits) ? digits : null;
 }
+
+export type FontFamilyOption = {
+  id: string;
+  label: string;
+  /** Pile CSS posée sur la sélection ; `null` = police du document. */
+  css: string | null;
+};
+
+/**
+ * Polices proposées : piles sûres (présentes ou remplacées proprement sur
+ * Windows, macOS et Linux), libellées comme dans Word.
+ */
+export const DOC_FONT_FAMILIES: readonly FontFamilyOption[] = [
+  { id: "default", label: "Police du document", css: null },
+  { id: "arial", label: "Arial", css: "Arial, Helvetica, sans-serif" },
+  { id: "calibri", label: "Calibri", css: "Calibri, Carlito, sans-serif" },
+  { id: "verdana", label: "Verdana", css: "Verdana, Geneva, sans-serif" },
+  { id: "georgia", label: "Georgia", css: "Georgia, serif" },
+  { id: "times", label: "Times New Roman", css: '"Times New Roman", Times, serif' },
+  { id: "garamond", label: "Garamond", css: "Garamond, 'EB Garamond', serif" },
+  { id: "courier", label: "Courier New", css: '"Courier New", Courier, monospace' },
+];
+
+/**
+ * Police active relue d'un attribut : identifiant du catalogue, « default »
+ * sans police, `null` pour une police inconnue (collée depuis Word, par ex.).
+ */
+export function fontFamilyIdOf(value: unknown): string | null {
+  if (typeof value !== "string" || value.trim() === "") return "default";
+  const normalized = value.replace(/\s+/g, " ").trim().toLowerCase();
+  const exact = DOC_FONT_FAMILIES.find(
+    (option) => option.css !== null && option.css.toLowerCase() === normalized,
+  );
+  if (exact) return exact.id;
+  // Première famille de la pile (« Calibri, sans-serif » collé depuis Word).
+  const first = normalized.split(",")[0]?.replace(/["']/g, "").trim();
+  const byLabel = DOC_FONT_FAMILIES.find((option) => option.label.toLowerCase() === first);
+  return byLabel?.id ?? null;
+}

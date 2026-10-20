@@ -88,6 +88,9 @@ const ALLOWED_NODE_TYPES = new Set([
   "tableCell",
   "image",
   "pageBreak",
+  // v3 : listes de tâches (cases à cocher).
+  "taskList",
+  "taskItem",
 ]);
 
 const MAX_CONTENT_BYTES = 1_000_000;

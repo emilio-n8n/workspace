@@ -284,8 +284,8 @@ function DocumentPage() {
         </div>
       </header>
 
-      <div className="flex min-h-0 flex-1 print-surface">
-        <div className="flex min-h-0 flex-1 flex-col">
+      <div className="flex min-h-0 min-w-0 flex-1 print-surface">
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
           <DocumentEditor
             key={doc.revision}
             fileId={fileId}
@@ -299,6 +299,12 @@ function DocumentPage() {
                 ? { url: collab.url, room: fileId, token: collab.token, userName: "Vous" }
                 : null
             }
+            host={{
+              exportHref: (format) => `/api/docs/export/${fileId}?format=${format}`,
+              onToggleComments: () => {
+                if (!commentsOpen) toggleComments();
+              },
+            }}
           />
         </div>
 
