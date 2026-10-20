@@ -6,6 +6,10 @@ import {
   cn,
   Dialog,
   IconClose,
+  IconMore,
+  IconPlus,
+  IconRedo,
+  IconUndo,
   Input,
   Label,
   Menu,
@@ -769,7 +773,7 @@ export function SiteEditor({ fileId }: { fileId: string }) {
                     disabled={!canEdit || !canUndo}
                     onClick={doUndo}
                   >
-                    ↺
+                    <IconUndo />
                   </Button>
                   <Button
                     size="sm"
@@ -779,7 +783,7 @@ export function SiteEditor({ fileId }: { fileId: string }) {
                     disabled={!canEdit || !canRedo}
                     onClick={doRedo}
                   >
-                    ↻
+                    <IconRedo />
                   </Button>
                   <span aria-hidden className="mx-1 h-4 w-px shrink-0 bg-border" />
                 </>
@@ -803,7 +807,8 @@ export function SiteEditor({ fileId }: { fileId: string }) {
                 disabled={!canEdit}
                 onClick={() => setPageDialogOpen(true)}
               >
-                ＋ Page
+                <IconPlus className="size-3.5" />
+                Page
               </Button>
 
               {mode === "blocks" ? (
@@ -850,7 +855,7 @@ export function SiteEditor({ fileId }: { fileId: string }) {
                       </Button>
                       <Menu
                         label="Autres actions du bloc"
-                        triggerIcon={<span aria-hidden>⋯</span>}
+                        triggerIcon={<IconMore />}
                         triggerClassName="h-8 w-8 border-transparent bg-transparent px-0 hover:bg-muted focus-visible:ring-offset-0"
                         items={[
                           {

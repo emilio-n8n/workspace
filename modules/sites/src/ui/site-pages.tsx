@@ -1,4 +1,4 @@
-import { Button, cn, Menu } from "@workspace/ui";
+import { Button, cn, IconMore, IconPlus, Menu } from "@workspace/ui";
 import type { PageView } from "../server.ts";
 
 export type SitePagesPanelProps = {
@@ -55,7 +55,7 @@ export function SitePagesPanel({
             {canEdit && pages.length > 1 ? (
               <Menu
                 label={`Actions pour la page ${page.title}`}
-                triggerIcon={<span aria-hidden>⋯</span>}
+                triggerIcon={<IconMore />}
                 triggerClassName="h-7 w-7 shrink-0 border-transparent bg-transparent px-0 text-muted-foreground hover:bg-muted focus-visible:ring-offset-0"
                 items={[
                   {
@@ -86,7 +86,8 @@ export function SitePagesPanel({
       </ul>
       {canEdit ? (
         <Button size="sm" variant="outline" onClick={onAdd}>
-          ＋ Page
+          <IconPlus className="size-3.5" />
+          Page
         </Button>
       ) : null}
     </section>

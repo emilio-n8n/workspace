@@ -1,4 +1,4 @@
-import { Button, cn, Input, Label } from "@workspace/ui";
+import { Button, cn, IconPlus, Input, Label } from "@workspace/ui";
 import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import type { CalendarOption } from "../server.ts";
 import { formatAgendaDay } from "./event-labels.ts";
@@ -74,7 +74,7 @@ export function QuickAddBar({
         className="flex flex-wrap items-center gap-2 rounded-xl border border-border bg-card px-3 py-2 shadow-soft"
       >
         <span aria-hidden className="text-sm font-medium text-muted-foreground">
-          ＋
+          <IconPlus />
         </span>
         <label htmlFor="quick-add-input" className="sr-only">
           Ajouter un événement

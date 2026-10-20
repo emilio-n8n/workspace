@@ -1,4 +1,4 @@
-import { cn } from "@workspace/ui";
+import { cn, IconPlus } from "@workspace/ui";
 import type { EventView } from "../server.ts";
 import { dateKey, groupEventsByDay, WEEKDAY_LABELS } from "./date-grid.ts";
 import { EventChip } from "./event-chip.tsx";
@@ -140,9 +140,10 @@ export function DayColumns({
                   <button
                     type="button"
                     onClick={() => onInlineOpen(day)}
-                    className="rounded px-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    className="inline-flex items-center gap-1 rounded px-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   >
-                    ＋ Ajouter
+                    <IconPlus className="size-3.5" />
+                    Ajouter
                   </button>
                 </div>
                 <div className="mt-1 flex flex-col gap-2">

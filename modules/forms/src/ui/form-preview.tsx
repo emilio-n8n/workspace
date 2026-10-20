@@ -1,3 +1,4 @@
+import { IconClose } from "@workspace/ui";
 import { useEffect, useRef, useState } from "react";
 import { type QuestionCondition, visibleQuestions } from "../conditions.ts";
 import type { FormKind } from "../questions.ts";
@@ -62,7 +63,7 @@ export function FormPreview({
             aria-label="Fermer l'aperçu"
             className="grid size-6 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
-            ✕
+            <IconClose />
           </button>
         ) : null}
       </p>

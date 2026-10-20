@@ -1,4 +1,4 @@
-import { Button, cn, type ToastTone, ToastViewport } from "@workspace/ui";
+import { Button, cn, IconClose, type ToastTone, ToastViewport } from "@workspace/ui";
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 
 /** Durée d'affichage d'un message simple (6 s). */
@@ -140,7 +140,7 @@ export function FormsToasts({ toasts, dismiss }: FormsToastsProps): ReactNode {
               aria-label="Fermer"
               className="shrink-0 text-muted-foreground transition-colors hover:text-foreground"
             >
-              ✕
+              <IconClose />
             </button>
           </div>
         );

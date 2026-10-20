@@ -1,4 +1,4 @@
-import { Button, Input, Kbd, Select } from "@workspace/ui";
+import { Button, IconClose, Input, Kbd, Select } from "@workspace/ui";
 import { type ChangeEvent, useEffect, useRef } from "react";
 import type { SearchFilters } from "./search.ts";
 
@@ -119,7 +119,7 @@ export function SearchBar({
           aria-label="Fermer la recherche"
           title="Fermer la recherche"
         >
-          ✕
+          <IconClose />
         </Button>
       </div>
       <Kbd className="ml-auto hidden sm:inline-flex">Échap</Kbd>

@@ -1,4 +1,4 @@
-import { Badge, Button, Dialog } from "@workspace/ui";
+import { Badge, Button, Dialog, IconRepeat } from "@workspace/ui";
 import type { EventView } from "../server.ts";
 import { ATTENDANCE_LABELS, formatEventRange, RECURRENCE_LABELS } from "./event-labels.ts";
 
@@ -32,7 +32,10 @@ export function EventDetailDialog({
           <div className="flex flex-wrap items-center gap-2">
             <Badge variant="outline">{event.calendarName}</Badge>
             {event.recurring ? (
-              <Badge variant="outline">↻ {RECURRENCE_LABELS[event.recurrence]}</Badge>
+              <Badge variant="outline">
+                <IconRepeat className="mr-1 size-3" />
+                {RECURRENCE_LABELS[event.recurrence]}
+              </Badge>
             ) : null}
             {event.myStatus ? (
               <Badge variant={event.myStatus === "accepted" ? "accent" : "outline"}>

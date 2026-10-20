@@ -1,4 +1,4 @@
-import { cn } from "@workspace/ui";
+import { cn, IconClose, IconPlus } from "@workspace/ui";
 import type { CalendarOption } from "../server.ts";
 import type { DayEventLike } from "./date-grid.ts";
 import { MiniCalendar } from "./mini-calendar.tsx";
@@ -68,7 +68,7 @@ export function CalendarSidebar({
           title="Fermer la navigation"
           className="grid size-6 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
-          <span aria-hidden>✕</span>
+          <IconClose />
         </button>
       </div>
 
@@ -156,9 +156,10 @@ export function CalendarSidebar({
         <button
           type="button"
           onClick={onCreateAgenda}
-          className="mt-1 rounded-md px-1 py-1 text-left text-xs font-medium text-primary transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="inline-flex items-center gap-1 mt-1 rounded-md px-1 py-1 text-left text-xs font-medium text-primary transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
-          ＋ Agenda partagé
+          <IconPlus className="size-3.5" />
+          Agenda partagé
         </button>
       </div>
     </aside>

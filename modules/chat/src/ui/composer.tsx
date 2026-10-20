@@ -1,4 +1,4 @@
-import { Button, cn } from "@workspace/ui";
+import { Button, cn, IconClose } from "@workspace/ui";
 import {
   type ChangeEvent,
   type FormEvent,
@@ -316,7 +316,7 @@ export function Composer({
                 onClick={() => removeAttachment(attachment.storageKey)}
                 className="shrink-0 text-muted-foreground transition-colors hover:text-destructive"
               >
-                ✕
+                <IconClose />
               </button>
             </li>
           ))}

@@ -369,3 +369,26 @@ export function IconExpand(props: SVGProps<SVGSVGElement>) {
     </Svg>
   );
 }
+
+/** Menu « plus d'actions » (trois points horizontaux). */
+export function IconMore(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Svg {...props}>
+      <circle cx="3.5" cy="8" r="0.6" fill="currentColor" />
+      <circle cx="8" cy="8" r="0.6" fill="currentColor" />
+      <circle cx="12.5" cy="8" r="0.6" fill="currentColor" />
+    </Svg>
+  );
+}
+
+/** Répétition (événement récurrent). */
+export function IconRepeat(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Svg {...props}>
+      <path d="M11 2.5 13 4.5l-2 2" />
+      <path d="M3 8V7a2.5 2.5 0 0 1 2.5-2.5H13" />
+      <path d="M5 13.5 3 11.5l2-2" />
+      <path d="M13 8v1a2.5 2.5 0 0 1-2.5 2.5H3" />
+    </Svg>
+  );
+}

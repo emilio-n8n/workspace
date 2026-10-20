@@ -1,4 +1,12 @@
-import { Button, EmptyState, IconChevronDown, IconTrash, Input, Label } from "@workspace/ui";
+import {
+  Button,
+  EmptyState,
+  IconChevronDown,
+  IconPlus,
+  IconTrash,
+  Input,
+  Label,
+} from "@workspace/ui";
 import {
   BLOCKS_LIMITS,
   type BlockField,
@@ -279,7 +287,8 @@ function ColumnsFields({
           disabled={!canEdit || items.length >= BLOCKS_LIMITS.children}
           onClick={() => onAddChild("heading")}
         >
-          ＋ Titre
+          <IconPlus className="size-3.5" />
+          Titre
         </Button>
         <Button
           type="button"
@@ -288,7 +297,8 @@ function ColumnsFields({
           disabled={!canEdit || items.length >= BLOCKS_LIMITS.children}
           onClick={() => onAddChild("text")}
         >
-          ＋ Texte
+          <IconPlus className="size-3.5" />
+          Texte
         </Button>
       </div>
     </fieldset>

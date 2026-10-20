@@ -6,6 +6,7 @@ import {
   IconClose,
   IconGlobe,
   IconMail,
+  IconPlus,
   Menu,
   Spinner,
 } from "@workspace/ui";
@@ -64,7 +65,7 @@ export function ChannelSidebar({
           title="Nouveau canal"
           onClick={onCreateChannel}
         >
-          ＋
+          <IconPlus />
         </Button>
         <Menu
           label="Plus d'actions"

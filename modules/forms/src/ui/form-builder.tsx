@@ -7,6 +7,11 @@ import {
   Dialog,
   EmptyState,
   IconClipboard,
+  IconClose,
+  IconMore,
+  IconPlus,
+  IconRedo,
+  IconUndo,
   Input,
   Kbd,
   Label,
@@ -584,7 +589,7 @@ export function FormBuilder({ fileId }: { fileId: string }) {
                 disabled={!canUndo}
                 onClick={doUndo}
               >
-                ↺
+                <IconUndo />
               </Button>
               <Button
                 size="sm"
@@ -594,7 +599,7 @@ export function FormBuilder({ fileId }: { fileId: string }) {
                 disabled={!canRedo}
                 onClick={doRedo}
               >
-                ↻
+                <IconRedo />
               </Button>
               <span aria-hidden className="mx-1 h-4 w-px shrink-0 bg-border" />
 
@@ -622,7 +627,8 @@ export function FormBuilder({ fileId }: { fileId: string }) {
                   className="font-medium"
                   onClick={() => addQuestion(kind)}
                 >
-                  {`＋ ${KIND_LABELS[kind]}`}
+                  <IconPlus />
+                  {KIND_LABELS[kind]}
                 </Button>
               ))}
             </div>
@@ -650,7 +656,7 @@ export function FormBuilder({ fileId }: { fileId: string }) {
               align="end"
               className="shrink-0"
               triggerClassName="h-8 w-8 border-transparent bg-transparent px-0 hover:bg-muted focus-visible:ring-offset-0"
-              triggerIcon={<span aria-hidden>⋯</span>}
+              triggerIcon={<IconMore />}
               items={[
                 { id: "copy-link", label: "Copier le lien", onSelect: copyLink },
                 {
@@ -704,7 +710,7 @@ export function FormBuilder({ fileId }: { fileId: string }) {
                                 label={`Actions de la question ${index + 1}`}
                                 align="end"
                                 triggerClassName="h-7 w-7 border-transparent bg-transparent px-0 text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:ring-offset-0"
-                                triggerIcon={<span aria-hidden>⋯</span>}
+                                triggerIcon={<IconMore />}
                                 items={[
                                   {
                                     id: "up",
@@ -857,7 +863,7 @@ export function FormBuilder({ fileId }: { fileId: string }) {
                                       )
                                     }
                                   >
-                                    ✕
+                                    <IconClose />
                                   </Button>
                                 </div>
                               ))}
@@ -873,7 +879,8 @@ export function FormBuilder({ fileId }: { fileId: string }) {
                                   )
                                 }
                               >
-                                ＋ Ajouter une option
+                                <IconPlus className="size-3.5" />
+                                Ajouter une option
                               </Button>
                             </div>
                           ) : null}

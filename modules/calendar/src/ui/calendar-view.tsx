@@ -4,6 +4,7 @@ import {
   Button,
   ConfirmDialog,
   Dialog,
+  IconMenu,
   Input,
   LoadingState,
   type SegmentedTabItem,
@@ -365,7 +366,7 @@ export function CalendarView() {
             title={sidebarOpen ? "Masquer la navigation" : "Afficher la navigation"}
             onClick={() => setSidebarOpen((open) => !open)}
           >
-            ☰
+            <IconMenu />
           </Button>
           <span aria-hidden className="mx-1 h-4 w-px bg-border" />
           <Button
