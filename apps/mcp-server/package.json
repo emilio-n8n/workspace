@@ -19,7 +19,7 @@
     "@workspace/drive": "workspace:*",
     "@workspace/tasks": "workspace:*",
     "drizzle-orm": "^0.45.4",
-    "zod": "^4.1.12",
+    "zod": "^4.6.7",
     "@workspace/calendar": "workspace:*",
     "@workspace/chat": "workspace:*",
     "@workspace/classroom": "workspace:*",
