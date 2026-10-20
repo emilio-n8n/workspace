@@ -99,3 +99,92 @@ test("docs v3 : menus, mise en page paysage, police, rechercher-remplacer, liste
   }).toPass({ timeout: 10_000 });
   await expect(page.locator(".workspace-editor span[style*='Georgia']").first()).toBeVisible();
 });
+
+test("sheets v3 : saisie directe, recopie, fonctions françaises, autocomplétion, mise en forme de plage", async ({
+  page,
+}) => {
+  await signupNewUser(page, "Sheets v3", uniqueEmail("sheets-v3"));
+  await openApp(page, `${SHEETS}/`);
+  await page.getByRole("button", { name: "Nouvelle feuille" }).first().click();
+  await page.getByLabel("Titre de la feuille").fill("Ventes v3");
+  await page.getByRole("button", { name: "Créer et ouvrir" }).click();
+
+  const cell = (ref: string) => page.getByRole("button", { name: `Cellule ${ref}`, exact: true });
+  const input = (ref: string) => page.getByRole("textbox", { name: `Cellule ${ref}`, exact: true });
+  await expect(cell("A1")).toBeVisible({ timeout: 20_000 });
+
+  // Modèle Excel : un clic sélectionne (pas d'édition), la frappe remplace.
+  await expect(async () => {
+    await cell("A1").click();
+    await expect(cell("A1")).toHaveAttribute("aria-current", "true", { timeout: 1_000 });
+  }).toPass({ timeout: 20_000 });
+  await expect(input("A1")).toHaveCount(0);
+  await page.keyboard.type("10");
+  await expect(input("A1")).toHaveValue("10");
+  await page.keyboard.press("Enter");
+  // Entrée valide et sélectionne la cellule du dessous, sans l'éditer.
+  await expect(cell("A2")).toHaveAttribute("aria-current", "true");
+  await page.keyboard.type("20");
+  await page.keyboard.press("Enter");
+  await expect(cell("A2")).toHaveText("20");
+
+  // Poignée de recopie : A1:A2 prolongée jusqu'à A5 → 30, 40, 50.
+  await cell("A1").click();
+  await cell("A2").click({ modifiers: ["Shift"] });
+  const handle = page.locator("[data-fill-handle]");
+  await expect(handle).toBeVisible();
+  const from = await handle.boundingBox();
+  const to = await cell("A5").boundingBox();
+  if (!from || !to) throw new Error("poignée ou cellule introuvable");
+  await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(to.x + to.width / 2, to.y + to.height / 2, { steps: 8 });
+  await page.mouse.up();
+  await expect(cell("A3")).toHaveText("30");
+  await expect(cell("A5")).toHaveText("50");
+
+  // Fonction française avec point-virgule.
+  await cell("B1").click();
+  await page.keyboard.type("=SOMME(A1;A5)");
+  await page.keyboard.press("Enter");
+  await expect(cell("B1")).toHaveText("60");
+
+  // Autocomplétion : « =MOY » propose MOYENNE, Tab l'insère.
+  await page.keyboard.type("=MOY");
+  const suggestions = page.getByRole("listbox", { name: "Fonctions suggérées" });
+  await expect(suggestions.getByRole("option", { name: /MOYENNE/ }).first()).toBeVisible();
+  await page.keyboard.press("Tab");
+  await expect(input("B2")).toHaveValue("=MOYENNE(");
+  await page.keyboard.type("A1:A5)");
+  await page.keyboard.press("Enter");
+  await expect(cell("B2")).toHaveText("30");
+
+  // Mise en forme de plage : A1:A3 en gras d'un coup.
+  await cell("A1").click();
+  await cell("A3").click({ modifiers: ["Shift"] });
+  await page.getByRole("button", { name: "Gras", exact: true }).click();
+  for (const ref of ["A1", "A2", "A3"]) {
+    await expect(cell(ref)).toHaveCSS("font-weight", "700");
+  }
+  await expect(cell("A4")).not.toHaveCSS("font-weight", "700");
+
+  // Barre d'état : somme de la plage sélectionnée.
+  await cell("A5").click({ modifiers: ["Shift"] });
+  await expect(page.getByText("Somme : 150")).toBeVisible();
+
+  // Suppr efface le contenu de la cellule active.
+  await cell("B2").click();
+  await page.keyboard.press("Delete");
+  await expect(cell("B2")).toHaveText("");
+
+  // Persistance.
+  await expect(page.getByRole("status").filter({ hasText: /^Enregistré$/ })).toBeVisible({
+    timeout: 15_000,
+  });
+  await page.reload();
+  await page.waitForSelector("html[data-hydrated='true']", { timeout: 40_000 });
+  await expect(cell("A5")).toHaveText("50", { timeout: 15_000 });
+  await expect(cell("B1")).toHaveText("60");
+  await expect(cell("A2")).toHaveCSS("font-weight", "700");
+  await expect(cell("B2")).toHaveText("");
+});

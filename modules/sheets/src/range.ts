@@ -180,3 +180,57 @@ export function pasteSummary(count: number): string {
 export function copySummary(count: number): string {
   return `${count} cellule${count > 1 ? "s" : ""} copiée${count > 1 ? "s" : ""}.`;
 }
+
+/**
+ * Ctrl + flèche (comme Excel) : depuis une cellule pleine suivie d'une
+ * cellule pleine, va à la dernière cellule pleine du bloc ; sinon à la
+ * prochaine cellule pleine ; à défaut, au bord de la feuille.
+ * `values` est indexé « ligne:colonne ».
+ */
+export function jumpTarget(
+  values: ReadonlyMap<string, string>,
+  from: CellAddress,
+  delta: readonly [number, number],
+  bounds: { rows: number; cols: number },
+): CellAddress {
+  const [dRow, dCol] = delta;
+  const filled = (row: number, col: number) => (values.get(`${row}:${col}`) ?? "") !== "";
+  const inside = (row: number, col: number) =>
+    row >= 0 && col >= 0 && row < bounds.rows && col < bounds.cols;
+  let row = from.row;
+  let col = from.col;
+  if (!inside(row + dRow, col + dCol)) return { row, col };
+  if (filled(row, col) && filled(row + dRow, col + dCol)) {
+    while (inside(row + dRow, col + dCol) && filled(row + dRow, col + dCol)) {
+      row += dRow;
+      col += dCol;
+    }
+    return { row, col };
+  }
+  row += dRow;
+  col += dCol;
+  while (inside(row, col) && !filled(row, col)) {
+    if (!inside(row + dRow, col + dCol)) return { row, col };
+    row += dRow;
+    col += dCol;
+  }
+  return { row, col };
+}
+
+/**
+ * Statistiques de la barre d'état (somme, moyenne, nombre), sur les valeurs
+ * calculées numériques d'une plage — `null` sans au moins deux cellules.
+ */
+export function selectionStats(
+  numbers: readonly number[],
+  filledCount: number,
+): { sum: number; average: number | null; count: number; numeric: number } | null {
+  if (filledCount < 2) return null;
+  const sum = numbers.reduce((total, value) => total + value, 0);
+  return {
+    sum,
+    average: numbers.length > 0 ? sum / numbers.length : null,
+    count: filledCount,
+    numeric: numbers.length,
+  };
+}

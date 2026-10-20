@@ -5,12 +5,13 @@ import type { CellValue } from "../formula.ts";
  * partagée par la grille et la barre de formule (une seule teinte par nature,
  * jamais de couleur codée en dur).
  */
-export type CellTone = "number" | "error" | "text";
+export type CellTone = "number" | "error" | "text" | "boolean";
 
 /** Teinte d'une valeur calculée : nombre aligné à droite, erreur en alerte. */
 export function toneOf(value: CellValue | undefined): CellTone {
   if (value?.kind === "number") return "number";
   if (value?.kind === "error") return "error";
+  if (value?.kind === "boolean") return "boolean";
   return "text";
 }
 

@@ -69,7 +69,8 @@ describe("formula — évaluation", () => {
     expect(value({ ...base, B1: "=SUM(A1, 10)" }, "B1")).toBe("11");
     expect(value({ ...base, B1: "=SUM(MAX(A1:A3))" }, "B1")).toBe("3");
     expect(value({ ...base, B1: "=SUM(A1:A2*2)" }, "B1")).toBe("#ERREUR");
-    expect(value({ ...base, B1: "=SUM(A1:A3+x)" }, "B1")).toBe("#ERREUR");
+    // Nom inconnu : #NOM? (comme Excel), plus #ERREUR depuis le moteur v2.
+    expect(value({ ...base, B1: "=SUM(A1:A3+x)" }, "B1")).toBe("#NOM?");
     expect(value({ ...base, B1: "=COUNT(10, 20)" }, "B1")).toBe("2");
     expect(value({ ...base, B1: "=COUNT(A1, 10)" }, "B1")).toBe("2");
     expect(value({ ...base, B1: "=COUNT(A1:A2, 10, A3)" }, "B1")).toBe("4");
@@ -115,7 +116,7 @@ describe("formula — évaluation", () => {
   it("signale les erreurs de syntaxe et le texte en arithmétique", () => {
     expect(value({ A1: "=1+" }, "A1")).toBe("#ERREUR");
     expect(value({ A1: "abc", B1: "=A1+1" }, "B1")).toBe("#ERREUR");
-    expect(value({ A1: "=INCONNUE(A1)" }, "A1")).toBe("#ERREUR");
+    expect(value({ A1: "=INCONNUE(A1)" }, "A1")).toBe("#NOM?");
     expect(value({ A1: '=1+"texte"' }, "A1")).toBe("#ERREUR");
   });
 

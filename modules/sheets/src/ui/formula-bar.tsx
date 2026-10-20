@@ -2,6 +2,7 @@ import { cn, Input } from "@workspace/ui";
 import { type KeyboardEvent, useCallback, useState } from "react";
 import { parseKey } from "../formula.ts";
 import type { CellTone } from "./cell-tone.ts";
+import { useFormulaAssist } from "./formula-assist.tsx";
 
 export type FormulaBarProps = {
   /** Référence de la cellule active (« A1 »), ou chaîne vide sans sélection. */
@@ -107,6 +108,10 @@ export function FormulaBar({
   );
 
   const tooLong = shown.length > MAX_VALUE_CHARS;
+  const assist = useFormulaAssist(shown, (next) => {
+    setDraft({ reference, value: next });
+    onDraftChange(next);
+  });
 
   return (
     <fieldset
@@ -140,7 +145,7 @@ export function FormulaBar({
         fx
       </span>
 
-      <div className="flex min-w-0 flex-1 items-center gap-2">
+      <div className="relative flex min-w-0 flex-1 items-center gap-2">
         <Input
           aria-label={active ? `Valeur ou formule de ${reference}` : "Valeur ou formule"}
           aria-describedby="sheet-formula-aide"
@@ -156,13 +161,17 @@ export function FormulaBar({
             if (currentDraft !== null && currentDraft !== value) submit("none");
             else clearDraft();
           }}
-          onKeyDown={onValueKeyDown}
+          onKeyDown={(event) => {
+            if (assist.onKeyDown(event)) return;
+            onValueKeyDown(event);
+          }}
           className={cn(
             "h-8 w-full min-w-0 flex-1 font-mono text-xs",
             tooLong && "border-destructive text-destructive",
             tone === "error" && !tooLong && "text-destructive",
           )}
         />
+        {assist.popup}
         {active ? (
           <span
             aria-hidden
