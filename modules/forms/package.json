@@ -17,7 +17,7 @@
     "db:migrate": "drizzle-kit migrate"
   },
   "dependencies": {
-    "@tanstack/react-start": "1.168.61",
+    "@tanstack/react-start": "1.169.3",
     "@workspace/audit": "workspace:*",
     "@workspace/auth": "workspace:*",
     "@workspace/database": "workspace:*",
@@ -26,9 +26,9 @@
     "@workspace/drive": "workspace:*",
     "@workspace/ui": "workspace:*",
     "drizzle-orm": "^0.45.4",
-    "react": "^19.2.0",
-    "zod": "^4.1.12",
-    "@tanstack/react-router": "^1.170.42"
+    "react": "^19.3.1",
+    "zod": "^4.6.7",
+    "@tanstack/react-router": "^1.170.45"
   },
   "devDependencies": {
     "@types/node": "^22.20.5",
