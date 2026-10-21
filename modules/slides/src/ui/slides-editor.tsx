@@ -31,6 +31,7 @@ import {
   toEditor,
 } from "../editor-model.ts";
 import {
+  copySlideImageFn,
   type ElementView,
   getPresentationFn,
   renamePresentationFn,
@@ -52,6 +53,14 @@ import {
   SLIDE_ASPECT_IDS,
   type SlideAspectId,
 } from "../slide-aspect.ts";
+import {
+  CLIPBOARD_STORAGE_KEY,
+  clipboardFromHtml,
+  clipboardFromStorage,
+  clipboardHtml,
+  makeClipboard,
+  type SlidesClipboard,
+} from "../slide-clipboard.ts";
 import {
   fillLabel,
   normalizeRotation,
@@ -90,6 +99,7 @@ import {
   presentationShouldContinue,
   presentationSummary,
 } from "../slide-presentation.ts";
+import { clearRunMark, runsText, type TextRun } from "../slide-rich-text.ts";
 import {
   isShapeKind,
   SLIDE_SHAPE_KINDS,
@@ -145,6 +155,7 @@ import {
   zOrderAnnouncement,
   zOrderMove,
 } from "../slide-zorder.ts";
+import { openAudienceWindow, PresenterView } from "./presenter-view.tsx";
 import { SlideCanvas } from "./slide-canvas.tsx";
 import { SlideFilmstrip } from "./slide-filmstrip.tsx";
 import { PresenterNotes, SlideNotesField } from "./slide-notes-panel.tsx";
@@ -251,6 +262,9 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
   const [loading, setLoading] = useState(true);
   const [presenting, setPresenting] = useState(false);
   const [presentIndex, setPresentIndex] = useState(0);
+  // Mode présentateur (console + fenêtre public pilotée).
+  const [presenterOpen, setPresenterOpen] = useState(false);
+  const [audience, setAudience] = useState<Window | null>(null);
   /** Vrai quand le mode présentation a demandé le plein écran. */
   const fullscreenRequestedRef = useRef(false);
   const stageRef = useRef<HTMLDivElement>(null);
@@ -361,6 +375,8 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
             elements: slide.elements.map(({ key: _key, ...element }) => ({
               ...element,
               id: element.id ?? undefined,
+              // Segments périmés (texte modifié ailleurs) : retour au texte brut.
+              runs: element.runs && runsText(element.runs) === element.text ? element.runs : null,
             })),
           })),
         },
@@ -538,14 +554,16 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
    * place ne dépend pas de la diapositive courante, seulement de la clé.
    */
   const changeText = useCallback(
-    (key: string, text: string) => {
+    (key: string, text: string, runs?: TextRun[] | null) => {
       setSlides((current) =>
         current.map((slide) =>
           slide.elements.some((element) => element.key === key)
             ? {
                 ...slide,
                 elements: slide.elements.map((element) =>
-                  element.key === key ? { ...element, text } : element,
+                  element.key === key
+                    ? { ...element, text, runs: runs === undefined ? element.runs : runs }
+                    : element,
                 ),
               }
             : slide,
@@ -677,7 +695,65 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
     const items = slide.elements.filter((element) => selectedKeys.includes(element.key));
     if (items.length === 0) return;
     clipboardRef.current = items.map((element) => ({ ...element }));
+    storeClipboard(items);
     setAnnouncement(items.length > 1 ? `${items.length} éléments copiés.` : "Élément copié.");
+  }
+
+  /** Copie locale partagée entre onglets (collage dans une autre présentation). */
+  function storeClipboard(items: EditorElement[]): SlidesClipboard {
+    const clip = makeClipboard(fileId, items, Date.now());
+    try {
+      window.localStorage.setItem(CLIPBOARD_STORAGE_KEY, JSON.stringify(clip));
+    } catch {
+      // Stockage indisponible (navigation privée) : le HTML du presse-papiers suffit.
+    }
+    return clip;
+  }
+
+  /**
+   * Colle des éléments venus d'une autre présentation (ou d'un autre onglet) :
+   * les images sont recopiées côté serveur vers cette présentation.
+   */
+  async function pasteForeign(clip: SlidesClipboard) {
+    if (!canEdit) return;
+    const foreign = clip.sourceFileId !== fileId;
+    const elements: EditorElement[] = [];
+    for (const element of clip.elements) {
+      let mediaKey = element.mediaKey ?? null;
+      if (element.kind === "image" && mediaKey) {
+        try {
+          const copied = await copySlideImageFn({
+            data: { fileId, sourceFileId: clip.sourceFileId, mediaKey },
+          });
+          mediaKey = copied.mediaKey;
+        } catch {
+          setError("Une image n'a pas pu être recopiée depuis l'autre présentation.");
+          continue;
+        }
+      }
+      const offset = foreign ? 0 : COPY_OFFSET;
+      elements.push({
+        ...element,
+        mediaKey,
+        key: crypto.randomUUID(),
+        id: undefined,
+        x: round1(clamp(element.x + offset, 0, 100 - element.w)),
+        y: round1(clamp(element.y + offset, 0, 100 - element.h)),
+      });
+    }
+    if (elements.length === 0) return;
+    pushHistory("paste");
+    mutateSlide(selectedSlide, (slide) => ({
+      ...slide,
+      elements: [...slide.elements, ...elements],
+    }));
+    setSelectedKeys(elements.map((element) => element.key));
+    setEditingKey(null);
+    setAnnouncement(
+      foreign
+        ? `${elements.length} élément${elements.length > 1 ? "s" : ""} collé${elements.length > 1 ? "s" : ""} depuis une autre présentation.`
+        : `${elements.length} élément${elements.length > 1 ? "s" : ""} collé${elements.length > 1 ? "s" : ""}.`,
+    );
   }
 
   /** Colle les copies décalées, sélectionnées (Ctrl+V). */
@@ -806,7 +882,14 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
     const key = selectedKeys.length === 1 ? selectedKeys[0] : undefined;
     if (!key) return;
     pushHistory(kind);
-    updateElement(key, patch);
+    // La mise en forme de la zone l'emporte sur celle des mots pour cet attribut.
+    const element = slidesRef.current[selectedSlide]?.elements.find((item) => item.key === key);
+    let runs = element?.runs ?? null;
+    if ("bold" in patch) runs = clearRunMark(runs, "bold");
+    if ("italic" in patch) runs = clearRunMark(runs, "italic");
+    if ("underline" in patch) runs = clearRunMark(runs, "underline");
+    if ("textColor" in patch) runs = clearRunMark(runs, "color");
+    updateElement(key, runs === (element?.runs ?? null) ? patch : { ...patch, runs });
   }
 
   /** Change la variante de la forme sélectionnée. */
@@ -1186,7 +1269,16 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
         setTimeout(() => {
           if (!pendingPasteRef.current) return;
           pendingPasteRef.current = false;
-          if (clipboardRef.current.length > 0) pasteClipboard();
+          if (clipboardRef.current.length > 0) {
+            pasteClipboard();
+            return;
+          }
+          // Copie faite dans un autre onglet (autre présentation).
+          const stored = clipboardFromStorage(
+            window.localStorage.getItem(CLIPBOARD_STORAGE_KEY),
+            Date.now(),
+          );
+          if (stored) void pasteForeign(stored);
         }, 0);
       }
     };
@@ -1217,13 +1309,14 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
       if (items.length === 0 || !event.clipboardData) return;
       event.preventDefault();
       clipboardRef.current = items.map((element) => ({ ...element }));
-      event.clipboardData.setData(
-        "text/plain",
-        items
-          .map((element) => element.text)
-          .filter((text) => text.length > 0)
-          .join("\n"),
-      );
+      const plain = items
+        .map((element) => element.text)
+        .filter((text) => text.length > 0)
+        .join("\n");
+      const clip = storeClipboard(items);
+      event.clipboardData.setData("text/plain", plain);
+      // Éléments sérialisés dans le HTML : lisibles par une autre présentation.
+      event.clipboardData.setData("text/html", clipboardHtml(clip, plain));
       event.clipboardData.setData(SLIDES_CLIPBOARD_MIME, String(items.length));
     };
     const onPaste = (event: ClipboardEvent) => {
@@ -1232,7 +1325,15 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
       pendingPasteRef.current = false;
       const data = event.clipboardData;
       event.preventDefault();
-      if (data?.types.includes(SLIDES_CLIPBOARD_MIME) && clipboardRef.current.length > 0) {
+      const fromHtml = clipboardFromHtml(data?.getData("text/html") ?? "", Date.now());
+      if (fromHtml && (fromHtml.sourceFileId !== fileId || clipboardRef.current.length === 0)) {
+        void pasteForeign(fromHtml);
+        return;
+      }
+      if (
+        (fromHtml || data?.types.includes(SLIDES_CLIPBOARD_MIME)) &&
+        clipboardRef.current.length > 0
+      ) {
         pasteClipboard();
         return;
       }
@@ -1241,7 +1342,16 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
         pasteText(text);
         return;
       }
-      if (clipboardRef.current.length > 0) pasteClipboard();
+      if (clipboardRef.current.length > 0) {
+        pasteClipboard();
+        return;
+      }
+      // Presse-papiers vide ou illisible : copie faite dans un autre onglet.
+      const stored = clipboardFromStorage(
+        window.localStorage.getItem(CLIPBOARD_STORAGE_KEY),
+        Date.now(),
+      );
+      if (stored) void pasteForeign(stored);
     };
     window.addEventListener("copy", onCopy);
     window.addEventListener("paste", onPaste);
@@ -1752,6 +1862,21 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
             onClick={() => setPrintToken((token) => token + 1)}
           >
             Imprimer
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={slides.length === 0}
+            title="Diapositive suivante, notes et minuteur ; diaporama dans une fenêtre public"
+            onClick={() => {
+              setPresentIndex(selectedSlide);
+              setEditingKey(null);
+              // Ouverte dans le geste (bloqueur de fenêtres) ; refus sans gravité.
+              setAudience(openAudienceWindow(title || "Présentation"));
+              setPresenterOpen(true);
+            }}
+          >
+            Mode présentateur
           </Button>
           <Button
             size="sm"
@@ -2541,6 +2666,7 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
                     editingKey={editingKey}
                     onStartEdit={startEdit}
                     onTextChange={changeText}
+                    onRotate={(key, rotation) => updateElement(key, { rotation })}
                     onEndEdit={endEdit}
                     onRequestImage={requestImage}
                     aspect={aspect}
@@ -2775,6 +2901,27 @@ export function SlidesEditor({ fileId }: { fileId: string }) {
             </Button>
           </div>
         </div>
+      ) : null}
+
+      {presenterOpen ? (
+        <PresenterView
+          slides={slides}
+          index={Math.min(presentIndex, Math.max(0, slides.length - 1))}
+          onIndexChange={setPresentIndex}
+          fileId={fileId}
+          aspect={aspect}
+          theme={theme}
+          title={title || "Présentation"}
+          audience={audience}
+          onAudienceChange={setAudience}
+          onExit={() => {
+            audience?.close();
+            setAudience(null);
+            setPresenterOpen(false);
+            selectSlide(Math.min(presentIndex, Math.max(0, slides.length - 1)));
+            setAnnouncement(presentationExitMessage());
+          }}
+        />
       ) : null}
 
       {/* Région live : changements de diapositive et déplacements annoncés. */}

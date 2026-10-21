@@ -1,0 +1,1 @@
+ALTER TABLE "slide_elements" ADD COLUMN "rich" jsonb;

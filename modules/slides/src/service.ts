@@ -26,6 +26,7 @@ import {
   TITLE_LAYOUT,
 } from "./slide-layouts.ts";
 import { MAX_NOTES_CHARS, notesForSave } from "./slide-notes.ts";
+import { RichTextError, type TextRun, validateRuns } from "./slide-rich-text.ts";
 import { SHAPE_ELEMENT_KINDS, type SlideShapeKind } from "./slide-shapes.ts";
 import { normalizeTextColor, type SlideTextColor } from "./slide-text.ts";
 import { normalizeTheme, SLIDE_THEME_IDS, type SlideThemeId } from "./slide-theme.ts";
@@ -104,6 +105,8 @@ export type ElementView = {
   fill: SlideFill;
   /** Rotation en degrés entiers, dans [0, 360). */
   rotation: number;
+  /** Texte enrichi par mot ; null = texte brut. */
+  runs?: TextRun[] | null;
 };
 
 export type SlideView = {
@@ -138,8 +141,9 @@ export type PresentationDetail = {
  */
 export type ElementInput = Omit<
   ElementView,
-  "id" | "italic" | "underline" | "textColor" | "placeholder" | "fill" | "rotation"
+  "id" | "italic" | "underline" | "textColor" | "placeholder" | "fill" | "rotation" | "runs"
 > & {
+  runs?: TextRun[] | null;
   id?: string;
   fill?: SlideFill;
   rotation?: number;
@@ -296,10 +300,29 @@ function assertSlides(input: unknown): SlideInput[] {
           // Une image n'a pas de remplissage ; la rotation vaut pour tous.
           fill: element.kind === "image" ? "theme" : normalizeFill(element.fill),
           rotation: normalizeRotation(element.rotation ?? 0),
+          runs: element.kind === "image" ? null : assertRuns(element.runs, element.text),
         };
       }),
     };
   });
+}
+
+function assertRuns(value: unknown, text: string): TextRun[] | null {
+  try {
+    return validateRuns(value, text);
+  } catch (error) {
+    if (error instanceof RichTextError) throw new SlidesError("validation", error.message);
+    throw error;
+  }
+}
+
+/** Relecture tolérante : un texte enrichi périmé ou invalide retombe en texte brut. */
+function readRuns(value: unknown, text: string): TextRun[] | null {
+  try {
+    return validateRuns(value, text);
+  } catch {
+    return null;
+  }
 }
 
 async function requirePresentation(
@@ -375,6 +398,7 @@ async function loadSlides(presentationId: string): Promise<SlideView[]> {
       align: element.align as ElementAlign,
       fill: normalizeFill(element.fill),
       rotation: normalizeRotation(element.rotation),
+      runs: readRuns(element.rich, element.text),
     });
     bySlide.set(element.slideId, list);
   }
@@ -663,6 +687,7 @@ export async function savePresentation(
           align: element.align,
           fill: element.fill,
           rotation: element.rotation,
+          rich: element.runs ?? null,
         };
         if (element.id && knownElementIds.has(element.id)) {
           keptElementIds.add(element.id);
@@ -804,6 +829,24 @@ export async function getSlideImage(
     contentType: IMAGE_EXTENSION_TYPES[extension] ?? "application/octet-stream",
     body,
   };
+}
+
+/**
+ * Recopie une image d'une autre présentation (collage d'éléments entre
+ * présentations) : lecture contrôlée sur la source (anti-IDOR inchangé),
+ * écriture contrôlée sur la cible ; renvoie la nouvelle clé de la cible.
+ */
+export async function copySlideImage(
+  actor: Actor,
+  fileId: string,
+  input: { sourceFileId: string; mediaKey: string },
+): Promise<{ mediaKey: string }> {
+  if (input.sourceFileId === fileId) {
+    const { presentationId } = await requirePresentation(actor, fileId);
+    if (input.mediaKey.startsWith(`slides/${presentationId}/`)) return { mediaKey: input.mediaKey };
+  }
+  const image = await getSlideImage(actor, input.sourceFileId, input.mediaKey);
+  return uploadSlideImage(actor, fileId, { contentType: image.contentType, body: image.body });
 }
 
 export async function renamePresentation(

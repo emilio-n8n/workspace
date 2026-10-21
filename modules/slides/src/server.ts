@@ -3,6 +3,7 @@ import { getRequest } from "@tanstack/react-start/server";
 import { requireActor } from "@workspace/auth";
 import { z } from "zod";
 import {
+  copySlideImage,
   createPresentation,
   getPresentation,
   listPresentations,
@@ -40,6 +41,19 @@ const elementSchema = z.object({
   align: z.enum(["left", "center", "right"]),
   fill: z.enum(SLIDE_FILL_IDS as [SlideFill, ...SlideFill[]]).optional(),
   rotation: z.number().finite().min(-3600).max(3600).optional(),
+  // Segments validés finement par le service (marques, cohérence du texte).
+  runs: z
+    .array(
+      z.object({
+        text: z.string().max(2000),
+        bold: z.boolean().optional(),
+        italic: z.boolean().optional(),
+        underline: z.boolean().optional(),
+        color: z.enum(SLIDE_TEXT_COLOR_IDS as [SlideTextColor, ...SlideTextColor[]]).optional(),
+      }),
+    )
+    .max(400)
+    .nullish(),
 });
 
 const slideSchema = z.object({
@@ -143,5 +157,23 @@ export const updatePresentationSettingFn = createServerFn({ method: "POST" })
       theme: data.theme,
       transition: data.transition,
       transitionMs: data.transitionMs,
+    });
+  });
+
+export const copySlideImageFn = createServerFn({ method: "POST" })
+  .validator((input: unknown) =>
+    z
+      .object({
+        fileId: z.string().uuid(),
+        sourceFileId: z.string().uuid(),
+        mediaKey: z.string().min(1).max(512),
+      })
+      .parse(input),
+  )
+  .handler(async ({ data }) => {
+    const { actor } = await requireActor(getRequest().headers);
+    return copySlideImage(actor, data.fileId, {
+      sourceFileId: data.sourceFileId,
+      mediaKey: data.mediaKey,
     });
   });

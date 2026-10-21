@@ -17,6 +17,8 @@ import {
 import { fillClass, lineFillClass, rotationTransform } from "../slide-fill.ts";
 import { type GuideLine, type SnapBox, snapMove, unionBox } from "../slide-guides.ts";
 import { placeholderHint, placeholderLabel } from "../slide-layouts.ts";
+import { displayRuns, resolveRun, type TextRun } from "../slide-rich-text.ts";
+import { rotateFromDrag, rotationLabel } from "../slide-rotate.ts";
 import { isShapeKind, shapeFillClass, shapeLabel, shapeVariant } from "../slide-shapes.ts";
 import { textColorClass } from "../slide-text.ts";
 import {
@@ -28,6 +30,7 @@ import {
   themeLineClass,
   themeShapeClass,
 } from "../slide-theme.ts";
+import { baseOf, RichTextEditor } from "./rich-text-editor.tsx";
 
 export type SlideCanvasProps = {
   slide: EditorSlide;
@@ -47,8 +50,10 @@ export type SlideCanvasProps = {
   editingKey?: string | null;
   /** Demande l'entrée en édition d'un élément (double-clic, zone vide). */
   onStartEdit?: (key: string) => void;
-  /** Frappe dans l'éditeur en place : le texte est appliqué à chaque touche. */
-  onTextChange?: (key: string, text: string) => void;
+  /** Frappe dans l'éditeur en place : texte brut et segments enrichis. */
+  onTextChange?: (key: string, text: string, runs?: TextRun[] | null) => void;
+  /** Poignée de rotation : angle en degrés (Maj = pas de 15°). */
+  onRotate?: (key: string, rotation: number) => void;
   /** Sortie du mode édition (Échap ou clic ailleurs). */
   onEndEdit?: () => void;
   /** Zone image : ouvre le choix d'une image pour remplacer la zone. */
@@ -151,6 +156,7 @@ export function SlideCanvas({
   editingKey = null,
   onStartEdit,
   onTextChange,
+  onRotate,
   onEndEdit,
   onRequestImage,
   aspect = DEFAULT_SLIDE_ASPECT,
@@ -167,6 +173,44 @@ export function SlideCanvas({
   const [guides, setGuides] = useState<GuideLine[]>([]);
   /** Rectangle de sélection en cours (coordonnées en %). */
   const [marquee, setMarquee] = useState<SnapBox | null>(null);
+  /** Angle affiché pendant un geste de rotation. */
+  const [rotating, setRotating] = useState<{ key: string; degrees: number } | null>(null);
+
+  /** Poignée de rotation : l'angle suit le pointeur autour du centre. */
+  function startElementRotate(event: React.PointerEvent<HTMLSpanElement>, element: EditorElement) {
+    if (!interactive) return;
+    event.preventDefault();
+    event.stopPropagation();
+    dragMovedRef.current = true;
+    onGestureStart?.();
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    const center = {
+      x: rect.left + ((element.x + element.w / 2) / 100) * rect.width,
+      y: rect.top + ((element.y + element.h / 2) / 100) * rect.height,
+    };
+    const start = { x: event.clientX, y: event.clientY };
+    const initial = element.rotation;
+    const move = (moveEvent: PointerEvent) => {
+      const degrees = rotateFromDrag(
+        initial,
+        center,
+        start,
+        { x: moveEvent.clientX, y: moveEvent.clientY },
+        moveEvent.shiftKey,
+      );
+      setRotating({ key: element.key, degrees });
+      onRotate?.(element.key, degrees);
+    };
+    const up = () => {
+      setRotating(null);
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  }
 
   /** Position en % d'un point de l'écran, dans le repère de la diapositive. */
   function pointOf(clientX: number, clientY: number, rect: DOMRect): { x: number; y: number } {
@@ -434,6 +478,26 @@ export function SlideCanvas({
                 {placeholderHint(element.placeholder)}
               </span>
             )
+          ) : element.runs ? (
+            // Texte enrichi : un segment par mise en forme (gras, couleur…).
+            displayRuns(element.text, element.runs).map((run, index) => {
+              const resolved = resolveRun(run, baseOf(element));
+              return (
+                <span
+                  // biome-ignore lint/suspicious/noArrayIndexKey: segments ordonnés, recalculés à chaque rendu.
+                  key={index}
+                  data-run=""
+                  className={run.color ? textColorClass(resolved.color) : undefined}
+                  style={{
+                    fontWeight: resolved.bold ? 700 : 400,
+                    fontStyle: resolved.italic ? "italic" : "normal",
+                    textDecorationLine: resolved.underline ? "underline" : "none",
+                  }}
+                >
+                  {run.text}
+                </span>
+              );
+            })
           ) : (
             element.text
           );
@@ -449,45 +513,15 @@ export function SlideCanvas({
         // texte saisi ne peuvent pas diverger).
         if (editingKey === element.key) {
           return (
-            <div
+            <RichTextEditor
               key={element.key}
-              className={cn(className, textClass, "z-10 outline outline-2 outline-primary")}
+              element={element}
+              className={cn(className, textClass)}
               style={style}
-              onPointerDown={(event) => event.stopPropagation()}
-            >
-              <textarea
-                ref={(node) => {
-                  if (!node) return;
-                  // Focus à l'ouverture de l'édition (pas d'attribut autoFocus :
-                  // la règle d'accessibilité préfère un focus explicite), puis
-                  // curseur en fin de texte : la frappe directe et le
-                  // double-clic continuent le mot, jamais au milieu.
-                  if (document.activeElement !== node) {
-                    node.focus();
-                    const end = node.value.length;
-                    node.setSelectionRange(end, end);
-                  }
-                }}
-                aria-label="Modifier le texte"
-                value={element.text}
-                onChange={(event) => onTextChange?.(element.key, event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Escape") {
-                    event.stopPropagation();
-                    onEndEdit?.();
-                  }
-                }}
-                onBlur={() => onEndEdit?.()}
-                maxLength={2000}
-                className="size-full resize-none overflow-hidden border-none bg-transparent p-0 text-inherit outline-none"
-                style={{
-                  font: "inherit",
-                  color: "inherit",
-                  textAlign: "inherit",
-                  textDecorationLine: "inherit",
-                }}
-              />
-            </div>
+              onChange={(text, runs) => onTextChange?.(element.key, text, runs)}
+              onEnd={() => onEndEdit?.()}
+              toolbarBelow={element.y < 12}
+            />
           );
         }
         return (
@@ -543,6 +577,33 @@ export function SlideCanvas({
                   />
                 ))
               : null}
+            {selected && selectedElementKeys.length === 1 ? (
+              <>
+                {/* Poignée de rotation (PowerPoint) : Maj = pas de 15°. */}
+                <span
+                  aria-hidden
+                  className={cn(
+                    "pointer-events-none absolute left-1/2 z-20 h-4 w-px -translate-x-1/2 bg-primary",
+                    element.y < 8 ? "-bottom-6" : "-top-6",
+                  )}
+                />
+                <span
+                  aria-hidden
+                  data-rotate-handle=""
+                  title="Faire pivoter (Maj : pas de 15°)"
+                  onPointerDown={(event) => startElementRotate(event, element)}
+                  className={cn(
+                    "absolute left-1/2 z-20 size-3 -translate-x-1/2 cursor-grab rounded-full border border-primary bg-background shadow-xs",
+                    element.y < 8 ? "-bottom-8" : "-top-8",
+                  )}
+                />
+                {rotating?.key === element.key ? (
+                  <span className="pointer-events-none absolute -top-14 left-1/2 z-30 -translate-x-1/2 rounded bg-foreground px-1.5 py-0.5 text-[11px] font-normal not-italic text-background tabular-nums">
+                    {rotationLabel(rotating.degrees)}
+                  </span>
+                ) : null}
+              </>
+            ) : null}
           </button>
         );
       })}

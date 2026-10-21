@@ -5,6 +5,7 @@ import {
   boolean,
   index,
   integer,
+  jsonb,
   pgTable,
   real,
   text,
@@ -15,6 +16,7 @@ import {
 import { DEFAULT_SLIDE_ASPECT, type SlideAspectId } from "./slide-aspect.ts";
 import type { SlideFill } from "./slide-fill.ts";
 import type { SlidePlaceholderRole } from "./slide-layouts.ts";
+import type { TextRun } from "./slide-rich-text.ts";
 import type { SlideTextColor } from "./slide-text.ts";
 import { DEFAULT_SLIDE_THEME, type SlideThemeId } from "./slide-theme.ts";
 import type { SlideTransitionId } from "./slide-transition.ts";
@@ -105,6 +107,8 @@ export const slideElements = pgTable(
     fill: text("fill").$type<SlideFill>().notNull().default("theme"),
     /** Rotation en degrés entiers, dans [0, 360). */
     rotation: integer("rotation").notNull().default(0),
+    /** Texte enrichi par mot (segments) ; null = texte brut (additif, v3.1). */
+    rich: jsonb("rich").$type<TextRun[]>(),
   },
   (table) => [index("slide_elements_slide_idx").on(table.slideId)],
 );

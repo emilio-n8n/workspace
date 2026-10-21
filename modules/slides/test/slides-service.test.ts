@@ -6,6 +6,7 @@ import { getStorage } from "@workspace/storage";
 import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  copySlideImage,
   createPresentation,
   type ElementInput,
   getPresentation,
@@ -846,5 +847,57 @@ describe("slides — journal d'audit", () => {
 
     const rows = await auditEventsFor(f.orgId);
     expect(rows.map((row) => row.action)).toEqual(["slides.presentation.create"]);
+  });
+});
+
+describe("slides v3.1 — texte enrichi et collage d'images entre présentations", () => {
+  it("enregistre les segments enrichis et refuse un texte incohérent", async () => {
+    const { entry } = await createPresentation(f.actorAlice, { title: "Riche" });
+    const runs = [{ text: "Bonjour " }, { text: "monde", bold: true, color: "accent" as const }];
+    const saved = await savePresentation(f.actorAlice, entry.id, {
+      revision: 1,
+      slides: [{ elements: [element({ text: "Bonjour monde", runs })] }],
+    });
+    expect(saved.slides[0]?.elements[0]?.runs).toEqual(runs);
+    const reloaded = await getPresentation(f.actorAlice, entry.id);
+    expect(reloaded.slides[0]?.elements[0]?.runs).toEqual(runs);
+    await expectSlidesError(
+      savePresentation(f.actorAlice, entry.id, {
+        revision: 2,
+        slides: [{ elements: [element({ text: "Autre", runs })] }],
+      }),
+      "validation",
+    );
+  });
+
+  it("recopie une image vers une autre présentation (accès contrôlé)", async () => {
+    const source = await createPresentation(f.actorAlice, { title: "Source" });
+    const target = await createPresentation(f.actorAlice, { title: "Cible" });
+    const body = Buffer.from([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]);
+    const { mediaKey } = await uploadSlideImage(f.actorAlice, source.entry.id, {
+      contentType: "image/png",
+      body,
+    });
+    const copied = await copySlideImage(f.actorAlice, target.entry.id, {
+      sourceFileId: source.entry.id,
+      mediaKey,
+    });
+    expect(copied.mediaKey).not.toBe(mediaKey);
+    const image = await getSlideImage(f.actorAlice, target.entry.id, copied.mediaKey);
+    expect(image.body.equals(body)).toBe(true);
+    // Même présentation : la clé est réutilisée telle quelle.
+    expect(
+      (
+        await copySlideImage(f.actorAlice, source.entry.id, {
+          sourceFileId: source.entry.id,
+          mediaKey,
+        })
+      ).mediaKey,
+    ).toBe(mediaKey);
+    // Bruno n'a pas accès à la source : refus.
+    const bruno = await createPresentation(f.actorBruno, { title: "Bruno" });
+    await expect(
+      copySlideImage(f.actorBruno, bruno.entry.id, { sourceFileId: source.entry.id, mediaKey }),
+    ).rejects.toThrow();
   });
 });
