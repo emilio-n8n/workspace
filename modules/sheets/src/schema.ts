@@ -12,6 +12,7 @@ import {
   uuid,
 } from "drizzle-orm/pg-core";
 import type { DimensionAxis } from "./dimensions.ts";
+import type { TabSettings } from "./tab-settings.ts";
 
 /**
  * Schéma du module Sheets — voir docs/modules/sheets.md.
@@ -53,6 +54,8 @@ export type CellStyle = {
   color?: CellTextColor;
   /** Format d'affichage numérique (« auto » = clé absente). */
   format?: CellStoredFormat;
+  /** Code de format personnalisé (`# ##0,00 €`, `dd/mm/yyyy`) : prime sur `format`. */
+  numberFormat?: string;
 };
 
 export const spreadsheets = pgTable(
@@ -82,6 +85,8 @@ export const sheetTabs = pgTable(
       .references(() => spreadsheets.id, { onDelete: "cascade" }),
     name: text("name").notNull(),
     position: integer("position").notNull(),
+    /** Volets figés, filtre automatique, graphiques (additif, v3.1). */
+    settings: jsonb("settings").$type<TabSettings>(),
   },
   (table) => [index("sheet_tabs_spreadsheet_idx").on(table.spreadsheetId)],
 );

@@ -20,6 +20,7 @@ import {
   saveCells,
   setCellStyle,
   setDimensionSizes,
+  setTabSettings,
 } from "./service.ts";
 import { CELL_STYLE_BACKGROUNDS, CELL_TEXT_COLORS, MAX_STYLE_CELLS } from "./style-palette.ts";
 
@@ -103,6 +104,7 @@ export const setCellStyleFn = createServerFn({ method: "POST" })
             background: z.enum(CELL_STYLE_BACKGROUNDS).optional(),
             color: z.enum(CELL_TEXT_COLORS).optional(),
             format: z.enum(CELL_STORED_FORMAT_IDS).optional(),
+            numberFormat: z.string().max(64).optional(),
           })
           .nullable(),
       })
@@ -242,6 +244,16 @@ export const renameTabFn = createServerFn({ method: "POST" })
     const { actor } = await requireActor(getRequest().headers);
     await renameTab(actor, data.tabId, data.name);
     return { ok: true };
+  });
+
+export const setTabSettingsFn = createServerFn({ method: "POST" })
+  .validator((input: unknown) =>
+    // Le contenu est validé finement par `normalizeTabSettings` (service).
+    z.object({ tabId: z.string().uuid(), settings: z.unknown() }).parse(input),
+  )
+  .handler(async ({ data }) => {
+    const { actor } = await requireActor(getRequest().headers);
+    return setTabSettings(actor, data.tabId, data.settings);
   });
 
 export const deleteTabFn = createServerFn({ method: "POST" })

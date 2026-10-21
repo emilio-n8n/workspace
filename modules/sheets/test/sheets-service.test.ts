@@ -26,6 +26,7 @@ import {
   saveCells,
   setCellStyle,
   setDimensionSizes,
+  setTabSettings,
 } from "../src/index.ts";
 
 const { user, organization, auditEvents } = coreSchema;
@@ -1028,5 +1029,67 @@ describe("sheets — opérations structurelles (TASK-002)", () => {
       index: 1,
       count: 1,
     });
+  });
+});
+
+describe("sheets — réglages d'onglet et formats personnalisés (v3.1)", () => {
+  it("persiste volets figés, filtre et graphiques, et refuse l'invalide", async () => {
+    const { entry } = await createSpreadsheet(f.actorAlice, { title: "Réglages" });
+    const detail = await getSpreadsheet(f.actorAlice, entry.id);
+    const tabId = detail.tabs[0]?.id;
+    if (!tabId) throw new Error("onglet manquant");
+    expect(detail.tabs[0]?.settings).toEqual({});
+
+    const settings = {
+      frozen: { rows: 1, cols: 1 },
+      filter: {
+        range: { startRow: 0, endRow: 9, startCol: 0, endCol: 2 },
+        columns: { "1": { hidden: ["Lyon"] } },
+      },
+      charts: [
+        {
+          id: "graphique-1",
+          type: "column",
+          range: { startRow: 0, endRow: 9, startCol: 0, endCol: 2 },
+          title: "Ventes",
+          x: 40,
+          y: 40,
+          width: 480,
+          height: 300,
+        },
+      ],
+    };
+    await setTabSettings(f.actorAlice, tabId, settings);
+    const after = await getSpreadsheet(f.actorAlice, entry.id);
+    expect(after.tabs[0]?.settings).toEqual(settings);
+
+    await expect(
+      setTabSettings(f.actorAlice, tabId, { frozen: { rows: -1, cols: 0 } }),
+    ).rejects.toThrow(SheetsError);
+    await expect(setTabSettings(f.actorBruno, tabId, {})).rejects.toThrow(SheetsError);
+    await setTabSettings(f.actorAlice, tabId, null);
+    const cleared = await getSpreadsheet(f.actorAlice, entry.id);
+    expect(cleared.tabs[0]?.settings).toEqual({});
+  });
+
+  it("stocke un code de format personnalisé et refuse un code trop long", async () => {
+    const { entry } = await createSpreadsheet(f.actorAlice, { title: "Formats perso" });
+    const detail = await getSpreadsheet(f.actorAlice, entry.id);
+    const tabId = detail.tabs[0]?.id;
+    if (!tabId) throw new Error("onglet manquant");
+    await setCellStyle(f.actorAlice, entry.id, {
+      tabId,
+      cells: [{ row: 0, col: 0 }],
+      style: { numberFormat: "# ##0,00 €" },
+    });
+    const after = await getSpreadsheet(f.actorAlice, entry.id);
+    expect(after.cells[0]?.style).toEqual({ numberFormat: "# ##0,00 €" });
+    await expect(
+      setCellStyle(f.actorAlice, entry.id, {
+        tabId,
+        cells: [{ row: 0, col: 0 }],
+        style: { numberFormat: "0".repeat(65) },
+      }),
+    ).rejects.toThrow(SheetsError);
   });
 });

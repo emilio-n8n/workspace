@@ -1,4 +1,17 @@
-import { Button, cn, Dialog, Input, Label, LoadingState, Menu } from "@workspace/ui";
+import {
+  Button,
+  cn,
+  Dialog,
+  IconChevronDown,
+  IconMore,
+  IconPlus,
+  IconRedo,
+  IconUndo,
+  Input,
+  Label,
+  LoadingState,
+  Menu,
+} from "@workspace/ui";
 import {
   type ChangeEvent,
   type CSSProperties,
@@ -7,11 +20,14 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
 } from "react";
+import { extractChartData } from "../chart.ts";
 import { MAX_CELL_CHARS, MAX_ROWS } from "../csv.ts";
+import { formatCustom } from "../custom-format.ts";
 import {
   applyResize,
   clampSize,
@@ -23,7 +39,15 @@ import {
   sizeOf,
 } from "../dimensions.ts";
 import { fillRange, fillTarget, shiftPasted } from "../fill.ts";
-import { cellKey, evaluateCells, formatValue, parseKey } from "../formula.ts";
+import {
+  detectFilterRange,
+  distinctValues,
+  filterSummary,
+  hiddenRows,
+  isColumnFiltered,
+  withColumnFilter,
+} from "../filter.ts";
+import { type CellMap, cellKey, evaluateCells, formatValue, parseKey } from "../formula.ts";
 import {
   DEFAULT_FREEZE,
   type FreezeState,
@@ -66,6 +90,7 @@ import {
   saveCellsFn,
   setCellStyleFn,
   setDimensionSizesFn,
+  setTabSettingsFn,
 } from "../server.ts";
 import { type SortDirection, sortRange, sortSummary } from "../sort.ts";
 import {
@@ -81,10 +106,14 @@ import {
   type CellTextColor,
   MAX_STYLE_CELLS,
 } from "../style-palette.ts";
+import type { ChartType, ColumnFilter, SheetChart, TabSettings } from "../tab-settings.ts";
 import { type CellTone, toneOf } from "./cell-tone.ts";
+import { CustomFormatDialog } from "./custom-format-dialog.tsx";
+import { FilterPopover } from "./filter-popover.tsx";
 import { useFormulaAssist } from "./formula-assist.tsx";
 import { FormulaBar } from "./formula-bar.tsx";
 import { ResizeHandle } from "./resize-handle.tsx";
+import { ChartFrame } from "./sheet-chart.tsx";
 import { SheetContextMenu, type SheetMenuItem } from "./sheet-context-menu.tsx";
 
 /** Colonnes affichées (A à Z) et lignes (celles acceptées par le service). */
@@ -172,7 +201,7 @@ type SheetSizes = {
 /** Retire un attribut d'un style ; `null` si le style devient vide. */
 function withoutKey(
   style: CellStyle,
-  key: "align" | "background" | "color" | "format",
+  key: "align" | "background" | "color" | "format" | "numberFormat",
 ): CellStyle | null {
   const next = { ...style };
   delete next[key];
@@ -225,6 +254,7 @@ function rowIndexAt(offsets: readonly number[], y: number): number {
 
 /** Jeu de cartes vide, partagé tant qu'aucune taille n'est choisie. */
 const EMPTY_SIZES: SheetSizes = { col: new Map(), row: new Map() };
+const EMPTY_SETTINGS: TabSettings = {};
 
 type GridCellProps = {
   row: number;
@@ -553,6 +583,16 @@ export function SheetEditor({ fileId }: { fileId: string }) {
   // cellule à la suivante.
   const [barDraft, setBarDraft] = useState<{ key: string; value: string } | null>(null);
   const [announcement, setAnnouncement] = useState("");
+  // Filtre automatique : panneau ouvert sur une colonne (position d'écran).
+  const [filterMenu, setFilterMenu] = useState<{ col: number; left: number; top: number } | null>(
+    null,
+  );
+  const [formatDialogOpen, setFormatDialogOpen] = useState(false);
+  const toggleFilterRef = useRef<() => void>(() => undefined);
+  // Hauteur mesurée de la ligne des lettres et position des colonnes figées.
+  const headerCellRef = useRef<HTMLTableCellElement>(null);
+  const [headerHeight, setHeaderHeight] = useState(25);
+  const [frozenLefts, setFrozenLefts] = useState<number[]>([]);
   const [structureBusy, setStructureBusy] = useState(false);
   // Historique annuler/rétablir : instantanés empilés et bornés ; les gestes
   // répétés (frappe, collage, tri) fusionnent dans la même entrée.
@@ -562,6 +602,7 @@ export function SheetEditor({ fileId }: { fileId: string }) {
   const [historyVersion, setHistoryVersion] = useState(0);
   // Vues de référence du contenu et des styles, lues par les rappels stables.
   const cellsRef = useRef(cellsByTab);
+  const detailRef = useRef<SpreadsheetDetail | null>(null);
   const stylesRef = useRef(stylesByTab);
 
   // Valeurs dérivées du chargement : déclarées avant les rappels qui s'en
@@ -589,6 +630,7 @@ export function SheetEditor({ fileId }: { fileId: string }) {
 
   useEffect(() => {
     canEditRef.current = detail?.canEdit ?? false;
+    detailRef.current = detail;
   }, [detail]);
 
   useEffect(() => {
@@ -819,17 +861,97 @@ export function SheetEditor({ fileId }: { fileId: string }) {
     [activeTabId, stylesByTab],
   );
 
+  // Autres onglets du classeur, par nom : références `Feuil2!A1` (S16).
+  const otherSheets = useMemo(() => {
+    const sheets: Record<string, CellMap> = {};
+    for (const tab of detail?.tabs ?? []) {
+      if (tab.id === activeTabId) continue;
+      const map = cellsByTab.get(tab.id);
+      const raw: CellMap = {};
+      for (const [key, value] of map ?? []) {
+        const [row, col] = key.split(":").map(Number);
+        raw[cellKey(row ?? 0, col ?? 0)] = value;
+      }
+      sheets[tab.name] = raw;
+    }
+    return sheets;
+  }, [detail?.tabs, activeTabId, cellsByTab]);
+
   const evaluated = useMemo(() => {
     const raw: Record<string, string> = {};
     for (const [key, value] of activeMap) {
       const [row, col] = key.split(":").map(Number);
       raw[cellKey(row ?? 0, col ?? 0)] = value;
     }
-    return evaluateCells(raw);
-  }, [activeMap]);
+    return evaluateCells(raw, { sheets: otherSheets, sheetName: activeTab?.name });
+  }, [activeMap, otherSheets, activeTab?.name]);
 
   /** Style de la cellule active (v1 : la grille ne met en forme qu'une cellule). */
   const selectedStyle = selectedKey ? (activeStyles.get(selectedKey) ?? null) : null;
+
+  // Réglages persistés de l'onglet : volets figés, filtre, graphiques (v3.1).
+  const activeSettings: TabSettings = activeTab?.settings ?? EMPTY_SETTINGS;
+  const frozenRows = Math.min(activeSettings.frozen?.rows ?? 0, ROWS);
+  const frozenCols = Math.min(activeSettings.frozen?.cols ?? 0, COLS);
+  const autoFilter = activeSettings.filter;
+
+  /** Texte affiché d'une cellule (formule calculée, format appliqué). */
+  const displayAt = useCallback(
+    (row: number, col: number): string => {
+      const value = evaluated.get(cellKey(row, col));
+      if (!value) return "";
+      const style = activeStyles.get(`${row}:${col}`);
+      const text = formatValue(value);
+      if (style?.numberFormat) {
+        return formatCustom(text, style.numberFormat, value.kind === "number" ? value.value : null)
+          .text;
+      }
+      return formatCellDisplay(text, style?.format ?? "auto");
+    },
+    [evaluated, activeStyles],
+  );
+
+  const filteredRows = useMemo(
+    () => (autoFilter ? hiddenRows(autoFilter, displayAt) : new Set<number>()),
+    [autoFilter, displayAt],
+  );
+
+  /** Remplace les réglages de l'onglet actif (optimiste, puis serveur). */
+  const updateTabSettings = useCallback(
+    async (mutate: (current: TabSettings) => TabSettings) => {
+      const tabId = activeTabIdRef.current;
+      if (!tabId || !canEditRef.current) return;
+      const before = detailRef.current?.tabs.find((tab) => tab.id === tabId)?.settings ?? {};
+      const next = mutate(before);
+      setDetail((current) =>
+        current
+          ? {
+              ...current,
+              tabs: current.tabs.map((tab) =>
+                tab.id === tabId ? { ...tab, settings: next } : tab,
+              ),
+            }
+          : current,
+      );
+      try {
+        const saved = await setTabSettingsFn({ data: { tabId, settings: next } });
+        setDetail((current) =>
+          current
+            ? {
+                ...current,
+                tabs: current.tabs.map((tab) =>
+                  tab.id === tabId ? { ...tab, settings: saved } : tab,
+                ),
+              }
+            : current,
+        );
+      } catch (caught) {
+        setError(caught instanceof Error ? caught.message : "Réglage de l'onglet impossible.");
+        void load();
+      }
+    },
+    [load],
+  );
 
   const flush = useCallback(
     async (tabId: string | null) => {
@@ -1336,9 +1458,10 @@ export function SheetEditor({ fileId }: { fileId: string }) {
   const toggleFormat = useCallback(
     (format: CellFormatId) => {
       const remove = format === "auto" || selectedStyle?.format === format;
-      void applyCellStyle((current) =>
-        remove ? withoutKey(current ?? {}, "format") : { ...(current ?? {}), format },
-      );
+      void applyCellStyle((current) => {
+        const base = withoutKey(current ?? {}, "numberFormat") ?? {};
+        return remove ? withoutKey(base, "format") : { ...base, format };
+      });
     },
     [applyCellStyle, selectedStyle],
   );
@@ -1548,14 +1671,16 @@ export function SheetEditor({ fileId }: { fileId: string }) {
 
   // Virtualisation des lignes : décalages cumulés, puis fenêtre rendue (les
   // lignes hors écran sont remplacées par deux espaceurs de même hauteur).
+  // Lignes masquées par le filtre : hauteur nulle (et non rendues).
   const rowOffsets = useMemo(() => {
     const offsets = new Array<number>(ROWS + 1);
     offsets[0] = 0;
     for (let row = 0; row < ROWS; row += 1) {
-      offsets[row + 1] = (offsets[row] ?? 0) + (rowSizes.get(row) ?? ROW_HEIGHT);
+      const height = filteredRows.has(row) ? 0 : (rowSizes.get(row) ?? ROW_HEIGHT);
+      offsets[row + 1] = (offsets[row] ?? 0) + height;
     }
     return offsets;
-  }, [rowSizes]);
+  }, [rowSizes, filteredRows]);
   rowOffsetsRef.current = rowOffsets;
 
   const firstRow = Math.max(0, rowIndexAt(rowOffsets, viewport.top) - OVERSCAN_ROWS);
@@ -1563,16 +1688,73 @@ export function SheetEditor({ fileId }: { fileId: string }) {
     ROWS - 1,
     rowIndexAt(rowOffsets, viewport.top + viewport.height) + OVERSCAN_ROWS,
   );
-  const topSpacer = rowOffsets[firstRow] ?? 0;
-  const bottomSpacer = (rowOffsets[ROWS] ?? 0) - (rowOffsets[lastRow + 1] ?? 0);
-
-  const rowTracks = useMemo(() => {
-    const tracks: string[] = [];
-    for (let row = firstRow; row <= lastRow; row += 1) {
-      tracks.push(`${rowSizes.get(row) ?? ROW_HEIGHT}px`);
+  // Fenêtre rendue : lignes figées d'abord (toujours rendues, collantes), puis
+  // les lignes visibles ; les lignes filtrées sont absentes du rendu.
+  const windowStart = Math.max(frozenRows, firstRow);
+  const topSpacer = Math.max(0, (rowOffsets[windowStart] ?? 0) - (rowOffsets[frozenRows] ?? 0));
+  const bottomSpacer = Math.max(
+    0,
+    (rowOffsets[ROWS] ?? 0) - (rowOffsets[Math.max(lastRow, windowStart - 1) + 1] ?? 0),
+  );
+  const renderPlan = useMemo(() => {
+    const frozen: number[] = [];
+    for (let row = 0; row < frozenRows; row += 1) if (!filteredRows.has(row)) frozen.push(row);
+    const windowRows: number[] = [];
+    for (let row = windowStart; row <= lastRow; row += 1) {
+      if (!filteredRows.has(row)) windowRows.push(row);
     }
-    return tracks.join(" ");
-  }, [firstRow, lastRow, rowSizes]);
+    // Ligne de grille CSS (1-basée) de chaque ligne rendue : en-tête = 1,
+    // lignes figées ensuite, espaceur, puis la fenêtre.
+    const lineOf = new Map<number, number>();
+    for (const [index, row] of frozen.entries()) lineOf.set(row, 2 + index);
+    for (const [index, row] of windowRows.entries()) lineOf.set(row, 3 + frozen.length + index);
+    return { frozen, windowRows, lineOf };
+  }, [frozenRows, filteredRows, windowStart, lastRow]);
+  const rowTracks = useMemo(() => {
+    const height = (row: number) => `${rowSizes.get(row) ?? ROW_HEIGHT}px`;
+    return {
+      frozen: renderPlan.frozen.map(height).join(" "),
+      window: renderPlan.windowRows.map(height).join(" "),
+    };
+  }, [renderPlan, rowSizes]);
+
+  // Mesures des volets figés : hauteur de la ligne des lettres et bord gauche
+  // de chaque colonne figée (les colonnes sont fluides, on lit le rendu).
+  // biome-ignore lint/correctness/useExhaustiveDependencies: les tailles de colonnes et le chargement déplacent les bords mesurés.
+  useLayoutEffect(() => {
+    const corner = headerCellRef.current;
+    if (corner) setHeaderHeight(corner.offsetHeight);
+    const table = corner?.closest("table");
+    if (!table || frozenCols === 0) {
+      setFrozenLefts((current) => (current.length === 0 ? current : []));
+      return;
+    }
+    const lefts: number[] = [];
+    for (let col = 0; col < frozenCols; col += 1) {
+      const th = table.querySelector<HTMLElement>(`th[data-col-index="${col}"]`);
+      lefts.push(th?.offsetLeft ?? 44);
+    }
+    setFrozenLefts((current) =>
+      current.length === lefts.length && current.every((value, index) => value === lefts[index])
+        ? current
+        : lefts,
+    );
+  }, [frozenCols, colSizes, detail, freeze]);
+
+  /** Style collant d'une cellule figée (ligne, colonne ou les deux). */
+  const frozenStyle = (row: number | null, col: number | null): CSSProperties | undefined => {
+    const stickyRow = row !== null && row < frozenRows;
+    const stickyCol = col !== null && col < frozenCols;
+    if (!stickyRow && !stickyCol) return undefined;
+    const style: CSSProperties = { position: "sticky" };
+    if (stickyRow && row !== null) {
+      style.top = (freeze.header ? headerHeight : 0) + (rowOffsets[row] ?? 0);
+    }
+    if (stickyCol && col !== null) {
+      style.left = (frozenLefts[col] ?? 44) - (freeze.firstColumn ? 0 : 44);
+    }
+    return style;
+  };
 
   // Fenêtre visible : suivie au défilement (une image d'animation au plus) et
   // au redimensionnement de la zone. Relancé au chargement : la zone de
@@ -1634,6 +1816,29 @@ export function SheetEditor({ fileId }: { fileId: string }) {
    * Trie la plage sélectionnée selon la colonne de la cellule active : les
    * lignes entières se déplacent, puis la mise à jour passe par l'autosave.
    */
+  /** Trie les lignes d'une plage selon une colonne (sélection ou filtre). */
+  const sortBy = useCallback(
+    (range: CellRange, column: number, direction: SortDirection) => {
+      if (!canEditRef.current || !activeTabIdRef.current) return;
+      const values = new Map<string, string>();
+      for (const [key, value] of activeMap) values.set(key, value);
+      const result = sortRange({
+        range,
+        column,
+        direction,
+        values,
+        bounds: { rows: ROWS, cols: COLS },
+      });
+      for (const update of result.updates) {
+        commitCell(update.row, update.col, update.value);
+      }
+      setEditing(null);
+      setMenu(null);
+      setAnnouncement(sortSummary(result.moved, direction));
+    },
+    [activeMap, commitCell],
+  );
+
   const runSort = useCallback(
     (direction: SortDirection) => {
       const range = selectionRange;
@@ -1954,6 +2159,12 @@ export function SheetEditor({ fileId }: { fileId: string }) {
       const mod = event.ctrlKey || event.metaKey;
       const key = event.key.toLowerCase();
       const current = selected ?? { row: 0, col: 0 };
+      // Filtre automatique : Ctrl+Maj+L, comme Excel.
+      if (mod && event.shiftKey && !event.altKey && key === "l" && canEdit) {
+        event.preventDefault();
+        toggleFilterRef.current();
+        return;
+      }
       // Presse-papiers : Ctrl+C copie, Ctrl+X coupe, Ctrl+V colle.
       if (mod && !event.altKey && (key === "c" || key === "x" || key === "v")) {
         event.preventDefault();
@@ -2350,6 +2561,234 @@ export function SheetEditor({ fileId }: { fileId: string }) {
 
   const freezeClass = freezeClasses(freeze);
 
+  /** Active le filtre automatique sur la sélection (ou la région de données). */
+  function toggleAutoFilter() {
+    if (autoFilter) {
+      void updateTabSettings(({ filter: _removed, ...rest }) => rest);
+      setAnnouncement("Filtre retiré.");
+      return;
+    }
+    const origin = selected ?? { row: 0, col: 0 };
+    const range = detectFilterRange(
+      selectionRange ?? rangeFrom(origin, origin),
+      (row, col) => (activeMap.get(`${row}:${col}`) ?? "") !== "",
+      { rows: ROWS, cols: COLS },
+    );
+    void updateTabSettings((current) => ({ ...current, filter: { range, columns: {} } }));
+    setAnnouncement(`Filtre activé sur ${rangeLabel(range, (col) => COL_LETTERS[col] ?? "")}.`);
+  }
+
+  toggleFilterRef.current = toggleAutoFilter;
+
+  function setFrozen(rows: number, cols: number) {
+    void updateTabSettings(({ frozen: _previous, ...rest }) =>
+      rows > 0 || cols > 0 ? { ...rest, frozen: { rows, cols } } : rest,
+    );
+    setAnnouncement(
+      rows === 0 && cols === 0
+        ? "Volets libérés."
+        : `${rows} ligne${rows > 1 ? "s" : ""} et ${cols} colonne${cols > 1 ? "s" : ""} figée${rows + cols > 1 ? "s" : ""}.`,
+    );
+  }
+
+  function insertChart(type: ChartType) {
+    const origin = selected ?? { row: 0, col: 0 };
+    const range =
+      selectionRange && !isSingleCell(selectionRange)
+        ? selectionRange
+        : detectFilterRange(
+            rangeFrom(origin, origin),
+            (row, col) => (activeMap.get(`${row}:${col}`) ?? "") !== "",
+            { rows: ROWS, cols: COLS },
+          );
+    const table = headerCellRef.current?.closest("table");
+    // Sous les données, aligné sur leur première colonne (ne masque rien).
+    const th = table?.querySelector<HTMLElement>(`th[data-col-index="${range.startCol}"]`);
+    const charts = activeSettings.charts ?? [];
+    const belowRow = Math.min(range.endRow + 2, ROWS);
+    const chart: SheetChart = {
+      id: `graphique-${Date.now().toString(36)}`,
+      type,
+      range,
+      title: "",
+      x: Math.max(0, Math.round((th?.offsetLeft ?? 44) + charts.length * 24)),
+      y: Math.max(0, Math.round(headerHeight + (rowOffsets[belowRow] ?? 0) + charts.length * 24)),
+      width: 480,
+      height: 300,
+    };
+    void updateTabSettings((current) => ({
+      ...current,
+      charts: [...(current.charts ?? []), chart],
+    }));
+    setAnnouncement(`Graphique inséré (${rangeLabel(range, (col) => COL_LETTERS[col] ?? "")}).`);
+  }
+
+  const formatValueAt = (row: number, col: number) => {
+    const value = evaluated.get(cellKey(row, col));
+    return value ? formatValue(value) : "";
+  };
+
+  const chartReader = (row: number, col: number) => {
+    const value = evaluated.get(cellKey(row, col));
+    return {
+      text: displayAt(row, col),
+      number: value?.kind === "number" ? value.value : null,
+    };
+  };
+
+  /** Une ligne de la grille (en-tête de ligne + cellules), figée ou non. */
+  const renderRow = (row: number) => {
+    const rowHighlighted =
+      selected !== null &&
+      (selectionRange
+        ? row >= selectionRange.startRow && row <= selectionRange.endRow
+        : row === selected.row);
+    return (
+      <tr key={ROW_KEYS[row]} className="contents" aria-rowindex={row + 2}>
+        <th
+          scope="row"
+          data-row-index={row}
+          onPointerDown={(event) => {
+            if (event.button !== 0) return;
+            if ((event.target as HTMLElement).closest("[data-resize-handle]")) return;
+            selectWhole("row", row, event.shiftKey);
+          }}
+          onContextMenu={(event) => {
+            event.preventDefault();
+            openMenu({ kind: "row", index: row }, { left: event.clientX, top: event.clientY });
+          }}
+          style={
+            row < frozenRows ? { position: "sticky", top: frozenStyle(row, null)?.top } : undefined
+          }
+          className={cn(
+            freezeClass.firstColumn,
+            "cursor-pointer border-r border-border px-2 text-right text-[11px] font-normal leading-[23px] tabular-nums text-muted-foreground",
+            rowHighlighted ? "bg-accent text-accent-foreground" : "bg-muted",
+            row < ROWS - 1 && "border-b",
+            row < frozenRows && "z-[12]",
+            row === frozenRows - 1 && "border-b-2 border-b-muted-foreground/40",
+            autoFilter &&
+              filteredRows.size > 0 &&
+              row > autoFilter.range.startRow &&
+              row <= autoFilter.range.endRow &&
+              !rowHighlighted &&
+              "text-primary",
+          )}
+        >
+          {row + 1}
+          <ResizeHandle
+            axis="row"
+            index={row}
+            label={`Redimensionner la ligne ${row + 1}`}
+            current={sizeOf(rowSizes, row, "row")}
+            preview={preview?.axis === "row" && preview.index === row ? preview.size : null}
+            disabled={!canEdit}
+            onPreview={onPreviewSize}
+            onCommit={commitSize}
+            onSettle={onSettlePreview}
+            onReset={resetSize}
+          />
+        </th>
+        {Array.from({ length: COLS }, (_, col) => {
+          const key = cellKey(row, col);
+          const raw = activeMap.get(`${row}:${col}`) ?? "";
+          const value = evaluated.get(key);
+          const isEditing = editing?.row === row && editing?.col === col;
+          const isSelected = selected?.row === row && selected?.col === col;
+          const cellStyle = activeStyles.get(`${row}:${col}`) ?? null;
+          const sticky = frozenStyle(row, col);
+          const filterHeader =
+            autoFilter !== undefined &&
+            row === autoFilter.range.startRow &&
+            col >= autoFilter.range.startCol &&
+            col <= autoFilter.range.endCol;
+          const custom =
+            value && cellStyle?.numberFormat
+              ? formatCustom(
+                  formatValue(value),
+                  cellStyle.numberFormat,
+                  value.kind === "number" ? value.value : null,
+                )
+              : null;
+          return (
+            <td
+              key={isEditing ? `${key}:edition` : key}
+              style={sticky}
+              className={cn(
+                "min-w-0 p-0",
+                sticky && "bg-background",
+                sticky && (row < frozenRows && col < frozenCols ? "z-[7]" : "z-[6]"),
+                row === frozenRows - 1 && "border-b-2 border-b-muted-foreground/40",
+                col === frozenCols - 1 && "border-r-2 border-r-muted-foreground/40",
+                filterHeader && !sticky && "relative",
+                isEditing ? "relative z-20 overflow-visible" : "overflow-hidden",
+                !isEditing && row !== ROWS - 1 && "border-b border-border",
+                !isEditing && col !== COLS - 1 && "border-r border-border",
+                !isEditing && cellStyle?.background
+                  ? STYLE_BACKGROUND_CLASSES[cellStyle.background]
+                  : undefined,
+              )}
+            >
+              <GridCell
+                row={row}
+                col={col}
+                raw={raw}
+                display={
+                  custom
+                    ? custom.text
+                    : value
+                      ? formatCellDisplay(formatValue(value), cellStyle?.format ?? "auto")
+                      : ""
+                }
+                tone={toneOf(value)}
+                cellStyle={
+                  custom?.tone && cellStyle
+                    ? {
+                        ...cellStyle,
+                        color: custom.tone === "negative" ? "danger" : "accent",
+                      }
+                    : cellStyle
+                }
+                selected={isSelected}
+                inRange={selectionRange !== null && inRange(selectionRange, row, col)}
+                canEdit={canEdit}
+                editing={isEditing}
+                initialDraft={isEditing ? (editing?.draft ?? null) : null}
+                onPointerSelect={onPointerSelect}
+                onPointerExtend={onPointerExtend}
+                onEditRequest={onEditRequest}
+                onCommit={commitEditing}
+                onCancel={cancelEditing}
+                onRequestMenu={requestCellMenu}
+              />
+              {filterHeader ? (
+                <button
+                  type="button"
+                  aria-label={`Filtrer la colonne ${COL_LETTERS[col] ?? ""}`}
+                  aria-haspopup="dialog"
+                  aria-pressed={isColumnFiltered(autoFilter, col)}
+                  title="Filtrer et trier"
+                  onPointerDown={(event) => event.stopPropagation()}
+                  onClick={(event) => {
+                    const rect = event.currentTarget.getBoundingClientRect();
+                    setFilterMenu({ col, left: rect.left, top: rect.bottom + 4 });
+                  }}
+                  className={cn(
+                    "absolute top-0.5 right-0.5 z-[2] grid size-5 place-items-center rounded-sm border border-border bg-card text-muted-foreground hover:bg-muted",
+                    isColumnFiltered(autoFilter, col) &&
+                      "border-primary bg-primary text-primary-foreground hover:bg-primary",
+                  )}
+                >
+                  <IconChevronDown className="size-3" />
+                </button>
+              ) : null}
+            </td>
+          );
+        })}
+      </tr>
+    );
+  };
+
   return (
     <div className="sheet-editor flex h-full min-h-0 flex-1 flex-col">
       <header className="flex flex-wrap items-center gap-2 border-b border-border bg-card px-3 py-2">
@@ -2436,7 +2875,7 @@ export function SheetEditor({ fileId }: { fileId: string }) {
                 disabled={!canEdit || !canUndo}
                 onClick={doUndo}
               >
-                ↺
+                <IconUndo />
               </Button>
               <Button
                 size="sm"
@@ -2446,7 +2885,7 @@ export function SheetEditor({ fileId }: { fileId: string }) {
                 disabled={!canEdit || !canRedo}
                 onClick={doRedo}
               >
-                ↻
+                <IconRedo />
               </Button>
               <span aria-hidden className="mx-1 h-4 w-px shrink-0 bg-border" />
 
@@ -2638,12 +3077,85 @@ export function SheetEditor({ fileId }: { fileId: string }) {
               )}
             </div>
 
+            {/* Données : filtre, volets figés, graphiques, format personnalisé. */}
+            {canEdit ? (
+              <Menu
+                label="Données"
+                align="end"
+                triggerClassName="h-8 shrink-0 border-transparent bg-transparent px-2 text-sm hover:bg-muted focus-visible:ring-offset-0"
+                items={[
+                  {
+                    id: "filtre",
+                    label: autoFilter ? "Retirer le filtre" : "Filtrer",
+                    shortcut: "Ctrl+Maj+L",
+                    onSelect: toggleAutoFilter,
+                  },
+                  {
+                    id: "figer-ligne",
+                    label: "Figer la première ligne",
+                    separated: true,
+                    onSelect: () => setFrozen(1, 0),
+                  },
+                  {
+                    id: "figer-colonne",
+                    label: "Figer la première colonne",
+                    onSelect: () => setFrozen(0, 1),
+                  },
+                  {
+                    id: "figer-selection",
+                    label: selected
+                      ? `Figer les volets (au-dessus et à gauche de ${cellKey(selected.row, selected.col)})`
+                      : "Figer les volets",
+                    disabled: !selected || (selected.row === 0 && selected.col === 0),
+                    onSelect: () => {
+                      if (selected)
+                        setFrozen(Math.min(selected.row, 50), Math.min(selected.col, 50));
+                    },
+                  },
+                  {
+                    id: "liberer",
+                    label: "Libérer les volets",
+                    disabled: frozenRows === 0 && frozenCols === 0,
+                    onSelect: () => setFrozen(0, 0),
+                  },
+                  {
+                    id: "graphique-colonnes",
+                    label: "Insérer un histogramme",
+                    separated: true,
+                    onSelect: () => insertChart("column"),
+                  },
+                  {
+                    id: "graphique-barres",
+                    label: "Insérer un graphique en barres",
+                    onSelect: () => insertChart("bar"),
+                  },
+                  {
+                    id: "graphique-courbes",
+                    label: "Insérer un graphique en courbes",
+                    onSelect: () => insertChart("line"),
+                  },
+                  {
+                    id: "graphique-secteurs",
+                    label: "Insérer un graphique en secteurs",
+                    onSelect: () => insertChart("pie"),
+                  },
+                  {
+                    id: "format-personnalise",
+                    label: "Format personnalisé…",
+                    separated: true,
+                    disabled: !selected,
+                    onSelect: () => setFormatDialogOpen(true),
+                  },
+                ]}
+              />
+            ) : null}
+
             {/* Actions rares de la sélection : structure et format, au menu. */}
             {canEdit && selected ? (
               <Menu
                 label="Autres actions"
                 align="end"
-                triggerIcon={<span aria-hidden>⋯</span>}
+                triggerIcon={<IconMore />}
                 triggerClassName="h-8 w-8 shrink-0 border-transparent bg-transparent px-0 hover:bg-muted focus-visible:ring-offset-0"
                 items={[
                   {
@@ -2729,7 +3241,7 @@ export function SheetEditor({ fileId }: { fileId: string }) {
           />
 
           {/* La grille remplit la hauteur restante ; elle seule défile. */}
-          <div ref={scrollRef} className="min-h-0 flex-1 overflow-auto">
+          <div ref={scrollRef} className="relative min-h-0 flex-1 overflow-auto">
             {/*
               Tableau natif (en-têtes de colonne et de ligne, cellules) disposé
               en grille CSS : `display: contents` sur les enveloppes fait des
@@ -2754,7 +3266,7 @@ export function SheetEditor({ fileId }: { fileId: string }) {
                   "--sheet-gutter": "44px",
                   "--sheet-col-min": "96px",
                   gridTemplateColumns: `var(--sheet-gutter) ${columnTracks}`,
-                  gridTemplateRows: `auto ${topSpacer}px ${rowTracks} ${bottomSpacer}px`,
+                  gridTemplateRows: `auto ${rowTracks.frozen} ${topSpacer}px ${rowTracks.window} ${bottomSpacer}px`,
                   width: "max-content",
                   minWidth: "100%",
                 } as CSSProperties
@@ -2769,6 +3281,7 @@ export function SheetEditor({ fileId }: { fileId: string }) {
               <thead className="contents">
                 <tr className="contents" aria-rowindex={1}>
                   <td
+                    ref={headerCellRef}
                     className={cn(
                       freezeClass.corner,
                       "border-b border-r border-border bg-muted p-0",
@@ -2809,8 +3322,15 @@ export function SheetEditor({ fileId }: { fileId: string }) {
                             { left: event.clientX, top: event.clientY },
                           );
                         }}
+                        style={
+                          col < frozenCols
+                            ? { position: "sticky", left: frozenStyle(null, col)?.left }
+                            : undefined
+                        }
                         className={cn(
                           freezeClass.header,
+                          col < frozenCols && "z-[12]",
+                          col === frozenCols - 1 && "border-r-2 border-r-muted-foreground/40",
                           "cursor-pointer border-b border-border px-2 py-1 text-center text-[11px] font-medium text-muted-foreground",
                           highlighted ? "bg-accent text-accent-foreground" : "bg-muted",
                           col < COLS - 1 && "border-r",
@@ -2837,108 +3357,11 @@ export function SheetEditor({ fileId }: { fileId: string }) {
                 </tr>
               </thead>
               <tbody className="contents">
+                {renderPlan.frozen.map((row) => renderRow(row))}
                 <tr aria-hidden className="contents">
                   <td className="p-0" style={{ gridColumn: "1 / -1", height: topSpacer }} />
                 </tr>
-                {ROW_KEYS.slice(firstRow, lastRow + 1).map((rowKey, offset) => {
-                  const row = firstRow + offset;
-                  const rowHighlighted =
-                    selected !== null &&
-                    (selectionRange
-                      ? row >= selectionRange.startRow && row <= selectionRange.endRow
-                      : row === selected.row);
-                  return (
-                    <tr key={rowKey} className="contents" aria-rowindex={row + 2}>
-                      <th
-                        scope="row"
-                        data-row-index={row}
-                        onPointerDown={(event) => {
-                          if (event.button !== 0) return;
-                          if ((event.target as HTMLElement).closest("[data-resize-handle]")) return;
-                          selectWhole("row", row, event.shiftKey);
-                        }}
-                        onContextMenu={(event) => {
-                          event.preventDefault();
-                          openMenu(
-                            { kind: "row", index: row },
-                            { left: event.clientX, top: event.clientY },
-                          );
-                        }}
-                        className={cn(
-                          freezeClass.firstColumn,
-                          "cursor-pointer border-r border-border px-2 text-right text-[11px] font-normal leading-[23px] tabular-nums text-muted-foreground",
-                          rowHighlighted ? "bg-accent text-accent-foreground" : "bg-muted",
-                          row < ROWS - 1 && "border-b",
-                        )}
-                      >
-                        {row + 1}
-                        <ResizeHandle
-                          axis="row"
-                          index={row}
-                          label={`Redimensionner la ligne ${row + 1}`}
-                          current={sizeOf(rowSizes, row, "row")}
-                          preview={
-                            preview?.axis === "row" && preview.index === row ? preview.size : null
-                          }
-                          disabled={!canEdit}
-                          onPreview={onPreviewSize}
-                          onCommit={commitSize}
-                          onSettle={onSettlePreview}
-                          onReset={resetSize}
-                        />
-                      </th>
-                      {Array.from({ length: COLS }, (_, col) => {
-                        const key = cellKey(row, col);
-                        const raw = activeMap.get(`${row}:${col}`) ?? "";
-                        const value = evaluated.get(key);
-                        const isEditing = editing?.row === row && editing?.col === col;
-                        const isSelected = selected?.row === row && selected?.col === col;
-                        const cellStyle = activeStyles.get(`${row}:${col}`) ?? null;
-                        return (
-                          <td
-                            key={isEditing ? `${key}:edition` : key}
-                            className={cn(
-                              "min-w-0 p-0",
-                              isEditing ? "relative z-20 overflow-visible" : "overflow-hidden",
-                              !isEditing && row !== ROWS - 1 && "border-b border-border",
-                              !isEditing && col !== COLS - 1 && "border-r border-border",
-                              !isEditing && cellStyle?.background
-                                ? STYLE_BACKGROUND_CLASSES[cellStyle.background]
-                                : undefined,
-                            )}
-                          >
-                            <GridCell
-                              row={row}
-                              col={col}
-                              raw={raw}
-                              display={
-                                value
-                                  ? formatCellDisplay(
-                                      formatValue(value),
-                                      cellStyle?.format ?? "auto",
-                                    )
-                                  : ""
-                              }
-                              tone={toneOf(value)}
-                              cellStyle={cellStyle}
-                              selected={isSelected}
-                              inRange={selectionRange !== null && inRange(selectionRange, row, col)}
-                              canEdit={canEdit}
-                              editing={isEditing}
-                              initialDraft={isEditing ? (editing?.draft ?? null) : null}
-                              onPointerSelect={onPointerSelect}
-                              onPointerExtend={onPointerExtend}
-                              onEditRequest={onEditRequest}
-                              onCommit={commitEditing}
-                              onCancel={cancelEditing}
-                              onRequestMenu={requestCellMenu}
-                            />
-                          </td>
-                        );
-                      })}
-                    </tr>
-                  );
-                })}
+                {renderPlan.windowRows.map((row) => renderRow(row))}
                 <tr aria-hidden className="contents">
                   <td className="p-0" style={{ gridColumn: "1 / -1", height: bottomSpacer }} />
                 </tr>
@@ -2946,9 +3369,16 @@ export function SheetEditor({ fileId }: { fileId: string }) {
                 {selected && !editing
                   ? (() => {
                       const range = fillPreview ?? selectionRange ?? rangeFrom(selected, selected);
-                      const top = Math.max(range.startRow, firstRow);
-                      const bottom = Math.min(range.endRow, lastRow);
-                      if (top > bottom) return null;
+                      // Premières et dernières lignes rendues dans la plage
+                      // (lignes figées, fenêtre visible, lignes filtrées exclues).
+                      let topLine: number | null = null;
+                      let bottomLine: number | null = null;
+                      for (const [row, line] of renderPlan.lineOf) {
+                        if (row < range.startRow || row > range.endRow) continue;
+                        if (topLine === null || line < topLine) topLine = line;
+                        if (bottomLine === null || line > bottomLine) bottomLine = line;
+                      }
+                      if (topLine === null || bottomLine === null) return null;
                       return (
                         <tr aria-hidden className="contents">
                           <td
@@ -2959,7 +3389,7 @@ export function SheetEditor({ fileId }: { fileId: string }) {
                                 : "border-2 border-primary",
                             )}
                             style={{
-                              gridRow: `${3 + top - firstRow} / ${4 + bottom - firstRow}`,
+                              gridRow: `${topLine} / ${bottomLine + 1}`,
                               gridColumn: `${2 + range.startCol} / ${3 + range.endCol}`,
                             }}
                           >
@@ -2978,6 +3408,29 @@ export function SheetEditor({ fileId }: { fileId: string }) {
                   : null}
               </tbody>
             </table>
+            {(activeSettings.charts ?? []).map((chart) => (
+              <ChartFrame
+                key={chart.id}
+                chart={chart}
+                data={extractChartData(chart.range, chartReader)}
+                canEdit={canEdit}
+                onChange={(next) =>
+                  void updateTabSettings((current) => ({
+                    ...current,
+                    charts: (current.charts ?? []).map((entry) =>
+                      entry.id === next.id ? next : entry,
+                    ),
+                  }))
+                }
+                onDelete={() =>
+                  void updateTabSettings((current) => {
+                    const charts = (current.charts ?? []).filter((entry) => entry.id !== chart.id);
+                    const { charts: _old, ...rest } = current;
+                    return charts.length > 0 ? { ...rest, charts } : rest;
+                  })
+                }
+              />
+            ))}
           </div>
 
           {/* Onglets de la feuille : bande basse ; les actions rares (renommer,
@@ -3006,6 +3459,11 @@ export function SheetEditor({ fileId }: { fileId: string }) {
                 </button>
               ))}
             </div>
+            {autoFilter ? (
+              <p className="shrink-0 px-2 text-xs tabular-nums text-muted-foreground">
+                {filterSummary(autoFilter, filteredRows)}
+              </p>
+            ) : null}
             {statusStats ? (
               <p
                 aria-live="polite"
@@ -3031,9 +3489,7 @@ export function SheetEditor({ fileId }: { fileId: string }) {
                   setTabDialog("add");
                 }}
               >
-                <span aria-hidden className="mr-1 text-base leading-none">
-                  +
-                </span>
+                <IconPlus />
                 Onglet
               </Button>
             ) : null}
@@ -3044,7 +3500,7 @@ export function SheetEditor({ fileId }: { fileId: string }) {
                 // Le panneau s'ouvre vers le haut : la bande d'onglets est en
                 // bas de fenêtre, un menu vers le bas serait hors écran.
                 className="[&>[role=menu]]:top-auto [&>[role=menu]]:bottom-full [&>[role=menu]]:mt-0 [&>[role=menu]]:mb-1"
-                triggerIcon={<span aria-hidden>⋯</span>}
+                triggerIcon={<IconMore />}
                 triggerClassName="h-8 w-8 shrink-0 border-transparent bg-transparent px-0 hover:bg-muted focus-visible:ring-offset-0"
                 items={[
                   {
@@ -3067,6 +3523,51 @@ export function SheetEditor({ fileId }: { fileId: string }) {
               />
             ) : null}
           </div>
+
+          {autoFilter && filterMenu ? (
+            <FilterPopover
+              column={COL_LETTERS[filterMenu.col] ?? ""}
+              anchor={{ left: filterMenu.left, top: filterMenu.top }}
+              values={distinctValues(autoFilter, filterMenu.col, displayAt)}
+              current={autoFilter.columns[String(filterMenu.col)]}
+              onClose={() => setFilterMenu(null)}
+              onSort={(direction) => {
+                sortBy(
+                  {
+                    startRow: autoFilter.range.startRow + 1,
+                    endRow: autoFilter.range.endRow,
+                    startCol: autoFilter.range.startCol,
+                    endCol: autoFilter.range.endCol,
+                  },
+                  filterMenu.col,
+                  direction,
+                );
+                setFilterMenu(null);
+              }}
+              onApply={(criteria: ColumnFilter | null) => {
+                const col = filterMenu.col;
+                void updateTabSettings((current) =>
+                  current.filter
+                    ? { ...current, filter: withColumnFilter(current.filter, col, criteria) }
+                    : current,
+                );
+                setFilterMenu(null);
+              }}
+            />
+          ) : null}
+          <CustomFormatDialog
+            open={formatDialogOpen}
+            initial={selectedStyle?.numberFormat ?? ""}
+            sample={selected ? formatValueAt(selected.row, selected.col) : ""}
+            onClose={() => setFormatDialogOpen(false)}
+            onApply={(pattern) => {
+              setFormatDialogOpen(false);
+              void applyCellStyle((current) => {
+                const base = withoutKey(withoutKey(current ?? {}, "numberFormat") ?? {}, "format");
+                return pattern ? { ...(base ?? {}), numberFormat: pattern } : base;
+              });
+            }}
+          />
 
           <SheetContextMenu
             open={menu !== null}

@@ -120,7 +120,9 @@ export function sortRange(input: SortInput): SortResult {
 
   const updates: { row: number; col: number; value: string }[] = [];
   let moved = 0;
-  sorted.forEach((sourceRow, targetRow) => {
+  sorted.forEach((sourceRow, index) => {
+    // Ligne de destination absolue (la plage ne commence pas forcément en 1).
+    const targetRow = startRow + index;
     if (sourceRow !== targetRow) moved += 1;
     for (let col = startCol; col <= endCol; col += 1) {
       const next = read(values, sourceRow, col);

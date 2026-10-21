@@ -12,6 +12,7 @@ import {
 import { type Actor, roleSatisfies } from "@workspace/permissions";
 import { and, asc, desc, eq, gte, inArray, lte, sql } from "drizzle-orm";
 import { MAX_CELL_CHARS, MAX_COLS, MAX_ROWS, parseCsv } from "./csv.ts";
+import { isValidCustomFormat } from "./custom-format.ts";
 import {
   DIMENSION_INDEX_MAX,
   type DimensionAxis,
@@ -34,6 +35,12 @@ import {
   spreadsheets,
 } from "./schema.ts";
 import { checkStructure, type StructureKind, type StructureMode } from "./structure.ts";
+import {
+  normalizeTabSettings,
+  readTabSettings,
+  type TabSettings,
+  TabSettingsError,
+} from "./tab-settings.ts";
 
 export { MAX_CELL_CHARS, MAX_COLS, MAX_ROWS } from "./csv.ts";
 
@@ -64,7 +71,7 @@ export class SheetsError extends Error {
   }
 }
 
-export type TabView = { id: string; name: string; position: number };
+export type TabView = { id: string; name: string; position: number; settings: TabSettings };
 export type CellView = { row: number; col: number; value: string; style: CellStyle | null };
 
 export type SpreadsheetDetail = {
@@ -195,10 +202,16 @@ export async function getSpreadsheet(actor: Actor, fileId: string): Promise<Spre
   const role = await effectiveRole(actor, fileId);
 
   const tabs = await db()
-    .select({ id: sheetTabs.id, name: sheetTabs.name, position: sheetTabs.position })
+    .select({
+      id: sheetTabs.id,
+      name: sheetTabs.name,
+      position: sheetTabs.position,
+      settings: sheetTabs.settings,
+    })
     .from(sheetTabs)
     .where(eq(sheetTabs.spreadsheetId, spreadsheet.id))
-    .orderBy(asc(sheetTabs.position));
+    .orderBy(asc(sheetTabs.position))
+    .then((rows) => rows.map((row) => ({ ...row, settings: readTabSettings(row.settings) })));
 
   const tabIds = tabs.map((tab) => tab.id);
   const cells =
@@ -377,6 +390,7 @@ const STYLE_KEYS: ReadonlySet<string> = new Set([
   "background",
   "color",
   "format",
+  "numberFormat",
 ]);
 const CELL_ALIGNS: ReadonlySet<string> = new Set(["left", "center", "right"]);
 
@@ -445,6 +459,12 @@ export function normalizeCellStyle(style: unknown): CellStyle | null {
       throw new SheetsError("validation", "Format numérique inconnu.");
     }
     clean.format = format;
+  }
+  if (raw.numberFormat !== undefined) {
+    if (!isValidCustomFormat(raw.numberFormat)) {
+      throw new SheetsError("validation", "Format personnalisé invalide (64 caractères au plus).");
+    }
+    clean.numberFormat = raw.numberFormat;
   }
   return Object.keys(clean).length > 0 ? clean : null;
 }
@@ -917,10 +937,16 @@ export async function addTab(actor: Actor, fileId: string, name: string): Promis
       .returning({ id: sheetTabs.id });
 
     const rows = await tx
-      .select({ id: sheetTabs.id, name: sheetTabs.name, position: sheetTabs.position })
+      .select({
+        id: sheetTabs.id,
+        name: sheetTabs.name,
+        position: sheetTabs.position,
+        settings: sheetTabs.settings,
+      })
       .from(sheetTabs)
       .where(eq(sheetTabs.spreadsheetId, spreadsheet.id))
-      .orderBy(asc(sheetTabs.position));
+      .orderBy(asc(sheetTabs.position))
+      .then((rows) => rows.map((row) => ({ ...row, settings: readTabSettings(row.settings) })));
     return { tabs: rows, tabId: created?.id ?? null };
   });
 
@@ -951,6 +977,43 @@ export async function renameTab(actor: Actor, tabId: string, name: string): Prom
     result: "success",
     metadata: { fileId, name: clean },
   });
+}
+
+/**
+ * Remplace les réglages d'un onglet (volets figés, filtre, graphiques).
+ * Validation stricte partagée avec l'interface ; `null` efface tout.
+ */
+export async function setTabSettings(
+  actor: Actor,
+  tabId: string,
+  settings: unknown,
+): Promise<TabSettings> {
+  const { tab, fileId } = await requireTab(actor, tabId);
+  let clean: TabSettings | null;
+  try {
+    clean = normalizeTabSettings(settings);
+  } catch (error) {
+    if (error instanceof TabSettingsError) throw new SheetsError("validation", error.message);
+    throw error;
+  }
+  await db().update(sheetTabs).set({ settings: clean }).where(eq(sheetTabs.id, tab.id));
+  await touchEntry(actor, fileId).catch(() => undefined);
+  await recordAudit({
+    orgId: actor.orgId,
+    actorUserId: actor.userId,
+    action: "sheets.tab.settings",
+    resourceType: "tab",
+    resourceId: tab.id,
+    result: "success",
+    metadata: {
+      fileId,
+      frozenRows: clean?.frozen?.rows ?? 0,
+      frozenCols: clean?.frozen?.cols ?? 0,
+      filter: Boolean(clean?.filter),
+      charts: clean?.charts?.length ?? 0,
+    },
+  });
+  return clean ?? {};
 }
 
 export async function deleteTab(actor: Actor, tabId: string): Promise<void> {

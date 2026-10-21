@@ -185,3 +185,29 @@ describe("sheets — messages du tri", () => {
     );
   });
 });
+
+describe("tri d'une plage qui ne commence pas à la première ligne", () => {
+  it("écrit les lignes triées à leur place absolue (en-tête préservé)", () => {
+    const values = new Map<string, string>([
+      ["0:0", "Ville"],
+      ["1:0", "Paris"],
+      ["2:0", "Lyon"],
+      ["3:0", "Dakar"],
+    ]);
+    const result = sortRange({
+      range: { startRow: 1, endRow: 3, startCol: 0, endCol: 0 },
+      column: 0,
+      direction: "asc",
+      values,
+      bounds: { rows: 100, cols: 26 },
+    });
+    const written = new Map(values);
+    for (const update of result.updates) written.set(`${update.row}:${update.col}`, update.value);
+    expect([0, 1, 2, 3].map((row) => written.get(`${row}:0`))).toEqual([
+      "Ville",
+      "Dakar",
+      "Lyon",
+      "Paris",
+    ]);
+  });
+});

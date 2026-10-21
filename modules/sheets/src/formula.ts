@@ -155,7 +155,9 @@ type Token =
   | { type: "string"; value: string }
   | { type: "ident"; value: string }
   | { type: "op"; value: string }
-  | { type: "punct"; value: string };
+  | { type: "punct"; value: string }
+  /** Préfixe d'onglet (« Feuil2! », « 'Mes données'! ») : nom tel que saisi. */
+  | { type: "sheet"; value: string };
 
 const OPERATORS = ["<>", "<=", ">=", "=", "<", ">", "&", "+", "-", "*", "/", "^", "%"];
 
@@ -198,6 +200,37 @@ function tokenize(source: string): Token[] {
       if (Number.isNaN(value)) throw new FormulaError("#ERREUR", "Nombre invalide.");
       // Une référence de ligne seule (« 1:3 ») n'est pas prise en charge.
       tokens.push({ type: "number", value });
+      continue;
+    }
+    // Référence à un autre onglet : 'Nom avec espaces'!A1 ou Feuil2!A1.
+    if (char === "'") {
+      let name = "";
+      let cursor = index + 1;
+      for (;;) {
+        if (cursor >= source.length) throw new FormulaError("#ERREUR", "Nom d'onglet non fermé.");
+        const current = source[cursor];
+        if (current === "'") {
+          if (source[cursor + 1] === "'") {
+            name += "'";
+            cursor += 2;
+            continue;
+          }
+          cursor += 1;
+          break;
+        }
+        name += current;
+        cursor += 1;
+      }
+      if (source[cursor] !== "!")
+        throw new FormulaError("#ERREUR", "« ! » attendu après le nom d'onglet.");
+      tokens.push({ type: "sheet", value: name });
+      index = cursor + 1;
+      continue;
+    }
+    const sheetPrefix = /^([\p{L}_][\p{L}\p{N}_.]*)!/u.exec(source.slice(index));
+    if (sheetPrefix?.[1]) {
+      tokens.push({ type: "sheet", value: sheetPrefix[1] });
+      index += sheetPrefix[0].length;
       continue;
     }
     if (/[A-Za-z_$]/.test(char)) {
@@ -264,13 +297,15 @@ type RangeNode = {
   endCol: number;
   /** Colonne entière (A:A) : les lignes sont bornées à l'évaluation. */
   wholeColumns?: boolean;
+  /** Onglet visé (`Feuil2!A1:B3`) ; absent = onglet de la formule. */
+  sheet?: string;
 };
 
 type Node =
   | { type: "number"; value: number }
   | { type: "string"; value: string }
   | { type: "boolean"; value: boolean }
-  | { type: "ref"; row: number; col: number }
+  | { type: "ref"; row: number; col: number; sheet?: string }
   | RangeNode
   | { type: "unary"; op: string; operand: Node }
   | { type: "percent"; operand: Node }
@@ -398,6 +433,15 @@ class Parser {
       if (this.matchPunct("(")) return this.call(token.value);
       return this.reference(token.value);
     }
+    if (token.type === "sheet") {
+      const target = this.consume();
+      if (target.type !== "ident") throw new FormulaError("#REF!", "Référence d'onglet invalide.");
+      const node = this.reference(target.value);
+      if (node.type !== "ref" && node.type !== "range") {
+        throw new FormulaError("#REF!", "Référence d'onglet invalide.");
+      }
+      return { ...node, sheet: token.value };
+    }
     throw new FormulaError("#ERREUR", "Jeton inattendu.");
   }
 
@@ -483,8 +527,9 @@ function isMatrix(value: Value | FormulaError): value is Matrix {
 
 /** Contexte : lecture des cellules et ligne maximale utilisée (colonnes entières). */
 type Context = {
-  read: (row: number, col: number) => Scalar | FormulaError;
-  maxRow: number;
+  read: (row: number, col: number, sheet?: string) => Scalar | FormulaError;
+  /** Dernière ligne utilisée de l'onglet (colonnes entières). */
+  maxRowOf: (sheet?: string) => number;
   now: () => Date;
 };
 
@@ -560,7 +605,7 @@ function evaluateNode(node: Node, ctx: Context): Value {
     case "boolean":
       return node.value;
     case "ref": {
-      const value = ctx.read(node.row, node.col);
+      const value = ctx.read(node.row, node.col, node.sheet);
       if (value instanceof FormulaError) throw value;
       return value;
     }
@@ -580,13 +625,14 @@ function evaluateNode(node: Node, ctx: Context): Value {
 }
 
 function readRange(node: RangeNode, ctx: Context): Matrix {
-  const endRow = node.wholeColumns ? ctx.maxRow : node.endRow;
+  const endRow = node.wholeColumns ? ctx.maxRowOf(node.sheet) : node.endRow;
   const cells = (endRow - node.startRow + 1) * (node.endCol - node.startCol + 1);
   if (cells > MAX_RANGE_CELLS) throw new FormulaError("#ERREUR", "plage trop grande");
   const rows: (Scalar | FormulaError)[][] = [];
   for (let row = node.startRow; row <= endRow; row += 1) {
     const line: (Scalar | FormulaError)[] = [];
-    for (let col = node.startCol; col <= node.endCol; col += 1) line.push(ctx.read(row, col));
+    for (let col = node.startCol; col <= node.endCol; col += 1)
+      line.push(ctx.read(row, col, node.sheet));
     rows.push(line);
   }
   return { kind: "matrix", rows };
@@ -2282,21 +2328,26 @@ function resultOf(value: Value): CellValue {
   return { kind: "text", value: scalar };
 }
 
-/** Options d'évaluation (horloge injectable pour les tests). */
-export type EvaluateOptions = { now?: () => Date };
-
 /**
- * Évalue toutes les cellules : `Map` référence → valeur calculée.
- * Détecte les cycles (#CYCLE), la division par zéro (#DIV/0), les débordements
- * (#NUM!), les plages abusives (#ERREUR) et les erreurs de syntaxe (#ERREUR).
+ * Options d'évaluation : horloge injectable (tests) et autres onglets du
+ * classeur, par nom, pour les références `Feuil2!A1`.
  */
-export function evaluateCells(
-  cells: CellMap,
-  options: EvaluateOptions = {},
-): Map<string, CellValue> {
-  const cache = new Map<string, CellValue>();
-  const visiting = new Set<string>();
-  let depth = 0;
+export type EvaluateOptions = {
+  now?: () => Date;
+  /** Cellules brutes des autres onglets (clé = nom de l'onglet, casse libre). */
+  sheets?: Record<string, CellMap>;
+  /** Nom de l'onglet évalué : `Feuil1!A1` depuis Feuil1 vise ses propres cellules. */
+  sheetName?: string;
+};
+
+/** Nom d'onglet comparable (casse et espaces de bord ignorés, comme Excel). */
+export function sheetKey(name: string): string {
+  return name.trim().toLocaleUpperCase("fr");
+}
+
+type SheetData = { cells: CellMap; maxRow: number };
+
+function normalizeSheet(cells: CellMap): SheetData {
   const normalized: CellMap = {};
   let maxRow = 0;
   for (const [key, raw] of Object.entries(cells)) {
@@ -2305,22 +2356,76 @@ export function evaluateCells(
     const position = parseKey(upper);
     if (position && position.row > maxRow) maxRow = position.row;
   }
+  return { cells: normalized, maxRow };
+}
 
-  const evaluate = (key: string): CellValue => {
-    const cached = cache.get(key);
+/**
+ * Évalue toutes les cellules : `Map` référence → valeur calculée.
+ * Détecte les cycles (#CYCLE, y compris entre onglets), la division par zéro
+ * (#DIV/0), les débordements (#NUM!), les onglets inconnus (#REF!), les plages
+ * abusives et les erreurs de syntaxe (#ERREUR).
+ */
+export function evaluateCells(
+  cells: CellMap,
+  options: EvaluateOptions = {},
+): Map<string, CellValue> {
+  const CURRENT = "\u0000";
+  const book = new Map<string, SheetData>();
+  for (const [name, sheetCells] of Object.entries(options.sheets ?? {})) {
+    book.set(sheetKey(name), normalizeSheet(sheetCells));
+  }
+  const current = normalizeSheet(cells);
+  book.set(CURRENT, current);
+  if (options.sheetName) book.set(sheetKey(options.sheetName), current);
+  const resolve = (sheet: string | undefined, from: string): string | null => {
+    if (sheet === undefined) return from;
+    const key = sheetKey(sheet);
+    if (options.sheetName && key === sheetKey(options.sheetName)) return CURRENT;
+    return book.has(key) ? key : null;
+  };
+
+  const cache = new Map<string, CellValue>();
+  const visiting = new Set<string>();
+  let depth = 0;
+  const now = options.now ?? (() => new Date());
+  const contexts = new Map<string, Context>();
+
+  const contextOf = (sheetId: string): Context => {
+    const existing = contexts.get(sheetId);
+    if (existing) return existing;
+    const context: Context = {
+      read: (row, col, sheet) => {
+        const target = resolve(sheet, sheetId);
+        if (target === null) return new FormulaError("#REF!", "Onglet inconnu.");
+        return cellValueToScalar(evaluate(target, cellKey(row, col)));
+      },
+      maxRowOf: (sheet) => {
+        const target = resolve(sheet, sheetId);
+        if (target === null) throw new FormulaError("#REF!", "Onglet inconnu.");
+        return book.get(target)?.maxRow ?? 0;
+      },
+      now,
+    };
+    contexts.set(sheetId, context);
+    return context;
+  };
+
+  const evaluate = (sheetId: string, key: string): CellValue => {
+    const cacheKey = `${sheetId}!${key}`;
+    const cached = cache.get(cacheKey);
     if (cached) return cached;
-    if (visiting.has(key)) return { kind: "error", code: "#CYCLE" };
+    if (visiting.has(cacheKey)) return { kind: "error", code: "#CYCLE" };
     if (depth >= MAX_EVAL_DEPTH) return { kind: "error", code: "#ERREUR" };
 
-    visiting.add(key);
+    visiting.add(cacheKey);
     depth += 1;
-    const raw = normalized[key] ?? "";
+    const raw = book.get(sheetId)?.cells[key] ?? "";
     let result: CellValue;
     try {
       if (raw.startsWith("=")) {
         try {
           const tree = new Parser(tokenize(raw.slice(1))).parse();
-          result = resultOf(evaluateNode(tree, context));
+          result = resultOf(evaluateNode(tree, contextOf(sheetId)));
         } catch (error) {
           result = { kind: "error", code: errorCode(error) };
         }
@@ -2328,23 +2433,24 @@ export function evaluateCells(
         result = literalValue(raw);
       }
     } finally {
-      visiting.delete(key);
+      visiting.delete(cacheKey);
       depth -= 1;
     }
 
-    cache.set(key, result);
+    cache.set(cacheKey, result);
     return result;
   };
 
-  const context: Context = {
-    read: (row, col) => cellValueToScalar(evaluate(cellKey(row, col))),
-    maxRow,
-    now: options.now ?? (() => new Date()),
-  };
-
   const evaluated = new Map<string, CellValue>();
-  for (const key of Object.keys(normalized)) evaluated.set(key, evaluate(key));
+  for (const key of Object.keys(current.cells)) evaluated.set(key, evaluate(CURRENT, key));
   return evaluated;
+}
+
+/** Nom d'onglet tel qu'il s'écrit dans une formule (guillemets simples si besoin). */
+export function quoteSheetName(name: string): string {
+  return /^[\p{L}_][\p{L}\p{N}_.]*$/u.test(name) && parseKey(name.toUpperCase()) === null
+    ? name
+    : `'${name.replace(/'/g, "''")}'`;
 }
 
 // ---------------------------------------------------------------------------
@@ -2364,8 +2470,8 @@ export function shiftFormula(formula: string, rowDelta: number, colDelta: number
   const source = formula;
   while (index < source.length) {
     const char = source[index] ?? "";
-    if (char === '"') {
-      const end = source.indexOf('"', index + 1);
+    if (char === '"' || char === "'") {
+      const end = source.indexOf(char, index + 1);
       const stop = end < 0 ? source.length : end + 1;
       output += source.slice(index, stop);
       index = stop;
