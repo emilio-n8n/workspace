@@ -15,7 +15,7 @@
     "@workspace/database": "workspace:*",
     "@workspace/docs": "workspace:*",
     "lib0": "^0.2.119",
-    "ws": "^8.22.0",
+    "ws": "^8.22.1",
     "y-protocols": "^1.0.7",
     "y-websocket": "^3.1.0",
     "yjs": "^13.6.33"
