@@ -8,7 +8,6 @@ import { openApp, signupNewUser, uniqueEmail } from "./helpers.ts";
  * présentateur, texte enrichi et collage entre présentations (Slides) ;
  * import/export OOXML.
  */
-const DOCS = "http://localhost:3002";
 const SHEETS = "http://localhost:3006";
 const SLIDES = "http://localhost:3007";
 
