@@ -29,7 +29,9 @@ test("docs v3 : menus, mise en page paysage, police, rechercher-remplacer, liste
   await expect(async () => {
     await surface.click();
     await page.keyboard.type("chat chat chien");
-    await expect(page.getByText("chat chat chien")).toBeVisible({ timeout: 2_000 });
+    await expect(
+      page.locator(".workspace-editor").getByText("chat chat chien").first(),
+    ).toBeVisible({ timeout: 2_000 });
   }).toPass({ timeout: 20_000 });
 
   // Vue page : la feuille A4 portrait est affichée par défaut.
@@ -61,11 +63,12 @@ test("docs v3 : menus, mise en page paysage, police, rechercher-remplacer, liste
   await page.getByLabel("Texte à rechercher").fill("chat");
   await page.getByLabel("Remplacer par").fill("lion");
   await page.getByRole("button", { name: "Tout remplacer", exact: true }).click();
-  await expect(page.getByText("lion lion chien")).toBeVisible();
+  const lionText = page.locator(".workspace-editor").getByText("lion lion chien").first();
+  await expect(lionText).toBeVisible();
   await page.getByRole("button", { name: "Fermer la recherche" }).click();
 
   // Menu contextuel : clic droit dans le texte.
-  await page.getByText("lion lion chien").click({ button: "right" });
+  await lionText.click({ button: "right" });
   const contextMenu = page.getByRole("menu", { name: "Menu contextuel du document" });
   await expect(contextMenu).toBeVisible();
   await expect(
@@ -92,7 +95,12 @@ test("docs v3 : menus, mise en page paysage, police, rechercher-remplacer, liste
   });
   await page.reload();
   await page.waitForSelector("html[data-hydrated='true']", { timeout: 40_000 });
-  await expect(page.getByText("lion lion chien")).toBeVisible({ timeout: 15_000 });
+  await expect(
+    page
+      .locator(".workspace-editor span")
+      .filter({ hasText: /^lion lion chien/ })
+      .first(),
+  ).toBeVisible({ timeout: 15_000 });
   await expect(async () => {
     const box = await page.locator("[data-page-view='true']").boundingBox();
     expect(box && box.width > box.height).toBe(true);
