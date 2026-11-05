@@ -15,6 +15,7 @@ dist/
 .env
 .env.*
 !.env.example
+!.env.prod.example
 
 # Todo live locale (jamais versionnée)
 TODO.html

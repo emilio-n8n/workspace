@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { Button } from "../src/components/button.tsx";
 import { ContextMenu } from "../src/components/context-menu.tsx";
 import { CountBadge } from "../src/components/count-badge.tsx";
+import { BrandMark } from "../src/shell/brand-mark.tsx";
 
 describe("Button", () => {
   it("désactive et annonce l'état occupé pendant le chargement", () => {
@@ -21,6 +22,15 @@ describe("Button", () => {
     expect(html).toContain("hover:bg-muted");
     expect(html).toContain("px-1");
     expect(html).not.toContain("px-3");
+  });
+});
+
+describe("BrandMark", () => {
+  it("applique une taille explicite dans un conteneur inline-block", () => {
+    const html = renderToStaticMarkup(<BrandMark className="size-8" />);
+    expect(html).toContain("inline-block");
+    expect(html).toContain("size-8");
+    expect(html).toContain("size-full");
   });
 });
 

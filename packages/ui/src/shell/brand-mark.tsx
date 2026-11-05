@@ -12,7 +12,10 @@ import { cn } from "../cn.ts";
 export function BrandMark({ className }: { className?: string }) {
   const gradientId = `brand-mark-${useId().replaceAll(":", "")}`;
   return (
-    <span aria-hidden className={cn("size-9 rounded-lg shadow-soft", className)}>
+    <span
+      aria-hidden
+      className={cn("inline-block size-9 shrink-0 rounded-lg shadow-soft", className)}
+    >
       <svg viewBox="0 0 32 32" className="size-full">
         <defs>
           <linearGradient id={gradientId} x1="0" y1="0" x2="1" y2="1">

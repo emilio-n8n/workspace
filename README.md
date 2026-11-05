@@ -85,11 +85,36 @@ WORKSPACE_TOKEN=wsk_… pnpm --filter @workspace/mcp-server start
 
 Les jetons se créent dans l'application (Accueil → **Agents & jetons**, `/app/settings/tokens`) avec des scopes minimaux (`drive:read`, `docs:read`, `tasks:write`…), expirent par défaut après 90 jours ; le scope `audit:read` (journal d'audit) est réservé aux rôles owner/admin de l'organisation. **29 outils** couvrent la suite (fichiers, documents, tâches, agenda, formulaires, tableur, présentations, chat, mail, classroom, sites) ; les outils destructifs exigent une confirmation littérale (`confirm: "SUPPRIMER"`). Chaque appel est journalisé (succès, refus, erreurs), et **toutes les mutations web sont auditées** (`@workspace/audit`).
 
+## Synchronisation locale
+
+Le client `workspace-sync` garde un dossier local aligné avec le Drive, sur
+ordinateur (Linux, macOS, Windows) et en continu comme service. Trois modes par
+dossier : **two-way**, **upload** (local → cloud) et **download** (cloud →
+local). Les conflits ne sont jamais écrasés en silence : une copie
+`nom.conflict-<appareil>-<date>` est conservée, et les suppressions passent par
+une corbeille locale ou distante.
+
+```bash
+pnpm --filter @workspace/sync-client build
+workspace-sync init --url https://drive.exemple.org --token wsk_… \
+  --local ~/Workspace --mode two-way
+workspace-sync run --once --verbose   # puis : workspace-sync run
+```
+
+Guide complet : [`docs/sync/README.md`](docs/sync/README.md).
+
+## Déploiement production
+
+Un compose VPS prêt à l'emploi (PostgreSQL, 14 applications, Caddy/TLS) est
+fourni dans [`infrastructure/docker/docker-compose.prod.yml`](infrastructure/docker/docker-compose.prod.yml).
+La procédure pas-à-pas (DNS wildcard, secrets, migrations, sauvegardes,
+mises à jour) est dans [`docs/deployment/vps.md`](docs/deployment/vps.md).
+
 ## Structure du dépôt
 
 ```
 apps/        home · drive · docs · tasks · calendar · forms · sheets · slides · mail · chat · meet · sites · classroom · admin · mcp-server
-packages/    design-tokens · ui · database · auth · permissions · storage · config · audit · search · notifications · ratelimit
+packages/    design-tokens · ui · database · auth · permissions · storage · config · audit · search · notifications · ratelimit · sync-client
 modules/     drive · docs · tasks · calendar · forms · sheets · slides · mail · chat · meet · sites · classroom · admin
              (services + server functions + interface)
 e2e/         tests de bout en bout multi-applications
@@ -104,7 +129,8 @@ docs/        architecture · decisions · design-system · modules · security �
 - `docs/design-system/` — « Papier & encre » : tokens, typographies, shell
 - `docs/modules/` — contrats et critères d'acceptation par module
 - `docs/security/` — modèle de permissions, menaces, contrôles
-- `docs/deployment/` — installation et exploitation auto-hébergée, déploiement Vercel ([`vercel.md`](docs/deployment/vercel.md))
+- `docs/deployment/` — installation VPS ([`vps.md`](docs/deployment/vps.md)), exploitation auto-hébergée, déploiement Vercel ([`vercel.md`](docs/deployment/vercel.md))
+- `docs/sync/` — client de synchronisation local (`workspace-sync`)
 - `docs/mcp/` — serveur MCP : outils, scopes, audit
 
 ## Licence
