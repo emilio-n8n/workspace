@@ -96,6 +96,27 @@ workspace-sync status                   # état local, sans réseau
 `--once` renvoie un code de sortie non nul si une action a échoué, ce qui est
 pratique dans une tâche planifiée.
 
+## Plusieurs dossiers
+
+`init` crée un dossier ; pour en synchroniser plusieurs, ajoutez des entrées
+dans `folders` (le jeton et l'appareil sont communs) :
+
+```json
+{
+  "serverUrl": "https://drive.exemple.org",
+  "deviceName": "portable",
+  "intervalSeconds": 30,
+  "folders": [
+    { "localPath": "/home/moi/Workspace", "remotePath": "/", "mode": "two-way" },
+    { "localPath": "/home/moi/Photos", "remotePath": "/Photos", "mode": "upload" },
+    { "localPath": "/home/moi/Partages", "remotePath": "/Partages", "mode": "download" }
+  ]
+}
+```
+
+Chaque dossier a son propre état et son propre verrou ; une erreur sur l'un
+n'empêche pas les autres de se synchroniser.
+
 ## 5. Service système
 
 ### Linux — systemd utilisateur
@@ -108,7 +129,8 @@ Description=Workspace Sync
 After=network-online.target
 
 [Service]
-ExecStart=%h/.local/bin/workspace-sync run
+# Chemin donné par « which workspace-sync » après l'installation globale.
+ExecStart=/usr/local/bin/workspace-sync run
 Environment=WORKSPACE_SYNC_TOKEN=wsk_…
 Restart=on-failure
 RestartSec=10
@@ -126,9 +148,9 @@ journalctl --user -u workspace-sync -f
 ### macOS — launchd
 
 `~/Library/LaunchAgents/org.workspace.sync.plist` : programme
-`/usr/local/bin/workspace-sync`, argument `run`, variable
-`WORKSPACE_SYNC_TOKEN`, `RunAtLoad` et `KeepAlive`. Chargez avec
-`launchctl load -w …`.
+`/usr/local/bin/workspace-sync` (ou le chemin donné par `which workspace-sync`),
+argument `run`, variable `WORKSPACE_SYNC_TOKEN`, `RunAtLoad` et `KeepAlive`.
+Chargez avec `launchctl load -w …`.
 
 ### Windows — Planificateur de tâches
 
@@ -164,5 +186,8 @@ jeton (ou un jeton par appareil, pour pouvoir le révoquer indépendamment).
   laissés à l'utilisateur.
 - Le polling est volontairement simple ; un mode « watch » (inotify/FSEvents)
   pourra être ajouté sans changer le format d'état.
+- Chaque passe charge l'instantané complet des éléments visibles ; pour des
+  dizaines de milliers de fichiers, une API delta (curseur de changements)
+  sera préférable.
 - Les permissions Drive sont revérifiées à chaque passe : un dossier partagé
   en lecture seule ne peut pas être modifié par le client.
