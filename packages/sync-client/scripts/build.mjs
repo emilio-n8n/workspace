@@ -1,4 +1,4 @@
-import { mkdir } from "node:fs/promises";
+import { chmod, mkdir } from "node:fs/promises";
 import { build } from "esbuild";
 
 await mkdir("dist", { recursive: true });
@@ -14,3 +14,5 @@ await build({
   sourcemap: true,
   legalComments: "none",
 });
+
+await chmod("dist/cli.mjs", 0o755);
