@@ -1,6 +1,6 @@
 # Déploiement — auto-hébergement
 
-> **Statut : cible documentée — non encore disponible.** La Phase 1 produit le squelette compose et la configuration documentée ; rien de ce document n'est encore un guide d'installation utilisable.
+> **Statut : disponible pour un VPS Linux.** La procédure d'installation réelle, le compose de production et Caddy sont dans [`vps.md`](vps.md). Ce document décrit la cible et les principes d'exploitation ; il reste la référence pour les sauvegardes et la sécurité de l'exploitant.
 
 ## Cible
 
@@ -67,4 +67,4 @@ Sauvegarde documentée      →  base + stockage (cohérents)
 
 ## Développement local (état actuel)
 
-`pnpm dev` démarre les quatre applications (Accueil 3000, Drive 3001, Docs 3002, Tasks 3003) sur `localhost` — le SSO fonctionne sans configuration (les cookies ignorent les ports). PostgreSQL natif (`workspace_dev` / `workspace_test`), `.env` local non versionné. Le compose de développement et le compose d'installation multi-applications seront ajoutés en Phase 1/6 avec vérification réelle dès que l'accès Docker de la machine sera effectif.
+`pnpm dev` démarre les 14 applications (3000-3013) sur `localhost` — le SSO fonctionne sans configuration (les cookies ignorent les ports). PostgreSQL natif (`workspace_dev` / `workspace_test`), `.env` local non versionné. Le compose de développement PostgreSQL est dans `infrastructure/docker/docker-compose.dev.yml` ; le compose de production multi-applications est dans `infrastructure/docker/docker-compose.prod.yml` (voir [`vps.md`](vps.md)).

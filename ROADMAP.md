@@ -65,6 +65,13 @@ Prouver de bout en bout : authentification → stockage → permissions → édi
 
 Élargissement des outils MCP, API publique documentée, observabilité, sauvegardes testées, image Docker de production, préparation à la production.
 
+## Synchronisation locale & production ✅ (livrée le 2026-11-05)
+
+- [x] **Client `workspace-sync`** (`packages/sync-client`) : modes `two-way`, `upload`, `download`, conflits sans écrasement, corbeille locale, verrou, état persistant, service Linux/macOS/Windows — 36 tests.
+- [x] **API Drive de synchronisation** : `/api/drive/sync/{me,tree,folder,upload,op,download}` avec jetons `drive:read`/`drive:write`, instantané d'arborescence, dossiers idempotents, téléchargement en pièce jointe — 6 tests d'intégration.
+- [x] **Déploiement VPS** : compose 14 applications + PostgreSQL + Caddy/TLS, cible `migrate`, sauvegardes et procédure pas-à-pas (`docs/deployment/vps.md`).
+- [x] **Correctif logo** : `BrandMark` en `inline-block` (la taille CSS s'applique enfin) et logo du rail ramené à 32 px.
+
 ## Refonte UI — parité « Slides » ✅ (livrée le 2026-10-15, CI en cours)
 
 Toutes les applications au niveau de l'éditeur Slides : barre d'outils unique (ghost, groupes, séparateurs, défilement), contrôles contextuels selon la sélection, actions rares en menu « ⋯ », **aucun panneau permanent** de mise en forme, panneaux secondaires fermables et réouvrables, édition en place sur le contenu, plein viewport avec scrolls internes, dialogues centrés (correction du primitif `Dialog` : le reset Tailwind écrasait le centrage natif de `<dialog>` — impactait les 14 apps), historique `Ctrl+Z`/`Ctrl+Maj+Z`/`Ctrl+Y` là où il manquait, `prefers-reduced-motion` respecté partout.

@@ -22,6 +22,12 @@ import { Route as ApiDriveUploadRouteImport } from './routes/api/drive/upload'
 import { Route as ApiNotificationsStreamRouteImport } from './routes/api/notifications/stream'
 import { Route as ApiDriveDownloadFileIdRouteImport } from './routes/api/drive/download/$fileId'
 import { Route as ApiDriveSharedTokenRouteImport } from './routes/api/drive/shared/$token'
+import { Route as ApiDriveSyncFolderRouteImport } from './routes/api/drive/sync/folder'
+import { Route as ApiDriveSyncMeRouteImport } from './routes/api/drive/sync/me'
+import { Route as ApiDriveSyncOpRouteImport } from './routes/api/drive/sync/op'
+import { Route as ApiDriveSyncTreeRouteImport } from './routes/api/drive/sync/tree'
+import { Route as ApiDriveSyncUploadRouteImport } from './routes/api/drive/sync/upload'
+import { Route as ApiDriveSyncDownloadIdRouteImport } from './routes/api/drive/sync/download/$id'
 
 const AppRoute = AppRouteImport.update({
   id: '/_app',
@@ -87,6 +93,36 @@ const ApiDriveSharedTokenRoute = ApiDriveSharedTokenRouteImport.update({
   path: '/api/drive/shared/$token',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiDriveSyncFolderRoute = ApiDriveSyncFolderRouteImport.update({
+  id: '/api/drive/sync/folder',
+  path: '/api/drive/sync/folder',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiDriveSyncMeRoute = ApiDriveSyncMeRouteImport.update({
+  id: '/api/drive/sync/me',
+  path: '/api/drive/sync/me',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiDriveSyncOpRoute = ApiDriveSyncOpRouteImport.update({
+  id: '/api/drive/sync/op',
+  path: '/api/drive/sync/op',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiDriveSyncTreeRoute = ApiDriveSyncTreeRouteImport.update({
+  id: '/api/drive/sync/tree',
+  path: '/api/drive/sync/tree',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiDriveSyncUploadRoute = ApiDriveSyncUploadRouteImport.update({
+  id: '/api/drive/sync/upload',
+  path: '/api/drive/sync/upload',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiDriveSyncDownloadIdRoute = ApiDriveSyncDownloadIdRouteImport.update({
+  id: '/api/drive/sync/download/$id',
+  path: '/api/drive/sync/download/$id',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof AppIndexRoute
@@ -101,6 +137,12 @@ export interface FileRoutesByFullPath {
   '/api/notifications/stream': typeof ApiNotificationsStreamRoute
   '/api/drive/download/$fileId': typeof ApiDriveDownloadFileIdRoute
   '/api/drive/shared/$token': typeof ApiDriveSharedTokenRoute
+  '/api/drive/sync/folder': typeof ApiDriveSyncFolderRoute
+  '/api/drive/sync/me': typeof ApiDriveSyncMeRoute
+  '/api/drive/sync/op': typeof ApiDriveSyncOpRoute
+  '/api/drive/sync/tree': typeof ApiDriveSyncTreeRoute
+  '/api/drive/sync/upload': typeof ApiDriveSyncUploadRoute
+  '/api/drive/sync/download/$id': typeof ApiDriveSyncDownloadIdRoute
 }
 export interface FileRoutesByTo {
   '/$entryId': typeof AppEntryIdRoute
@@ -115,6 +157,12 @@ export interface FileRoutesByTo {
   '/api/notifications/stream': typeof ApiNotificationsStreamRoute
   '/api/drive/download/$fileId': typeof ApiDriveDownloadFileIdRoute
   '/api/drive/shared/$token': typeof ApiDriveSharedTokenRoute
+  '/api/drive/sync/folder': typeof ApiDriveSyncFolderRoute
+  '/api/drive/sync/me': typeof ApiDriveSyncMeRoute
+  '/api/drive/sync/op': typeof ApiDriveSyncOpRoute
+  '/api/drive/sync/tree': typeof ApiDriveSyncTreeRoute
+  '/api/drive/sync/upload': typeof ApiDriveSyncUploadRoute
+  '/api/drive/sync/download/$id': typeof ApiDriveSyncDownloadIdRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -131,6 +179,12 @@ export interface FileRoutesById {
   '/api/notifications/stream': typeof ApiNotificationsStreamRoute
   '/api/drive/download/$fileId': typeof ApiDriveDownloadFileIdRoute
   '/api/drive/shared/$token': typeof ApiDriveSharedTokenRoute
+  '/api/drive/sync/folder': typeof ApiDriveSyncFolderRoute
+  '/api/drive/sync/me': typeof ApiDriveSyncMeRoute
+  '/api/drive/sync/op': typeof ApiDriveSyncOpRoute
+  '/api/drive/sync/tree': typeof ApiDriveSyncTreeRoute
+  '/api/drive/sync/upload': typeof ApiDriveSyncUploadRoute
+  '/api/drive/sync/download/$id': typeof ApiDriveSyncDownloadIdRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -147,6 +201,12 @@ export interface FileRouteTypes {
     | '/api/notifications/stream'
     | '/api/drive/download/$fileId'
     | '/api/drive/shared/$token'
+    | '/api/drive/sync/folder'
+    | '/api/drive/sync/me'
+    | '/api/drive/sync/op'
+    | '/api/drive/sync/tree'
+    | '/api/drive/sync/upload'
+    | '/api/drive/sync/download/$id'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/$entryId'
@@ -161,6 +221,12 @@ export interface FileRouteTypes {
     | '/api/notifications/stream'
     | '/api/drive/download/$fileId'
     | '/api/drive/shared/$token'
+    | '/api/drive/sync/folder'
+    | '/api/drive/sync/me'
+    | '/api/drive/sync/op'
+    | '/api/drive/sync/tree'
+    | '/api/drive/sync/upload'
+    | '/api/drive/sync/download/$id'
   id:
     | '__root__'
     | '/_app'
@@ -176,6 +242,12 @@ export interface FileRouteTypes {
     | '/api/notifications/stream'
     | '/api/drive/download/$fileId'
     | '/api/drive/shared/$token'
+    | '/api/drive/sync/folder'
+    | '/api/drive/sync/me'
+    | '/api/drive/sync/op'
+    | '/api/drive/sync/tree'
+    | '/api/drive/sync/upload'
+    | '/api/drive/sync/download/$id'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -187,6 +259,12 @@ export interface RootRouteChildren {
   ApiNotificationsStreamRoute: typeof ApiNotificationsStreamRoute
   ApiDriveDownloadFileIdRoute: typeof ApiDriveDownloadFileIdRoute
   ApiDriveSharedTokenRoute: typeof ApiDriveSharedTokenRoute
+  ApiDriveSyncFolderRoute: typeof ApiDriveSyncFolderRoute
+  ApiDriveSyncMeRoute: typeof ApiDriveSyncMeRoute
+  ApiDriveSyncOpRoute: typeof ApiDriveSyncOpRoute
+  ApiDriveSyncTreeRoute: typeof ApiDriveSyncTreeRoute
+  ApiDriveSyncUploadRoute: typeof ApiDriveSyncUploadRoute
+  ApiDriveSyncDownloadIdRoute: typeof ApiDriveSyncDownloadIdRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -282,6 +360,48 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiDriveSharedTokenRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/drive/sync/folder': {
+      id: '/api/drive/sync/folder'
+      path: '/api/drive/sync/folder'
+      fullPath: '/api/drive/sync/folder'
+      preLoaderRoute: typeof ApiDriveSyncFolderRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/drive/sync/me': {
+      id: '/api/drive/sync/me'
+      path: '/api/drive/sync/me'
+      fullPath: '/api/drive/sync/me'
+      preLoaderRoute: typeof ApiDriveSyncMeRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/drive/sync/op': {
+      id: '/api/drive/sync/op'
+      path: '/api/drive/sync/op'
+      fullPath: '/api/drive/sync/op'
+      preLoaderRoute: typeof ApiDriveSyncOpRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/drive/sync/tree': {
+      id: '/api/drive/sync/tree'
+      path: '/api/drive/sync/tree'
+      fullPath: '/api/drive/sync/tree'
+      preLoaderRoute: typeof ApiDriveSyncTreeRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/drive/sync/upload': {
+      id: '/api/drive/sync/upload'
+      path: '/api/drive/sync/upload'
+      fullPath: '/api/drive/sync/upload'
+      preLoaderRoute: typeof ApiDriveSyncUploadRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/drive/sync/download/$id': {
+      id: '/api/drive/sync/download/$id'
+      path: '/api/drive/sync/download/$id'
+      fullPath: '/api/drive/sync/download/$id'
+      preLoaderRoute: typeof ApiDriveSyncDownloadIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
@@ -312,6 +432,12 @@ const rootRouteChildren: RootRouteChildren = {
   ApiNotificationsStreamRoute: ApiNotificationsStreamRoute,
   ApiDriveDownloadFileIdRoute: ApiDriveDownloadFileIdRoute,
   ApiDriveSharedTokenRoute: ApiDriveSharedTokenRoute,
+  ApiDriveSyncFolderRoute: ApiDriveSyncFolderRoute,
+  ApiDriveSyncMeRoute: ApiDriveSyncMeRoute,
+  ApiDriveSyncOpRoute: ApiDriveSyncOpRoute,
+  ApiDriveSyncTreeRoute: ApiDriveSyncTreeRoute,
+  ApiDriveSyncUploadRoute: ApiDriveSyncUploadRoute,
+  ApiDriveSyncDownloadIdRoute: ApiDriveSyncDownloadIdRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

@@ -313,6 +313,53 @@ async function collectSubtree(orgId: string, rootId: string): Promise<string[]> 
 // Mutations notables uniquement : téléchargements et autosaves ne sont pas
 // journalisés (voir docs) — un événement par lecture noierait le journal.
 
+/**
+ * Crée un dossier s'il n'existe pas déjà (idempotent pour la synchronisation).
+ * Un fichier du même nom est un conflit : on ne remplace jamais silencieusement
+ * un fichier par un dossier.
+ */
+export async function ensureFolder(
+  actor: Actor,
+  input: { parentId?: string | null; name: string },
+): Promise<DriveEntry> {
+  const name = assertValidName(input.name);
+  const parentId = input.parentId ?? null;
+  await assertWritableParent(actor, parentId);
+
+  const findExisting = () =>
+    db()
+      .select()
+      .from(driveFiles)
+      .where(
+        and(
+          eq(driveFiles.orgId, actor.orgId),
+          eq(driveFiles.status, "active"),
+          parentId === null ? isNull(driveFiles.parentId) : eq(driveFiles.parentId, parentId),
+          eq(driveFiles.name, name),
+        ),
+      )
+      .limit(1);
+
+  const [existing] = await findExisting();
+  if (existing) {
+    if (existing.kind !== "folder") {
+      throw new DriveError("conflict", "Un fichier porte déjà ce nom.");
+    }
+    return existing;
+  }
+
+  try {
+    return await createFolder(actor, { parentId, name });
+  } catch (error) {
+    // Course entre deux clients : le perdant relit le dossier créé par l'autre.
+    if (error instanceof DriveError && error.code === "conflict") {
+      const [raced] = await findExisting();
+      if (raced?.kind === "folder") return raced;
+    }
+    throw error;
+  }
+}
+
 export async function createFolder(
   actor: Actor,
   input: { parentId?: string | null; name: string },
@@ -370,6 +417,63 @@ export async function listEntries(
   );
 
   return rows.filter((row) => roleSatisfies(roles.get(row.id), "read"));
+}
+
+/**
+ * Entrée minimale d'un instantané de synchronisation : pas de clé de stockage
+ * (jamais exposée), mais l'empreinte qui permet au client de détecter les
+ * changements sans télécharger chaque fichier.
+ */
+export type SyncEntry = {
+  id: string;
+  parentId: string | null;
+  kind: "folder" | "file";
+  name: string;
+  mimeType: string | null;
+  sizeBytes: number | null;
+  checksum: string | null;
+  updatedAt: Date;
+};
+
+/**
+ * Instantané de tous les éléments actifs visibles par l'acteur, pour le client
+ * de synchronisation. Les droits sont résolus en lot (même logique que
+ * `listEntries`) ; un élément non lisible est simplement absent de la réponse.
+ */
+export async function listSyncTree(actor: Actor): Promise<SyncEntry[]> {
+  const rows = await db()
+    .select({
+      id: driveFiles.id,
+      parentId: driveFiles.parentId,
+      kind: driveFiles.kind,
+      name: driveFiles.name,
+      mimeType: driveFiles.mimeType,
+      sizeBytes: driveFiles.sizeBytes,
+      checksum: driveFiles.checksum,
+      updatedAt: driveFiles.updatedAt,
+      ownerId: driveFiles.ownerId,
+    })
+    .from(driveFiles)
+    .where(and(eq(driveFiles.orgId, actor.orgId), eq(driveFiles.status, "active")))
+    .orderBy(asc(driveFiles.name));
+
+  const roles = await resolveRolesForEntries(
+    actor,
+    rows.map((row) => ({ id: row.id, ownerId: row.ownerId })),
+  );
+
+  return rows
+    .filter((row) => roleSatisfies(roles.get(row.id), "read"))
+    .map((row) => ({
+      id: row.id,
+      parentId: row.parentId,
+      kind: row.kind,
+      name: row.name,
+      mimeType: row.mimeType,
+      sizeBytes: row.sizeBytes,
+      checksum: row.checksum,
+      updatedAt: row.updatedAt,
+    }));
 }
 
 export async function getEntry(

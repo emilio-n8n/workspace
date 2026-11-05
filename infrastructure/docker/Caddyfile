@@ -1,0 +1,98 @@
+# Reverse proxy de production — TLS automatique (Let's Encrypt).
+# Variables : PUBLIC_HOST et ACME_EMAIL (voir .env.prod).
+{
+	email {$ACME_EMAIL}
+}
+
+(security) {
+	header {
+		X-Content-Type-Options nosniff
+		Referrer-Policy strict-origin-when-cross-origin
+		X-Frame-Options SAMEORIGIN
+		-Server
+	}
+}
+
+{$PUBLIC_HOST} {
+	import security
+	encode zstd gzip
+	reverse_proxy home:3000
+}
+
+drive.{$PUBLIC_HOST} {
+	import security
+	encode zstd gzip
+	reverse_proxy drive:3000
+}
+
+docs.{$PUBLIC_HOST} {
+	import security
+	encode zstd gzip
+	reverse_proxy docs:3000
+}
+
+tasks.{$PUBLIC_HOST} {
+	import security
+	encode zstd gzip
+	reverse_proxy tasks:3000
+}
+
+calendar.{$PUBLIC_HOST} {
+	import security
+	encode zstd gzip
+	reverse_proxy calendar:3000
+}
+
+forms.{$PUBLIC_HOST} {
+	import security
+	encode zstd gzip
+	reverse_proxy forms:3000
+}
+
+sheets.{$PUBLIC_HOST} {
+	import security
+	encode zstd gzip
+	reverse_proxy sheets:3000
+}
+
+slides.{$PUBLIC_HOST} {
+	import security
+	encode zstd gzip
+	reverse_proxy slides:3000
+}
+
+mail.{$PUBLIC_HOST} {
+	import security
+	encode zstd gzip
+	reverse_proxy mail:3000
+}
+
+chat.{$PUBLIC_HOST} {
+	import security
+	encode zstd gzip
+	reverse_proxy chat:3000
+}
+
+meet.{$PUBLIC_HOST} {
+	import security
+	encode zstd gzip
+	reverse_proxy meet:3000
+}
+
+sites.{$PUBLIC_HOST} {
+	import security
+	encode zstd gzip
+	reverse_proxy sites:3000
+}
+
+classroom.{$PUBLIC_HOST} {
+	import security
+	encode zstd gzip
+	reverse_proxy classroom:3000
+}
+
+admin.{$PUBLIC_HOST} {
+	import security
+	encode zstd gzip
+	reverse_proxy admin:3000
+}

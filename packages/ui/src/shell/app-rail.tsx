@@ -23,7 +23,7 @@ export function AppRail({ apps, activeAppId, homeHref, onOpenPalette }: AppRailP
         aria-label="Accueil Workspace"
         className="mb-3 shrink-0 rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-rail"
       >
-        <BrandMark />
+        <BrandMark className="size-8" />
       </a>
 
       {live.map((app) => {

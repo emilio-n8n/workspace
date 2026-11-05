@@ -10,6 +10,10 @@ apps/
   drive/          Fichiers et dossiers (port 3001)
   docs/           Documents (port 3002)
   tasks/          Tâches et listes (port 3003)
+  calendar/       Agendas (3004) · forms/ (3005) · sheets/ (3006) · slides/ (3007)
+  mail/ (3008) · chat/ (3009) · meet/ (3010) · sites/ (3011)
+  classroom/ (3012) · admin/ (3013)
+  collab/         Serveur Yjs de collaboration Docs (port 3100)
   mcp-server/     Serveur MCP officiel (même couche de services que le web)
 packages/
   design-tokens/  Tokens « Papier & encre » + polices auto-hébergées
@@ -17,13 +21,16 @@ packages/
   database/       Schéma Drizzle cœur, migrations, helpers
   auth/           Sessions, organisations, jetons d'API, requireActor (better-auth)
   permissions/    Rôles, resource_grants, refus par défaut
-  api/            Contrats de services, erreurs typées (à venir)
   storage/        Interface de stockage : LocalFS, S3-compatible
   config/         Validation d'environnement, URLs des applications (getAppUrls)
-  test-utils/     Utilitaires de test partagés (à venir)
-modules/          Un package par module fonctionnel : drive/, docs/, tasks/
-infrastructure/   docker/, deployment/ — compose dev et self-host
-docs/             architecture/, decisions/, design-system/, modules/, security/, deployment/, mcp/, studies/
+  audit/          Journal d'audit des mutations
+  search/         Recherche globale (Drive, Docs, Tasks…)
+  notifications/  Notifications et flux SSE
+  ratelimit/      Limiteur de débit des surfaces publiques
+  sync-client/    Client de synchronisation local (workspace-sync)
+modules/          Un package par module fonctionnel (13 modules)
+infrastructure/   docker/ — compose dev, compose production, Caddyfile
+docs/             architecture/, decisions/, design-system/, modules/, security/, deployment/, mcp/, sync/, studies/
 e2e/              Tests Playwright multi-applications (racine)
 ```
 
@@ -32,7 +39,7 @@ e2e/              Tests Playwright multi-applications (racine)
 - Chaque application est un **serveur TanStack Start indépendant** avec son bundle, monté sur son port (dev) ou son sous-domaine (production).
 - Toutes partagent **un seul PostgreSQL et une seule configuration better-auth** ; le gestionnaire `/api/auth/*` est monté dans chaque application.
 - **SSO** : cookie de session partagé — en développement `localhost` avec ports différents (les cookies ignorent les ports) ; en production sous-domaines + `BETTER_AUTH_COOKIE_DOMAIN` (+ `trustedOrigins` calculées par `getAppUrls()`).
-- Les URLs publiques des applications sont **calculées côté serveur** (`getAppUrls` dans `packages/config`) : ports 3000-3003 en développement, sous-domaines dérivés de `PUBLIC_URL` en production, surcharges explicites `DRIVE_URL` / `DOCS_URL` / `TASKS_URL`.
+- Les URLs publiques des applications sont **calculées côté serveur** (`getAppUrls` dans `packages/config`) : ports 3000-3013 en développement, sous-domaines dérivés de `PUBLIC_URL` en production, surcharges explicites `DRIVE_URL` / `DOCS_URL` / `TASKS_URL` (et les autres `*_URL`).
 
 ## Anatomie d'un module
 
@@ -64,5 +71,5 @@ packages/*  ✗──►  modules/* · packages/* ✗──► apps/*
 - Nommage : `@workspace/*` (packages et modules), `@app/<nom>` (applications).
 - TypeScript strict partagé (`tsconfig.base.json`), formatage et lint via **Biome**.
 - Orchestration : **Turborepo** (`turbo run build|lint|typecheck|test|dev|generate-routes`).
-- Développement : `pnpm dev` démarre les quatre applications (3000-3003).
+- Développement : `pnpm dev` démarre les 14 applications (3000-3013).
 - Tests : unitaires/intégration par package (`pnpm test`), E2E multi-origines à la racine (`pnpm test:e2e`).

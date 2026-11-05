@@ -1,0 +1,209 @@
+# Workspace — production VPS.
+#
+#   cp .env.prod.example .env.prod        # puis renseigner les secrets
+#   docker compose -f docker-compose.prod.yml --env-file .env.prod build
+#   docker compose -f docker-compose.prod.yml --env-file .env.prod up -d postgres
+#   docker compose -f docker-compose.prod.yml --env-file .env.prod --profile tools run --rm migrate
+#   docker compose -f docker-compose.prod.yml --env-file .env.prod up -d
+#
+# Les applications écoutent toutes sur le port 3000 dans leur conteneur ;
+# Caddy expose le domaine et les sous-domaines avec TLS automatique.
+name: workspace
+
+x-app: &app
+  restart: unless-stopped
+  env_file:
+    - .env.prod
+  environment:
+    NODE_ENV: production
+    PORT: "3000"
+    HOST: 0.0.0.0
+    STORAGE_DRIVER: local
+    STORAGE_DIR: /data/storage
+  volumes:
+    - workspace-storage:/data/storage
+  depends_on:
+    postgres:
+      condition: service_healthy
+  healthcheck:
+    test:
+      [
+        "CMD",
+        "node",
+        "-e",
+        "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+      ]
+    interval: 30s
+    timeout: 5s
+    retries: 3
+    start_period: 30s
+  networks:
+    - workspace
+
+services:
+  postgres:
+    image: postgres:18
+    restart: unless-stopped
+    env_file:
+      - .env.prod
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    networks:
+      - workspace
+
+  migrate:
+    <<: *app
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      target: migrate
+    command: ["pnpm", "db:migrate"]
+    restart: "no"
+    healthcheck:
+      disable: true
+    profiles:
+      - tools
+
+  home:
+    <<: *app
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      args: { APP: home }
+
+  drive:
+    <<: *app
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      args: { APP: drive }
+
+  docs:
+    <<: *app
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      args: { APP: docs }
+
+  tasks:
+    <<: *app
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      args: { APP: tasks }
+
+  calendar:
+    <<: *app
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      args: { APP: calendar }
+
+  forms:
+    <<: *app
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      args: { APP: forms }
+
+  sheets:
+    <<: *app
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      args: { APP: sheets }
+
+  slides:
+    <<: *app
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      args: { APP: slides }
+
+  mail:
+    <<: *app
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      args: { APP: mail }
+
+  chat:
+    <<: *app
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      args: { APP: chat }
+
+  meet:
+    <<: *app
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      args: { APP: meet }
+
+  sites:
+    <<: *app
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      args: { APP: sites }
+
+  classroom:
+    <<: *app
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      args: { APP: classroom }
+
+  admin:
+    <<: *app
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      args: { APP: admin }
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    env_file:
+      - .env.prod
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - home
+      - drive
+      - docs
+      - tasks
+      - calendar
+      - forms
+      - sheets
+      - slides
+      - mail
+      - chat
+      - meet
+      - sites
+      - classroom
+      - admin
+    networks:
+      - workspace
+
+volumes:
+  postgres-data:
+  workspace-storage:
+  caddy-data:
+  caddy-config:
+
+networks:
+  workspace:
+    driver: bridge

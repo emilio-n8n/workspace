@@ -1,0 +1,34 @@
+{
+  "name": "@workspace/sync-client",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Client de synchronisation local Workspace Drive (two-way, upload, download).",
+  "bin": {
+    "workspace-sync": "./dist/cli.mjs"
+  },
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "start": "tsx src/cli.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "esbuild": "^0.25.12",
+    "tsx": "^4.19.0",
+    "typescript": "^6.0.2",
+    "vitest": "^3.2.4"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

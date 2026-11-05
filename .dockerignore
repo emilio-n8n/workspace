@@ -6,4 +6,11 @@ node_modules
 .turbo
 .git
 .env
+.env.*
+**/.env
+**/.env.*
 data
+backups
+coverage
+test-results
+playwright-report
