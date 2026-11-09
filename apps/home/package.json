@@ -14,7 +14,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@tailwindcss/vite": "^4.1.18",
+    "@tailwindcss/vite": "^4.3.4",
     "@tanstack/react-devtools": "0.10.14",
     "@tanstack/react-router": "1.170.46",
     "@tanstack/react-router-devtools": "1.167.2",
@@ -28,7 +28,7 @@
     "@workspace/ui": "workspace:*",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
-    "tailwindcss": "^4.1.18",
+    "tailwindcss": "^4.3.4",
     "@workspace/drive": "workspace:*",
     "@workspace/search": "workspace:*",
     "zod": "^4.6.7",
