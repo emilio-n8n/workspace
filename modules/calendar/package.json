@@ -17,7 +17,7 @@
     "db:migrate": "drizzle-kit migrate"
   },
   "dependencies": {
-    "@tanstack/react-start": "1.169.4",
+    "@tanstack/react-start": "1.169.5",
     "@workspace/audit": "workspace:*",
     "@workspace/auth": "workspace:*",
     "@workspace/config": "workspace:*",
